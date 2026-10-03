@@ -87,7 +87,7 @@ C.ModernDialog {
                     C.SelectField { Layout.fillWidth: true; model: ["A4", "Carta"]; currentIndex: App.defaultSize === "Carta" ? 1 : 0; onActivated: App.defaultSize = currentText; Accessible.name: "Tamanho padrão" }
                     C.SegmentedControl { Layout.preferredWidth: Theme.settingsSegmentWidth; options: ["Retrato", "Paisagem"]; currentIndex: App.defaultLandscape ? 1 : 0; onSelected: index => App.defaultLandscape = index === 1 }
                 }
-                C.SelectField { Layout.fillWidth: true; model: ["Branco", "Preto", "Verde"]; currentIndex: model.indexOf(App.defaultBackground); onActivated: App.defaultBackground = currentText; Accessible.name: "Fundo padrão" }
+                C.SelectField { Layout.fillWidth: true; model: App.backgroundPresets.map(p => p.name); currentIndex: model.indexOf(App.defaultBackground); onActivated: App.defaultBackground = currentText; Accessible.name: "Fundo padrão" }
                 Text { text: "O tema da interface preserva o fundo do seu quadro."; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.secondary; font.pixelSize: Theme.caption }
             }
         }

@@ -15,10 +15,11 @@ C.GlassPanel {
     RowLayout {
         id: row
         anchors.centerIn: parent
-        spacing: Theme.sm
+        spacing: Theme.xs
         C.ToolButton { iconName: "select"; label: "Selecionar (V) · Shift para seleção múltipla"; selected: root.activeTool === "select"; onClicked: root.toolSelected("select") }
         C.ToolButton { iconName: "pen"; label: "Caneta (P) · clique novamente para opções"; selected: root.activeTool === "pen"; onClicked: { if(root.activeTool === "pen") root.penOptionsRequested(); else root.toolSelected("pen") } }
         C.ToolButton { iconName: "eraser"; label: "Borracha por trecho (E)"; selected: root.activeTool === "eraser"; onClicked: { if(root.activeTool === "eraser") root.eraserOptionsRequested(); else root.toolSelected("eraser") } }
+        C.ToolButton { iconName: "text"; label: "Texto e LaTeX (T)"; selected: root.activeTool === "text"; onClicked: root.toolSelected("text") }
         C.IconButton { iconName: "image"; label: "Importar imagem"; onClicked: root.imageRequested() }
         C.ToolButton { iconName: "shapes"; label: "Formas geométricas"; selected: ["line","circle","ellipse","triangle","rectangle"].indexOf(root.activeTool) >= 0; onClicked: root.shapeOptionsRequested() }
         C.ToolButton { iconName: "hand"; label: "Mover quadro (H)"; selected: root.activeTool === "hand"; onClicked: root.toolSelected("hand") }

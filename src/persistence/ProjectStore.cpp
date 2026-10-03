@@ -1,5 +1,7 @@
 #include "ProjectStore.h"
 #include "ZipArchive.h"
+#include "documents/Backgrounds.h"
+#include "math/SvgValidation.h"
 #include <QFile>
 #include <QSaveFile>
 #include <QJsonDocument>
@@ -38,9 +40,14 @@ QByteArray ProjectStore::serialize(const Project& p) {
             const auto png=QByteArray(reinterpret_cast<const char*>(image.png->data()),qsizetype(image.png->size()));
             strokes.append(QJsonObject{{"id",text(image.id)},{"type","image"},{"corners",corners},{"png",QString::fromLatin1(png.toBase64())},{"pixelWidth",image.pixelWidth},{"pixelHeight",image.pixelHeight},{"zIndex",double(image.properties.zIndex)},{"locked",image.properties.locked},{"visible",image.properties.visible}});
         }
-        pages.append(QJsonObject{{"id",text(page.id)},{"widthMm",page.size.widthMm},{"heightMm",page.size.heightMm},{"background",double(page.background)},{"objects",strokes}});
+        for(const auto& t:page.texts){
+            QJsonArray corners,math;for(auto point:t.corners)corners.append(QJsonArray{point.x,point.y});
+            for(const auto& f:t.math)math.append(QJsonObject{{"latex",text(f.latex)},{"svg",text(f.svg)},{"display",f.display},{"start",double(f.start)},{"length",double(f.length)},{"widthEm",f.widthEm},{"heightEm",f.heightEm}});
+            strokes.append(QJsonObject{{"id",text(t.id)},{"type","text"},{"source",text(t.source)},{"fontFamily",text(t.fontFamily)},{"fontSizePt",t.fontSizePt},{"bold",t.bold},{"italic",t.italic},{"alignment",t.alignment},{"rgba",double(t.style.rgba)},{"corners",corners},{"math",math},{"zIndex",double(t.properties.zIndex)},{"locked",t.properties.locked},{"visible",t.properties.visible}});
+        }
+        pages.append(QJsonObject{{"id",text(page.id)},{"widthMm",page.size.widthMm},{"heightMm",page.size.heightMm},{"background",double(page.background)},{"backgroundStyle",QJsonObject::fromVariantMap(backgroundValues(page.background,page.backgroundStyle))},{"objects",strokes}});
     }
-    return QJsonDocument(QJsonObject{{"format","scalar.board"},{"version",2},{"units","mm"},{"id",text(p.id)},{"name",text(p.name)},{"createdAt",text(p.createdAt)},{"updatedAt",text(p.updatedAt)},{"pages",pages}}).toJson(QJsonDocument::Compact);
+    return QJsonDocument(QJsonObject{{"format","scalar.board"},{"version",3},{"units","mm"},{"id",text(p.id)},{"name",text(p.name)},{"createdAt",text(p.createdAt)},{"updatedAt",text(p.updatedAt)},{"pages",pages}}).toJson(QJsonDocument::Compact);
 }
 LoadResult ProjectStore::deserialize(const QByteArray& data) {
     auto fail=[](const QString& reason){return LoadResult{{},reason};};
@@ -48,7 +55,7 @@ LoadResult ProjectStore::deserialize(const QByteArray& data) {
     QJsonParseError error; const auto doc=QJsonDocument::fromJson(data,&error);
     if(error.error!=QJsonParseError::NoError||!doc.isObject()) return fail("JSON inválido.");
     const auto root=doc.object();
-    if(root["format"]!="scalar.board"||(root["version"].toInt()!=1&&root["version"].toInt()!=2)||root["units"]!="mm") return fail("Formato ou versão não suportado.");
+    if(root["format"]!="scalar.board"||(root["version"].toInt()<1||root["version"].toInt()>3)||root["units"]!="mm") return fail("Formato ou versão não suportado.");
     Project p; p.id=root["id"].toString().toStdString(); p.name=root["name"].toString().toStdString();
     p.createdAt=root["createdAt"].toString().toStdString(); p.updatedAt=root["updatedAt"].toString().toStdString();
     if(p.id.empty()||p.name.empty()||!root["pages"].isArray()) return fail("Metadados incompletos.");
@@ -59,11 +66,28 @@ LoadResult ProjectStore::deserialize(const QByteArray& data) {
         if(!pageValue.isObject()) return fail("Página inválida."); const auto o=pageValue.toObject(); Page page;
         if(!claim(o["id"].toString())||!finite(o["widthMm"])||!finite(o["heightMm"])||!color(o["background"])||!o["objects"].isArray()) return fail("Página inválida.");
         page.id=o["id"].toString().toStdString(); page.size={o["widthMm"].toDouble(),o["heightMm"].toDouble()}; page.background=std::uint32_t(o["background"].toDouble());
+        if(o.contains("backgroundStyle")){std::uint32_t bg;if(!o["backgroundStyle"].isObject()||!parseBackground(o["backgroundStyle"].toObject().toVariantMap(),bg,page.backgroundStyle)||bg!=page.background)return fail("Fundo de página inválido.");}
         if(!page.size.valid())return fail("Dimensões físicas inválidas.");
         for(const auto& value:o["objects"].toArray()) {
             const auto s=value.toObject();
+            if(s["type"]=="text"){
+                if(root["version"].toInt()<3||!claim(s["id"].toString())||!s["source"].isString()||!s["fontFamily"].isString()||!finite(s["fontSizePt"])||!color(s["rgba"])||!s["bold"].isBool()||!s["italic"].isBool()||!finite(s["alignment"])||!s["corners"].isArray()||!s["math"].isArray()||!finite(s["zIndex"])||std::abs(s["zIndex"].toDouble())>9007199254740991.0||std::floor(s["zIndex"].toDouble())!=s["zIndex"].toDouble()||!s["locked"].isBool()||!s["visible"].isBool())return fail("Texto inválido.");
+                TextObject t;t.id=s["id"].toString().toStdString();t.source=s["source"].toString().toStdString();t.fontFamily=s["fontFamily"].toString().toStdString();t.fontSizePt=s["fontSizePt"].toDouble();t.bold=s["bold"].toBool();t.italic=s["italic"].toBool();t.alignment=s["alignment"].toInt(-1);t.style.rgba=std::uint32_t(s["rgba"].toDouble());
+                if(t.source.empty()||t.source.size()>32768||t.fontFamily.size()>256||t.fontSizePt<6||t.fontSizePt>144||t.alignment<0||t.alignment>2||t.alignment!=s["alignment"].toDouble())return fail("Texto fora dos limites.");
+                const auto corners=s["corners"].toArray();if(corners.size()!=4)return fail("Texto sem quatro cantos.");
+                for(const auto& v:corners){const auto c=v.toArray();if(c.size()!=2||!finite(c[0])||!finite(c[1])||std::abs(c[0].toDouble())>1e6||std::abs(c[1].toDouble())>1e6)return fail("Posição de texto inválida.");t.corners.push_back({c[0].toDouble(),c[1].toDouble()});}
+                std::size_t previous=0;
+                for(const auto& value:s["math"].toArray()){
+                    const auto m=value.toObject();MathFragment f;f.latex=m["latex"].toString().toStdString();f.svg=m["svg"].toString().toStdString();f.display=m["display"].toBool();f.widthEm=m["widthEm"].toDouble();f.heightEm=m["heightEm"].toDouble();
+                    if(!finite(m["start"])||!finite(m["length"])||m["start"].toDouble()<0||m["length"].toDouble()<3||m["start"].toDouble()>32768||m["length"].toDouble()>32768||std::floor(m["start"].toDouble())!=m["start"].toDouble()||std::floor(m["length"].toDouble())!=m["length"].toDouble()||!finite(m["widthEm"])||!finite(m["heightEm"])||f.widthEm<=0||f.heightEm<=0||f.widthEm>2000||f.heightEm>2000||!validMathSvg(f.svg))return fail("Matemática inválida.");
+                    f.start=std::size_t(m["start"].toDouble());f.length=std::size_t(m["length"].toDouble());
+                    const std::string delimiter=f.display?"$$":"$";
+                    if(f.start<previous||f.start+f.length>t.source.size()||t.source.substr(f.start,f.length)!=delimiter+f.latex+delimiter)return fail("Fonte LaTeX inconsistente.");previous=f.start+f.length;t.math.push_back(std::move(f));
+                }
+                t.properties={s["locked"].toBool(),s["visible"].toBool(),std::int64_t(s["zIndex"].toDouble()),0};page.texts.push_back(std::move(t));continue;
+            }
             if(s["type"]=="image"){
-                if(root["version"].toInt()!=2||!claim(s["id"].toString())||!s["corners"].isArray()||!s["png"].isString()||!finite(s["zIndex"])||std::abs(s["zIndex"].toDouble())>9007199254740991.0||std::floor(s["zIndex"].toDouble())!=s["zIndex"].toDouble()||!s["locked"].isBool()||!s["visible"].isBool())return fail("Imagem inválida.");
+                if(root["version"].toInt()<2||!claim(s["id"].toString())||!s["corners"].isArray()||!s["png"].isString()||!finite(s["zIndex"])||std::abs(s["zIndex"].toDouble())>9007199254740991.0||std::floor(s["zIndex"].toDouble())!=s["zIndex"].toDouble()||!s["locked"].isBool()||!s["visible"].isBool())return fail("Imagem inválida.");
                 ImageObject image;image.id=s["id"].toString().toStdString();image.pixelWidth=s["pixelWidth"].toInt();image.pixelHeight=s["pixelHeight"].toInt();
                 if(image.pixelWidth<=0||image.pixelHeight<=0||image.pixelWidth>8192||image.pixelHeight>8192||double(image.pixelWidth)*image.pixelHeight>32000000)return fail("Resolução de imagem inválida.");
                 const auto corners=s["corners"].toArray();if(corners.size()!=4)return fail("Imagem sem quatro cantos.");
@@ -88,12 +112,12 @@ LoadResult ProjectStore::deserialize(const QByteArray& data) {
             }
             const auto& st=stroke.style;
             if(st.minWidthMm<=0||st.maxWidthMm<st.minWidthMm||st.maxWidthMm>100||st.gamma<=0||st.gamma>10||st.sensitivity<=0||st.sensitivity>10) return fail("Pressão inválida.");
-            if(root["version"].toInt()==2){
+            if(root["version"].toInt()>=2){
                 if(!finite(s["zIndex"])||std::abs(s["zIndex"].toDouble())>9007199254740991.0||std::floor(s["zIndex"].toDouble())!=s["zIndex"].toDouble()||!s["locked"].isBool()||!s["visible"].isBool())return fail("Propriedades inválidas.");
                 stroke.properties={s["locked"].toBool(),s["visible"].toBool(),std::int64_t(s["zIndex"].toDouble()),0};
             }else stroke.properties.zIndex=std::int64_t(page.strokes.size());
             if(s["type"]=="shape"){
-                if(root["version"].toInt()!=2||!finite(s["kind"])||s["kind"].toInt(-1)<0||s["kind"].toInt(-1)>6||!s["vertices"].isArray()||!s["center"].isArray())return fail("Forma inválida.");
+                if(root["version"].toInt()<2||!finite(s["kind"])||s["kind"].toInt(-1)<0||s["kind"].toInt(-1)>6||!s["vertices"].isArray()||!s["center"].isArray())return fail("Forma inválida.");
                 ShapeObject shape;shape.id=stroke.id;shape.style=stroke.style;shape.properties=stroke.properties;shape.kind=ShapeKind(s["kind"].toInt());
                 const auto c=s["center"].toArray();if(c.size()!=2||!finite(c[0])||!finite(c[1])||std::abs(c[0].toDouble())>1e6||std::abs(c[1].toDouble())>1e6)return fail("Centro inválido.");shape.center={c[0].toDouble(),c[1].toDouble()};
                 for(const char* key:{"radiusX","radiusY","rotation","fillOpacity"})if(!finite(s[key]))return fail("Forma não numérica.");

@@ -6,6 +6,7 @@ import "../components" as C
 import "../toolbars"
 import "../panels"
 import "../theme"
+import "../dialogs"
 Item {
     id: root
     property bool overlaysOpen: false
@@ -20,9 +21,10 @@ Item {
         anchors.fill: parent
         anchors.topMargin: Theme.topbarHeight
         controller: App
-        enabled: !root.overlaysOpen && !App.loading && !penOptions.visible && !shapeOptions.visible && !eraserOptions.visible
+        enabled: !root.overlaysOpen && !textDialog.visible && !App.loading && !penOptions.visible && !penOptions.colorDialogOpen && !shapeOptions.visible && !eraserOptions.visible && !backgroundOptions.visible && !backgroundOptions.colorDialogOpen
         toolbarExclusion: Qt.rect(toolbar.x, toolbar.y-y, toolbar.width, toolbar.height)
         optionsExclusion: properties.visible ? Qt.rect(properties.x,properties.y-y,properties.width,properties.height) : Qt.rect(0,0,0,0)
+        onTextRequested: (position, id) => textDialog.begin(position,id,board.penColor)
         Component.onCompleted: Qt.callLater(fitPage)
     }
     Item {
@@ -62,6 +64,7 @@ Item {
         Text { text: Math.round(board.zoom*100) + "%"; color: Theme.secondary; font.pixelSize: Theme.caption; visible: root.width > Theme.minimumWidth }
         C.IconButton { iconName: "plus"; label: "Aumentar zoom"; visible: root.width > Theme.zoomBreakpoint; onClicked: board.zoomBy(1.2) }
         C.IconButton { iconName: "fit"; label: "Ajustar página"; onClicked: board.fitPage() }
+        C.IconButton { iconName: "background"; label: "Fundo e grade"; onClicked: { board.cancelStroke(); backgroundOptions.open() } }
         C.IconButton { iconName: "settings"; label: "Configurações"; onClicked: { board.cancelStroke(); root.settingsRequested() } }
     }
     FloatingToolbar {
@@ -75,8 +78,20 @@ Item {
         onEraserOptionsRequested: eraserOptions.open()
         onImageRequested: root.imageRequested()
     }
-    PenOptions { id: penOptions; canvas: board; x: Math.max(Theme.lg, (root.width-width)/2); y: toolbar.y-height-Theme.md }
-    ShapeOptions { id: shapeOptions; canvas: board; x: Math.max(Theme.lg, (root.width-width)/2); y: toolbar.y-height-Theme.md }
+    TextDialog { id: textDialog }
+    BackgroundOptions { id: backgroundOptions; x: Math.max(Theme.lg,root.width-width-Theme.lg); y: Theme.topbarHeight }
+    PenOptions {
+        id: penOptions; canvas: board
+        function reposition() { x = Math.max(Theme.lg,(root.width-width)/2); y = Math.max(Theme.lg,toolbar.y-height-Theme.md) }
+        onAboutToShow: reposition()
+        onHeightChanged: Qt.callLater(reposition)
+        Connections {
+            target: root
+            function onWidthChanged() { penOptions.reposition() }
+            function onHeightChanged() { Qt.callLater(penOptions.reposition) }
+        }
+    }
+    ShapeOptions { id: shapeOptions; canvas: board; x: Math.max(Theme.lg, (root.width-width)/2); y: Math.max(Theme.lg,toolbar.y-height-Theme.md) }
     C.GlassPopover {
         id: eraserOptions; x: Math.max(Theme.lg,(root.width-width)/2); y: toolbar.y-height-Theme.md
         contentItem: ColumnLayout {
@@ -92,15 +107,16 @@ Item {
         color: Theme.secondary; font.pixelSize: Theme.caption; elide: Text.ElideRight
     }
     Text { anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.margins: Theme.lg; visible: root.width > Theme.hintBreakpoint; text: "Espaço + arraste para mover · rolagem para zoom"; color: Theme.secondary; font.pixelSize: Theme.caption }
-    Shortcut { sequence: "E"; enabled: !root.overlaysOpen; onActivated: board.tool = "eraser" }
-    Shortcut { sequence: "Ctrl+V"; enabled: !root.overlaysOpen; onActivated: board.pasteImage() }
-    Shortcut { sequence: "V"; enabled: !root.overlaysOpen; onActivated: board.tool = "select" }
-    Shortcut { sequence: "Delete"; enabled: !root.overlaysOpen && board.selectedCount > 0; onActivated: board.deleteSelection() }
-    Shortcut { sequence: "Ctrl+D"; enabled: !root.overlaysOpen && board.selectedCount > 0; onActivated: board.duplicateSelection() }
-    Shortcut { sequence: "P"; enabled: !root.overlaysOpen; onActivated: board.tool = "pen" }
-    Shortcut { sequence: "H"; enabled: !root.overlaysOpen; onActivated: board.tool = "hand" }
-    Shortcut { sequence: "Ctrl+Z"; enabled: !root.overlaysOpen && !board.drawing; onActivated: App.undo() }
-    Shortcut { sequence: "Ctrl+Shift+Z"; enabled: !root.overlaysOpen && !board.drawing; onActivated: App.redo() }
-    Shortcut { sequence: "Ctrl+S"; enabled: !root.overlaysOpen; onActivated: App.save() }
-    Shortcut { sequence: "Ctrl+Shift+S"; enabled: !root.overlaysOpen; onActivated: root.saveAsRequested() }
+    Shortcut { sequence: "E"; enabled: !root.overlaysOpen && !textDialog.visible; onActivated: board.tool = "eraser" }
+    Shortcut { sequence: "Ctrl+V"; enabled: !root.overlaysOpen && !textDialog.visible; onActivated: board.pasteImage() }
+    Shortcut { sequence: "V"; enabled: !root.overlaysOpen && !textDialog.visible; onActivated: board.tool = "select" }
+    Shortcut { sequence: "Delete"; enabled: !root.overlaysOpen && !textDialog.visible && board.selectedCount > 0; onActivated: board.deleteSelection() }
+    Shortcut { sequence: "Ctrl+D"; enabled: !root.overlaysOpen && !textDialog.visible && board.selectedCount > 0; onActivated: board.duplicateSelection() }
+    Shortcut { sequence: "T"; enabled: !root.overlaysOpen && !textDialog.visible; onActivated: board.tool = "text" }
+    Shortcut { sequence: "P"; enabled: !root.overlaysOpen && !textDialog.visible; onActivated: board.tool = "pen" }
+    Shortcut { sequence: "H"; enabled: !root.overlaysOpen && !textDialog.visible; onActivated: board.tool = "hand" }
+    Shortcut { sequence: "Ctrl+Z"; enabled: !root.overlaysOpen && !textDialog.visible && !board.drawing; onActivated: App.undo() }
+    Shortcut { sequence: "Ctrl+Shift+Z"; enabled: !root.overlaysOpen && !textDialog.visible && !board.drawing; onActivated: App.redo() }
+    Shortcut { sequence: "Ctrl+S"; enabled: !root.overlaysOpen && !textDialog.visible; onActivated: App.save() }
+    Shortcut { sequence: "Ctrl+Shift+S"; enabled: !root.overlaysOpen && !textDialog.visible; onActivated: root.saveAsRequested() }
 }

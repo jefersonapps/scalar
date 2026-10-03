@@ -24,7 +24,7 @@ QVariantList CanvasItem::selectionHandles() const{
     add({b.right,b.bottom},"resize",0);add({b.center().x,b.top-28/(view_.zoom*view_.pixelsPerMm)},"rotate",0);return result;
 }
 QString CanvasItem::selectionName() const{
-    const auto selected=selectedObjects();if(selected.size()!=1)return QString::number(selected.size())+" objetos";if(const auto* s=std::get_if<ShapeObject>(&selected[0]))return QString::fromStdString(shapeName(s->kind));return std::holds_alternative<ImageObject>(selected[0])?"Imagem":"Traço";
+    const auto selected=selectedObjects();if(selected.size()!=1)return QString::number(selected.size())+" objetos";if(const auto* s=std::get_if<ShapeObject>(&selected[0]))return QString::fromStdString(shapeName(s->kind));if(std::holds_alternative<TextObject>(selected[0]))return "Texto";return std::holds_alternative<ImageObject>(selected[0])?"Imagem":"Traço";
 }
 double CanvasItem::selectedWidth() const{
     const auto selected=selectedObjects();if(selected.empty())return 0.85;
@@ -78,12 +78,14 @@ void CanvasItem::commitSelection(){
     if(length(lastPan_-dragStart_)>0.01){for(std::size_t i=0;i<editBefore_.size();++i)changes.push_back({editBefore_[i],editPreview_[i]});}
     state_=State::Idle;editBefore_.clear();editPreview_.clear();if(controller_)controller_->changeObjects(std::move(changes),CommandKind::TransformObject);selectionUpdated();
 }
+QString CanvasItem::selectedTextId() const {const auto selected=selectedObjects();if(selected.size()==1&&std::holds_alternative<TextObject>(selected[0]))return QString::fromStdString(objectId(selected[0]));return {};}
+void CanvasItem::editSelectedText(){const auto id=selectedTextId();if(!id.isEmpty())emit textRequested({},id);}
 void CanvasItem::deleteSelection(){
     if(!controller_)return;std::vector<ObjectChange> changes;for(auto o:selectedObjects())changes.push_back({o,{}});selection_.clear();controller_->changeObjects(std::move(changes),CommandKind::DeleteObject);selectionUpdated();
 }
 void CanvasItem::duplicateSelection(){
     if(!controller_)return;std::vector<ObjectChange> changes;auto selected=selectedObjects();selection_.clear();auto z=controller_->nextZIndex();
-    for(auto o:selected){o=transformed(o,{},{5,5});const auto id=newId();if(std::holds_alternative<ImageObject>(o))controller_->aliasImage(objectId(o),id);std::visit([&](auto& s){s.id=id;s.properties.zIndex=z++;},o);changes.push_back({{},o});selection_.select(id,true);}
+    for(auto o:selected){o=transformed(o,{},{5,5});const auto id=newId();if(std::holds_alternative<ImageObject>(o)||std::holds_alternative<TextObject>(o))controller_->aliasImage(objectId(o),id);std::visit([&](auto& s){s.id=id;s.properties.zIndex=z++;},o);changes.push_back({{},o});selection_.select(id,true);}
     controller_->changeObjects(std::move(changes),CommandKind::AddObject);selectionUpdated();
 }
 void CanvasItem::recognizeSelection(){

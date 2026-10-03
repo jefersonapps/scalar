@@ -13,7 +13,7 @@
 #include <QLoggingCategory>
 int main(int argc,char** argv){
     QSurfaceFormat format;format.setSamples(4);QSurfaceFormat::setDefaultFormat(format);
-    QGuiApplication app(argc,argv);app.setOrganizationName("Scalar");app.setApplicationName("Scalar");app.setApplicationVersion("0.2.0");
+    QGuiApplication app(argc,argv);app.setOrganizationName("Scalar");app.setApplicationName("Scalar");app.setApplicationVersion("0.3.0");
     QQuickStyle::setStyle("Basic");
     QCommandLineParser parser;parser.addHelpOption();parser.addVersionOption();
     parser.addOption({"smoke-test","Exit after a short UI startup check."});

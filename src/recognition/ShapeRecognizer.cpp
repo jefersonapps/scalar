@@ -1,6 +1,8 @@
 #include "ShapeRecognizer.h"
 #include <array>
 #include <numbers>
+#include <functional>
+#include <unordered_set>
 namespace scalar {
 namespace {
 double pathLength(const std::vector<Point>& p){double len=0;
@@ -86,7 +88,7 @@ std::vector<Point> simplifyRdp(const std::vector<Point>& p,double epsilon){
     return result;
 
 }
-RecognitionResult recognizeShape(const StrokeObject& stroke){
+static RecognitionResult recognizeConfidentShape(const StrokeObject& stroke){
     if(stroke.samples.size()<4)return {};
 
     std::vector<Point> raw;
@@ -153,8 +155,8 @@ RecognitionResult recognizeShape(const StrokeObject& stroke){
         last=step;
     }
 
-    RecognitionResult polygonFallback,genericPolygon;
-    double genericScore=1e9;
+    RecognitionResult polygonFallback,regularPolygon;
+    double regularScore=1e9;
     // Try progressively larger simplification scales for bowed handwritten sides.
     // Keep a relaxed polygon candidate while checking for smooth round shapes.
     for (const double tolerance : {0.003, 0.006, 0.012, 0.022, 0.035, 0.055, 0.08, 0.11, 0.15}) {
@@ -206,9 +208,18 @@ RecognitionResult recognizeShape(const StrokeObject& stroke){
         error=std::sqrt(error/p.size())/diagonal;
 
         const double score=error+0.05*std::abs(double(left.size())-double(corners.size()));
-        if(error<0.035&&maximumError<0.12&&len/perimeter<1.22&&score<genericScore){
-            auto polygon=shape;polygon.kind=ShapeKind::Polygon;polygon.vertices=left;
-            genericPolygon={polygon,1-error*4};genericScore=score;
+        if(convex&&left.size()>=5&&left.size()<=12&&error<0.035&&maximumError<0.12&&len/perimeter<1.22&&score<regularScore){
+            Point center;for(auto v:left)center=center+v;center=center*(1./left.size());
+            double area=0;for(std::size_t i=0;i<left.size();++i){const auto a=left[i]-center,b=left[(i+1)%left.size()]-center;area+=a.x*b.y-a.y*b.x;}
+            const double direction=area>0?1.:-1.;Point correlation;
+            for(std::size_t i=0;i<left.size();++i){const double a=direction*2*std::numbers::pi*i/left.size();const auto v=left[i]-center;
+                correlation=correlation+Point{v.x*std::cos(a)+v.y*std::sin(a),v.y*std::cos(a)-v.x*std::sin(a)};}
+            const double angle=std::atan2(correlation.y,correlation.x),radius=length(correlation)/left.size();
+            std::vector<Point> regular;double deviation=0;
+            for(std::size_t i=0;i<left.size();++i){const double a=angle+direction*2*std::numbers::pi*i/left.size();regular.push_back(center+Point{radius*std::cos(a),radius*std::sin(a)});deviation+=std::pow(length(left[i]-regular.back()),2);}
+            deviation=std::sqrt(deviation/left.size())/std::max(radius,0.01);
+            if(deviation<0.22){auto polygon=shape;polygon.kind=ShapeKind::Polygon;polygon.vertices=std::move(regular);
+                regularPolygon={polygon,1-error*4};regularScore=score;}
         }
         if(convex&&error<0.065&&maximumError<0.17&&len/perimeter<1.22){
             if(left.size()==3&&corners.size()==3){shape.kind=ShapeKind::Triangle;
@@ -246,9 +257,9 @@ RecognitionResult recognizeShape(const StrokeObject& stroke){
         }
     }
     }
-    if(!polygonFallback.shape)polygonFallback=genericPolygon;
-    const bool hasStrongCorners=corners.size()>=3&&genericPolygon.shape
-        &&std::abs(double(corners.size())-double(genericPolygon.shape->vertices.size()))<=2;
+    if(!polygonFallback.shape)polygonFallback=regularPolygon;
+    const bool hasStrongCorners=corners.size()>=3&&regularPolygon.shape
+        &&std::abs(double(corners.size())-double(regularPolygon.shape->vertices.size()))<=2;
     if(const auto center=circleCenter(p,mean)){
         double radius=0;
         for(auto v:p)radius+=length(v-*center);
@@ -302,6 +313,56 @@ RecognitionResult recognizeShape(const StrokeObject& stroke){
         }
     return polygonFallback;
 
+}
+RecognitionResult recognizeShape(const StrokeObject& stroke){
+    if(stroke.samples.empty())return {};
+    if(auto result=recognizeConfidentShape(stroke);result.shape)return result;
+    // Hold is an explicit request to straighten the gesture, including hesitant
+    // endings. PCA keeps terminal jitter from defeating nearly straight lines.
+    ShapeObject shape;shape.id=stroke.id;shape.style=stroke.style;shape.properties=stroke.properties;++shape.properties.revision;
+    Point mean;for(const auto& s:stroke.samples)mean=mean+s.position;mean=mean*(1./stroke.samples.size());
+    double xx=0,xy=0,yy=0;for(const auto& s:stroke.samples){const auto p=s.position-mean;xx+=p.x*p.x;xy+=p.x*p.y;yy+=p.y*p.y;}
+    const double angle=.5*std::atan2(2*xy,xx-yy);const Point direction{std::cos(angle),std::sin(angle)};
+    double lo=1e9,hi=-1e9,top=1e9,bottom=-1e9;
+    for(const auto& s:stroke.samples){const auto p=rotatePoint(s.position,mean,-angle)-mean;lo=std::min(lo,p.x);hi=std::max(hi,p.x);top=std::min(top,p.y);bottom=std::max(bottom,p.y);}
+    const auto extent=hi-lo,thickness=bottom-top;const auto chord=length(stroke.samples.back().position-stroke.samples.front().position);
+    if(extent<1||thickness<extent*.18||chord>std::hypot(extent,thickness)*.35){
+        shape.kind=ShapeKind::Line;shape.vertices={mean+direction*lo,mean+direction*hi};shape.fillOpacity=0;
+        if(length(shape.vertices[1]-shape.vertices[0])<.2)shape.vertices[1]=shape.vertices[0]+Point{.2,0};
+        if(length(shape.vertices[0]-stroke.samples.front().position)>length(shape.vertices[1]-stroke.samples.front().position))std::reverse(shape.vertices.begin(),shape.vertices.end());
+    }else{
+        shape.kind=std::max(extent,thickness)/std::max(.1,std::min(extent,thickness))<1.2?ShapeKind::Circle:ShapeKind::Ellipse;
+        shape.center=rotatePoint(mean+Point{(lo+hi)/2,(top+bottom)/2},mean,angle);shape.radiusX=std::max(.2,extent/2);shape.radiusY=std::max(.2,thickness/2);shape.rotation=angle;
+        if(shape.kind==ShapeKind::Circle)shape.radiusX=shape.radiusY=(shape.radiusX+shape.radiusY)/2;
+    }
+    return {shape,.76};
+}
+std::optional<ClosedLines> closeConnectedLines(const Page& page,const std::string& newestId,double tolerance){
+    std::vector<const ShapeObject*> lines;const ShapeObject* newest=nullptr;
+    for(const auto& shape:page.shapes)if(shape.kind==ShapeKind::Line&&shape.vertices.size()==2&&shape.properties.visible&&!shape.properties.locked){
+        if(shape.id==newestId)newest=&shape;else lines.push_back(&shape);
+    }
+    if(!newest||!std::isfinite(tolerance)||tolerance<=0)return {};
+    std::sort(lines.begin(),lines.end(),[](const auto* a,const auto* b){return a->properties.zIndex>b->properties.zIndex;});
+    // Limit exploration to nearby endpoints, so unrelated lines do not slow input.
+    std::vector<std::string> ids{newestId};std::vector<Point> vertices{newest->vertices[0]};
+    std::unordered_set<std::string> used{newestId};std::optional<ClosedLines> result;int budget=4096;
+    std::function<bool(Point)> search=[&](Point end){
+        if(--budget<=0)return false;
+        if(ids.size()>=3&&length(end-newest->vertices[0])<=tolerance){
+            auto polygon=vertices;polygon[0]=(end+newest->vertices[0])*.5;
+            if(!isSimplePolygon(polygon))return false;ShapeObject shape=*newest;shape.id=newId();shape.kind=ids.size()==3?ShapeKind::Triangle:ShapeKind::Polygon;shape.vertices=std::move(polygon);shape.fillOpacity=.10;++shape.properties.revision;
+            result=ClosedLines{shape,ids};return true;
+        }
+        if(ids.size()>=12)return false;
+        for(const auto* line:lines)if(!used.contains(line->id))for(int first=0;first<2;++first){
+            if(length(line->vertices[first]-end)>tolerance)continue;
+            const auto next=line->vertices[1-first];if(length(next-end)<tolerance*.5)continue;
+            used.insert(line->id);ids.push_back(line->id);vertices.push_back((line->vertices[first]+end)*.5);
+            if(search(next))return true;vertices.pop_back();ids.pop_back();used.erase(line->id);
+        }return false;
+    };
+    search(newest->vertices[1]);return result;
 }
 std::string shapeName(ShapeKind kind){switch(kind){case ShapeKind::Line:return "Linha";
         case ShapeKind::Circle:return "Círculo";

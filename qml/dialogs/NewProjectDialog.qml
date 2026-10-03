@@ -42,7 +42,7 @@ C.ModernDialog {
         }
         C.SegmentedControl { id: orientation; Layout.fillWidth: true; options: ["Retrato", "Paisagem"]; onSelected: index => currentIndex = index }
         Text { text: "Fundo da página"; color: Theme.secondary; font.pixelSize: Theme.caption }
-        C.SelectField { id: background; Layout.fillWidth: true; model: ["Branco", "Preto", "Verde"] }
+        C.SelectField { id: background; Layout.fillWidth: true; model: App.backgroundPresets.map(p => p.name) }
         Text {
             Layout.fillWidth: true
             text: preset.currentIndex === 0 ? "A4 · 210 × 297 mm" : preset.currentIndex === 1 ? "Carta · 215,9 × 279,4 mm" : "Dimensões em milímetros · mínimo 10, máximo 5000"

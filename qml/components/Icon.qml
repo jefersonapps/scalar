@@ -8,6 +8,9 @@ Item {
     implicitWidth: Theme.icon
     implicitHeight: Theme.icon
     readonly property var paths: ({
+        palette: "M12 3 A9 9 0 1 0 12 21 H14 Q17 21 16 18 Q15 16 18 15 Q22 14 21 10 Q20 3 12 3 Z M7 9 H7.01 M10 6 H10.01 M15 6 H15.01 M18 10 H18.01",
+        text: "M4 5 V3 H20 V5 M12 3 V21 M8 21 H16",
+        background: "M4 4 H20 V20 H4 Z M9 4 V20 M15 4 V20 M4 9 H20 M4 15 H20",
         eraser: "M4 13 L13 4 Q15 2 17 4 L21 8 Q23 10 21 12 L12 21 H7 L3 17 Q2 15 4 13 Z M8 9 L16 17 M12 21 H22",
         image: "M5 3 H19 Q21 3 21 5 V19 Q21 21 19 21 H5 Q3 21 3 19 V5 Q3 3 5 3 Z M3 16 L8 11 Q9 10 10 11 L14 15 L16 13 Q17 12 18 13 L21 16 M17 7 A1 1 0 1 1 15 7 A1 1 0 1 1 17 7",
         select: "M5 3 Q4 2 4 4 V19 Q4 20 5 19 L9 15 L12 21 Q13 22 14 21 L15 20 Q16 19 15 18 L12 13 L19 12 Q21 12 19 11 Z",

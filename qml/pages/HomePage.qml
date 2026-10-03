@@ -3,11 +3,14 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import "../components" as C
 import "../theme"
+import "../dialogs"
 Item {
     id: root
     signal createRequested()
     signal openRequested()
     signal settingsRequested()
+    DeleteProjectDialog { id: deletion }
+    TrashDialog { id: trash; onPermanentDeletionRequested: entry => deletion.ask(entry,true) }
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: width < Theme.mediumBreakpoint ? Theme.xl : Theme.section
@@ -27,6 +30,7 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Theme.lg
                 Text { text: "ESPAÇO PARA IDEIAS"; visible: root.width > Theme.mediumBreakpoint; color: Theme.secondary; font.pixelSize: Theme.caption; font.letterSpacing: 2 }
+                C.IconButton { objectName: "openTrashButton"; iconName: "trash"; label: "Lixeira (" + App.trashedProjects.length + ")"; onClicked: trash.open() }
                 C.IconButton { iconName: "settings"; label: "Configurações"; onClicked: root.settingsRequested() }
             }
         }
@@ -60,6 +64,7 @@ Item {
                 updated: modelData.updated
                 thumbnail: modelData.thumbnail
                 onClicked: App.openPath(modelData.path)
+                onTrashRequested: deletion.ask(modelData,false)
             }
             ScrollBar.vertical: ScrollBar {}
             ColumnLayout {

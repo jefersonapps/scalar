@@ -72,7 +72,36 @@ struct ImageObject {
     int pixelWidth=0,pixelHeight=0;
     ObjectProperties properties{};
 };
-using CanvasObject=std::variant<StrokeObject,ShapeObject,ImageObject>;
+struct MathFragment {
+    std::string latex,svg;
+    bool display=false;
+    std::size_t start=0,length=0; // UTF-8 byte offsets including delimiters
+    double widthEm=0,heightEm=0;
+};
+struct TextObject {
+    std::string id,source,fontFamily;
+    PenStyle style; // shared RGBA color, retained across text and math edits
+    double fontSizePt=18;
+    bool bold=false,italic=false;
+    int alignment=0; // left, center, right
+    std::vector<Point> corners;
+    std::vector<MathFragment> math;
+    ObjectProperties properties{};
+};
+using CanvasObject=std::variant<StrokeObject,ShapeObject,ImageObject,TextObject>;
+enum class GridType { None, Ruled, Square, Dots, Millimetric, Isometric };
+struct BackgroundStyle {
+    GridType gridType=GridType::None;
+    std::uint32_t gridColor=0x64748bff;
+    double opacity=0.25, thicknessMm=0.15, spacingX=5, spacingY=5;
+    bool valid() const {
+        return int(gridType)>=0&&int(gridType)<=5&&std::isfinite(opacity)&&opacity>=0&&opacity<=1
+            &&std::isfinite(thicknessMm)&&thicknessMm>=0.02&&thicknessMm<=2
+            &&std::isfinite(spacingX)&&spacingX>=1&&spacingX<=100
+            &&std::isfinite(spacingY)&&spacingY>=1&&spacingY<=100;
+    }
+    bool operator==(const BackgroundStyle&) const=default;
+};
 struct Page {
     std::string id;
     PageSize size;
@@ -80,6 +109,8 @@ struct Page {
     std::vector<StrokeObject> strokes;
     std::vector<ShapeObject> shapes{};
     std::vector<ImageObject> images{};
+    BackgroundStyle backgroundStyle{};
+    std::vector<TextObject> texts{};
 };
 struct Project {
     std::string id, name, createdAt, updatedAt;

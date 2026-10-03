@@ -6,6 +6,7 @@ C.GlassPanel {
     id: root
     property var canvas
     readonly property bool imageSelected: canvas && canvas.selectionName === "Imagem"
+    readonly property bool textSelected: canvas && canvas.selectionName === "Texto"
     readonly property bool fillEditable: canvas && ["Círculo", "Elipse", "Triângulo", "Retângulo", "Quadrado", "Polígono"].indexOf(canvas.selectionName) >= 0
     implicitWidth: Theme.propertiesWidth
     implicitHeight: form.implicitHeight+Theme.lg*2
@@ -14,7 +15,7 @@ C.GlassPanel {
         anchors.fill: parent; anchors.margins: Theme.lg; spacing: Theme.sm
         Text { text: root.canvas ? root.canvas.selectionName : "Seleção"; color: Theme.text; font.pixelSize: Theme.body; font.weight: Font.DemiBold }
         Text { text: "Arraste para mover · handles para editar"; color: Theme.secondary; font.pixelSize: Theme.caption; Layout.fillWidth: true; wrapMode: Text.WordWrap }
-        Text { visible: !root.imageSelected; text: "Cor do contorno"; color: Theme.secondary; font.pixelSize: Theme.caption }
+        Text { visible: !root.imageSelected; text: root.textSelected ? "Cor do texto" : "Cor do contorno"; color: Theme.secondary; font.pixelSize: Theme.caption }
         Flow {
             visible: !root.imageSelected; Layout.fillWidth: true; Layout.preferredHeight: childrenRect.height; spacing: Theme.xs
             Repeater {
@@ -22,8 +23,8 @@ C.GlassPanel {
                 C.ColorButton { required property string modelData; swatch: modelData; selected: root.canvas && swatch === root.canvas.selectedBorderColor; onClicked: root.canvas.setSelectedColor(swatch) }
             }
         }
-        Text { visible: !root.imageSelected; text: "Espessura da borda"; color: Theme.secondary; font.pixelSize: Theme.caption }
-        C.ModernSlider { Layout.fillWidth: true; visible: !root.imageSelected; from: 0.2; to: 3; value: root.canvas ? root.canvas.selectedWidth : 0.85; onPressedChanged: { if(!pressed) root.canvas.setSelectedWidth(value) } }
+        Text { visible: !root.imageSelected && !root.textSelected; text: "Espessura da borda"; color: Theme.secondary; font.pixelSize: Theme.caption }
+        C.ModernSlider { Layout.fillWidth: true; visible: !root.imageSelected && !root.textSelected; from: 0.2; to: 3; value: root.canvas ? root.canvas.selectedWidth : 0.85; onPressedChanged: { if(!pressed) root.canvas.setSelectedWidth(value) } }
         Text { visible: root.fillEditable; text: "Cor do preenchimento"; color: Theme.secondary; font.pixelSize: Theme.caption }
         Flow {
             objectName: "fillColorPalette"
@@ -41,6 +42,7 @@ C.GlassPanel {
         }
         Text { visible: root.fillEditable; text: "Opacidade do preenchimento"; color: Theme.secondary; font.pixelSize: Theme.caption }
         C.ModernSlider { Layout.fillWidth: true; visible: root.fillEditable; from: 0; to: 1; value: root.canvas ? root.canvas.selectedFill : 0.1; onPressedChanged: { if(!pressed) root.canvas.setSelectedFill(value) } }
+        C.ActionButton { text: "Editar texto / LaTeX"; visible: root.textSelected; Layout.fillWidth: true; onClicked: root.canvas.editSelectedText() }
         C.ActionButton { text: "Reconhecer forma"; Layout.fillWidth: true; visible: root.canvas && root.canvas.selectionName === "Traço"; enabled: visible; onClicked: root.canvas.recognizeSelection() }
         RowLayout {
             C.IconButton { iconName: "duplicate"; label: "Duplicar (Ctrl+D)"; onClicked: root.canvas.duplicateSelection() }

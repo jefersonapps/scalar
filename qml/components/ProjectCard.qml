@@ -7,6 +7,7 @@ AbstractButton {
     property string projectName: ""
     property string updated: ""
     property url thumbnail: ""
+    signal trashRequested()
     implicitWidth: Theme.cardWidth
     implicitHeight: Theme.cardHeight
     hoverEnabled: true
@@ -26,8 +27,15 @@ AbstractButton {
             Image { anchors.fill: parent; anchors.margins: Theme.sm; source: root.thumbnail; fillMode: Image.PreserveAspectFit; asynchronous: true; cache: false }
             Icon { anchors.centerIn: parent; name: "page"; color: Theme.secondary; visible: root.thumbnail.toString().length === 0 }
         }
-        Text { Layout.fillWidth: true; text: root.projectName; elide: Text.ElideRight; color: Theme.text; font.pixelSize: Theme.body; font.weight: Font.DemiBold }
-        Text { text: "Alterado em " + Qt.formatDateTime(new Date(root.updated), "dd MMM · hh:mm"); color: Theme.secondary; font.pixelSize: Theme.caption }
+        RowLayout {
+            Layout.fillWidth: true
+            ColumnLayout {
+                Layout.fillWidth: true; spacing: Theme.xs
+                Text { Layout.fillWidth: true; text: root.projectName; elide: Text.ElideRight; color: Theme.text; font.pixelSize: Theme.body; font.weight: Font.DemiBold }
+                Text { text: Qt.formatDateTime(new Date(root.updated), "dd MMM · hh:mm"); color: Theme.secondary; font.pixelSize: Theme.caption }
+            }
+            IconButton { objectName: "trashProjectButton"; iconName: "trash"; label: "Mover " + root.projectName + " para a lixeira"; enabled: !App.busy; onClicked: root.trashRequested() }
+        }
     }
     padding: Theme.lg
 }

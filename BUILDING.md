@@ -2,7 +2,7 @@
 
 ## Dependências
 
-C++20, CMake >= 3.21, Qt >= 6.4 com Core, Gui, Quick, QuickControls2, Concurrent, Sql e Test. SQLite plugin QSQLITE precisa estar disponível. QML usa QtQuick, Controls, Layouts, Dialogs, Shapes, Templates, Window e QtQml.WorkerScript. Não precisa de Qt Widgets. CMake não baixa dependências.
+C++20, CMake >= 3.21, Qt >= 6.4 com Core, Gui, Quick, QuickControls2, Concurrent, Sql e Test. SQLite plugin QSQLITE precisa estar disponível. QML usa QtQuick, Controls, Layouts, Dialogs, Shapes, Templates, Window e QtQml.WorkerScript. Não precisa de Qt Widgets. O build prepara automaticamente as dependências locais de matemática quando Python >= 3.12 está disponível na máquina de desenvolvimento. O usuário final recebe essas dependências no pacote.
 
 ### Ubuntu / Mint
 
@@ -92,3 +92,21 @@ A sessão gráfica `:0` não pode ser acessada pelo sandbox (`could not connect 
 Desktop test também cobre hold-to-line, ajuste antes do release, undo para stroke, borracha parcial e undo/redo, inserção de círculo, seleção/handles, mover, escala/raio e rotação, estilo/fill, duplicar/excluir, Ctrl+V de bitmap, URLs no clipboard, importação por arquivo e drag/drop. Imagens e formas são salvas/reabertas. O teste de persistência verifica v1/v2, PNG incorporado, círculo e decode real; testes de núcleo verificam fitting de formas e cortes analíticos da borracha.
 
 Captura do tema novo com imagens: `build/screenshots/milestone2-dark-images.png`. Veja `docs/MILESTONE_2.md` para uso e limites. SVG/WebP dependem de plugins de imagem Qt; o diálogo inclui extensões, mas importer retorna erro claro se o codec não estiver disponível. Nenhuma biblioteca de imagem externa foi adicionada.
+
+## Milestone 3 e pacote offline
+
+O alvo padrão tenta preparar MathJax 3.2.2 e um Node privado. Python >= 3.12 é ferramenta da máquina que compila/empacota, não dependência do usuário final. Não exige npm instalado: o preparador obtém Node, valida SHA-256, usa seu npm para instalar o pacote e executa uma conversão real antes de marcar o runtime completo. package-lock.json fixa dependências transitivas. O bootstrap só precisa de internet nessa etapa.
+
+```sh
+cmake --build build --target math_runtime
+./build/scalar
+cmake --install build --prefix /tmp/scalar-install
+QT_QPA_PLATFORM=offscreen /tmp/scalar-install/bin/scalar --smoke-test
+cmake --build build --target package
+```
+
+A instalação e o CPack recusam distribuir matemática incompleta. Incluem runtime e JS em share/scalar/math; executable descobre esse diretório relativamente. Compilar sem rede permite desenvolvimento da UI; se o runtime ainda não estiver preparado, o build informa indisponibilidade e conversão real retorna erro. `-DSCALAR_PREPARE_MATH=OFF` desativa somente a tentativa no build de desenvolvimento; install continua estrito. `SCALAR_MATH_RUNTIME` pode apontar para runtime local em testes.
+
+O pacote TGZ atual não é um instalador completo dos runtimes Qt do sistema. No Linux, as bibliotecas Qt/QML/SQLite ainda precisam estar disponíveis; no Windows, windeployqt é necessário na máquina que gera a distribuição. Node/MathJax já são incluídos e não dependem de instalação manual pelo usuário final. Assinatura e instaladores nativos Windows/Linux seguem pendentes.
+
+Nove entradas CTest cobrem núcleo, reconhecimento, borracha, persistência, lixeira, matemática, desktop e dois smokes. A suíte MathTests executa conversão real quando o runtime está presente; qualquer skip precisa ser reportado. Capturas da M3 ficam em build/screenshots/milestone3-*.png. Equações e grades são meshes QSG e não aparecem no backend offscreen software desta máquina; suas geometrias são verificadas pelos testes. GPU/stylus física e deploy Windows continuam exigindo validação manual.

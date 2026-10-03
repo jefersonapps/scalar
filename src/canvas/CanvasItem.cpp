@@ -12,7 +12,7 @@ CanvasItem::CanvasItem(QQuickItem* parent):QQuickItem(parent){
     setFlag(ItemHasContents,true);setFlag(ItemIsFocusScope,true);setAcceptedMouseButtons(Qt::LeftButton|Qt::MiddleButton);setAcceptTouchEvents(true);setAcceptHoverEvents(true);setClip(true);
     holdTimer_.setSingleShot(true);connect(&holdTimer_,&QTimer::timeout,this,&CanvasItem::beginRecognition);
     connect(&recognitionWatcher_,&QFutureWatcher<RecognitionResult>::finished,this,[this]{
-        if(requestEpoch_!=inputEpoch_||!controller_)return;const auto result=recognitionWatcher_.result();if(!result.shape||result.confidence<0.70)return;
+        if(requestEpoch_!=inputEpoch_||!controller_)return;const auto result=recognitionWatcher_.result();if(!result.shape)return;
         if(state_==State::Drawing||state_==State::PossibleHold){previewShape_=*result.shape;if(recognitionDashed_||shiftHeld_)previewShape_->style.pattern=LinePattern::Dashed;state_=State::ShapePreview;emit drawingChanged();update();}
         else if(state_==State::Idle&&controller_->page()){
             if(auto before=findObject(*controller_->page(),current_.id);before&&std::holds_alternative<StrokeObject>(*before)&&properties(*before).revision==current_.properties.revision){controller_->changeObjects({{before,CanvasObject(*result.shape)}},CommandKind::ConvertStrokeToShape);selectionUpdated();}
@@ -30,7 +30,7 @@ void CanvasItem::setController(AppController* c){
     if(controller_==c)return;if(controller_)disconnect(controller_,nullptr,this,nullptr);controller_=c;
     if(c)connect(c,&AppController::documentChanged,this,[this]{if(controller_->page())selection_.prune(*controller_->page());else selection_.clear();selectionUpdated();update();});if(c&&c->pageColor().lightness()<128)setPenColor(QColor("#f4f4f5"));emit controllerChanged();update();
 }
-void CanvasItem::setTool(const QString& t){if(t!="eraser"&&t!="pen"&&t!="hand"&&t!="select"&&t!="line"&&t!="circle"&&t!="ellipse"&&t!="triangle"&&t!="rectangle")return;cancelStroke();tool_=t;emit toolChanged();}
+void CanvasItem::setTool(const QString& t){if(t!="text"&&t!="eraser"&&t!="pen"&&t!="hand"&&t!="select"&&t!="line"&&t!="circle"&&t!="ellipse"&&t!="triangle"&&t!="rectangle")return;cancelStroke();tool_=t;emit toolChanged();}
 void CanvasItem::setPenColor(const QColor& c){if(!c.isValid())return;color_=c;style_.rgba=(std::uint32_t(c.red())<<24)|(std::uint32_t(c.green())<<16)|(std::uint32_t(c.blue())<<8)|255;emit penChanged();}
 void CanvasItem::setPenWidth(double w){style_.maxWidthMm=std::clamp(w,0.2,5.0);style_.minWidthMm=std::min(0.15,style_.maxWidthMm);emit penChanged();}
 void CanvasItem::setPressureGamma(double g){style_.gamma=std::clamp(g,0.3,3.0);emit penChanged();}
@@ -40,7 +40,12 @@ void CanvasItem::setShapeLineStyle(const QString& value){
     manualShapePattern_=value=="dashed"?LinePattern::Dashed:value=="dotted"?LinePattern::Dotted:LinePattern::Solid;
     emit penChanged();
 }
-void CanvasItem::viewUpdated(){update();emit viewChanged();emit selectionChanged();}
+QString CanvasItem::penLineStyle() const {return style_.pattern==LinePattern::Dashed?"dashed":style_.pattern==LinePattern::Dotted?"dotted":"solid";}
+void CanvasItem::setPenLineStyle(const QString& value){
+    if(value!="solid"&&value!="dashed"&&value!="dotted")return;
+    style_.pattern=value=="dashed"?LinePattern::Dashed:value=="dotted"?LinePattern::Dotted:LinePattern::Solid;emit penChanged();
+}
+void CanvasItem::viewUpdated(){if(controller_)controller_->refreshTextTextures(view_.pixelsPerMm*view_.zoom*(window()?window()->devicePixelRatio():1));update();emit viewChanged();emit selectionChanged();}
 void CanvasItem::fitPage(){
     if(!controller_||!controller_->active()||width()<1||height()<1)return;
     cancelStroke();const double margin=40;
@@ -53,21 +58,21 @@ void CanvasItem::begin(PointerSample s){
     if(s.position.x<0||s.position.y<0||s.position.x>controller_->pageWidth()||s.position.y>controller_->pageHeight())return;
     selection_.clear();selectionUpdated();++inputEpoch_;holdTimer_.stop();previewShape_.reset();
     recognitionDashed_=false;input_.reset();current_={newId(),style_,{input_.filter(s)}};holdAnchor_=s.position;
-    state_=State::Drawing;emit drawingChanged();update();
+    state_=State::Drawing;if(tool_=="pen"&&controller_->recognitionEnabled())holdTimer_.start(controller_->holdDelay());emit drawingChanged();update();
 }
 void CanvasItem::append(PointerSample s){
     if(!drawing())return;
     if(state_==State::ShapePreview){if(previewShape_&&previewShape_->kind==ShapeKind::Line){previewShape_->vertices[1]=s.position;update();}return;}
     s=input_.filter(s);
     if(current_.samples.empty()||length(s.position-current_.samples.back().position)>0.005)current_.samples.push_back(s);
-    if(controller_&&controller_->recognitionEnabled()&&current_.samples.size()>=4){
+    if(controller_&&controller_->recognitionEnabled()&&!current_.samples.empty()){
         if(length(s.position-holdAnchor_)>0.6){holdAnchor_=s.position;holdTimer_.start(controller_->holdDelay());state_=State::PossibleHold;++inputEpoch_;}
         else if(!holdTimer_.isActive()&&state_!=State::PossibleHold){holdTimer_.start(controller_->holdDelay());state_=State::PossibleHold;}
     }
     update();
 }
 void CanvasItem::beginRecognition(){
-    if(!controller_||!controller_->recognitionEnabled()||(state_!=State::Drawing&&state_!=State::PossibleHold)||current_.samples.size()<4)return;
+    if(!controller_||!controller_->recognitionEnabled()||(state_!=State::Drawing&&state_!=State::PossibleHold)||current_.samples.empty())return;
     if(recognitionWatcher_.isRunning()){holdTimer_.start(100);return;}
     recognitionDashed_=shiftHeld_;requestEpoch_=inputEpoch_;const auto snapshot=current_;
     recognitionWatcher_.setFuture(QtConcurrent::run([snapshot]{return recognizeShape(snapshot);}));
@@ -93,6 +98,7 @@ ShapeObject CanvasItem::directShape(Point a,Point b) const{
 }
 void CanvasItem::startPointer(PointerSample s,Qt::KeyboardModifiers modifiers){
     shiftHeld_=modifiers.testFlag(Qt::ShiftModifier);
+    if(tool_=="text"){emit textRequested(QPointF(s.position.x,s.position.y),{});return;}
     if(tool_=="eraser"){
         if(!controller_||!controller_->page())return;cancelStroke();selection_.clear();state_=State::Erasing;lastPan_=s.position;eraseBefore_.clear();erasePreview_.clear();eraseAt(s.position);return;
     }
@@ -202,5 +208,14 @@ void CanvasItem::keyPressEvent(QKeyEvent* e){if(e->key()==Qt::Key_Shift){shiftHe
     if(state_==State::ShapePreview&&previewShape_){previewShape_->style.pattern=LinePattern::Dashed;recognitionDashed_=true;emit drawingChanged();update();}e->accept();}
     else if(e->key()==Qt::Key_Space){space_=true;e->accept();}else if(e->key()==Qt::Key_Escape){cancelStroke();e->accept();}else QQuickItem::keyPressEvent(e);}
 void CanvasItem::keyReleaseEvent(QKeyEvent* e){if(e->key()==Qt::Key_Shift){shiftHeld_=false;e->accept();}else if(e->key()==Qt::Key_Space){space_=false;e->accept();}else QQuickItem::keyReleaseEvent(e);}
-void CanvasItem::geometryChange(const QRectF& a,const QRectF& b){QQuickItem::geometryChange(a,b);if(b.isEmpty()&&!a.isEmpty())fitPage();}
+void CanvasItem::geometryChange(const QRectF& current,const QRectF& previous){
+    QQuickItem::geometryChange(current,previous);
+    if(current.size()==previous.size()||current.isEmpty())return;
+    if(previous.isEmpty()){fitPage();return;}
+    // Keep the same world point at the viewport center without changing zoom.
+    if(state_!=State::Idle)cancelStroke();
+    view_.pan=view_.pan+Point{(current.width()-previous.width())/2,
+                             (current.height()-previous.height())/2};
+    viewUpdated();
+}
 }

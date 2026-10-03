@@ -56,7 +56,7 @@ Bounds bounds(const CanvasObject& o){
 
     if(const auto* s=std::get_if<StrokeObject>(&o)){for(const auto& sample:s->samples)p.push_back(sample.position);
         }else if(const auto* shape=std::get_if<ShapeObject>(&o))p=shapeOutline(*shape);
-    else p=std::get<ImageObject>(o).corners;
+    else std::visit([&](const auto& obj){if constexpr(requires {obj.corners;})p=obj.corners;},o);
 
     if(p.empty())return {};
 
@@ -86,7 +86,7 @@ bool hitTest(const CanvasObject& o,Point p,double tolerance){
     }
     const auto* shape=std::get_if<ShapeObject>(&o);
 
-    const auto polygon=shape?shapeOutline(*shape):std::get<ImageObject>(o).corners;
+    std::vector<Point> polygon;if(shape)polygon=shapeOutline(*shape);else std::visit([&](const auto& obj){if constexpr(requires {obj.corners;})polygon=obj.corners;},o);
 
     const bool line=shape&&shape->kind==ShapeKind::Line;
 
@@ -117,6 +117,7 @@ CanvasObject transformed(CanvasObject o,Point center,Point translation,double sx
         }
     else if(auto* image=std::get_if<ImageObject>(&o)){for(auto& p:image->corners)p=move(p);
         }
+    else if(auto* text=std::get_if<TextObject>(&o)){for(auto& p:text->corners)p=move(p);}
     else {
         auto& shape=std::get<ShapeObject>(o);
 
@@ -143,6 +144,7 @@ std::vector<CanvasObjectView> objectViews(const Page& page){
     for(const auto& s:page.strokes)result.emplace_back(&s);
     for(const auto& s:page.shapes)result.emplace_back(&s);
     for(const auto& s:page.images)result.emplace_back(&s);
+    for(const auto& s:page.texts)result.emplace_back(&s);
 
     const auto z=[](const CanvasObjectView& o){return std::visit([](const auto* s){return s->properties.zIndex;},o);
         };
@@ -158,6 +160,7 @@ std::vector<CanvasObject> objects(const Page& page){
     for(const auto& s:page.strokes)result.emplace_back(s);
     for(const auto& s:page.shapes)result.emplace_back(s);
     for(const auto& s:page.images)result.emplace_back(s);
+    for(const auto& s:page.texts)result.emplace_back(s);
 
     std::stable_sort(result.begin(),result.end(),[](const auto& a,const auto& b){return properties(a).zIndex<properties(b).zIndex;});
     return result;
@@ -167,6 +170,7 @@ std::optional<CanvasObject> findObject(const Page& page,const std::string& id){
     for(const auto& s:page.strokes)if(s.id==id)return s;
     for(const auto& s:page.shapes)if(s.id==id)return s;
     for(const auto& s:page.images)if(s.id==id)return s;
+    for(const auto& s:page.texts)if(s.id==id)return s;
     return {};
 
 }
@@ -175,8 +179,9 @@ void replaceObject(Page& page,const std::string& id,const std::optional<CanvasOb
     std::erase_if(page.shapes,[&](const auto& s){return s.id==id;});
 
     std::erase_if(page.images,[&](const auto& s){return s.id==id;});
+    std::erase_if(page.texts,[&](const auto& s){return s.id==id;});
 
-    if(object)std::visit([&](const auto& s){using T=std::decay_t<decltype(s)>;if constexpr(std::is_same_v<T,StrokeObject>)page.strokes.push_back(s);else if constexpr(std::is_same_v<T,ShapeObject>)page.shapes.push_back(s);else page.images.push_back(s);},*object);
+    if(object)std::visit([&](const auto& s){using T=std::decay_t<decltype(s)>;if constexpr(std::is_same_v<T,StrokeObject>)page.strokes.push_back(s);else if constexpr(std::is_same_v<T,ShapeObject>)page.shapes.push_back(s);else if constexpr(std::is_same_v<T,ImageObject>)page.images.push_back(s);else page.texts.push_back(s);},*object);
 
 }
 }

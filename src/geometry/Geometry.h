@@ -19,7 +19,7 @@ CanvasObject transformed(CanvasObject object,Point center,Point translation,doub
 std::string objectId(const CanvasObject& object);
 ObjectProperties& properties(CanvasObject& object);
 const ObjectProperties& properties(const CanvasObject& object);
-using CanvasObjectView=std::variant<const StrokeObject*,const ShapeObject*,const ImageObject*>;
+using CanvasObjectView=std::variant<const StrokeObject*,const ShapeObject*,const ImageObject*,const TextObject*>;
 std::vector<CanvasObjectView> objectViews(const Page& page);
 std::vector<CanvasObject> objects(const Page& page);
 std::optional<CanvasObject> findObject(const Page& page,const std::string& id);

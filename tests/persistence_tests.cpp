@@ -7,6 +7,7 @@
 #include <QBuffer>
 #include "persistence/ProjectStore.h"
 #include "persistence/Library.h"
+#include "documents/Backgrounds.h"
 using namespace scalar;
 class PersistenceTests : public QObject {
     Q_OBJECT
@@ -33,6 +34,19 @@ private slots:
         auto root=QJsonDocument::fromJson(ProjectStore::serialize(legacy)).object();root["version"]=1;
         auto pages=root["pages"].toArray();auto page=pages[0].toObject();auto objects=page["objects"].toArray();auto stroke=objects[0].toObject();auto oldStyle=stroke["style"].toObject();for(const char* key:{"pattern","dashLengthMm","gapLengthMm","dotSpacingMm"})oldStyle.remove(key);stroke["style"]=oldStyle;stroke.remove("zIndex");stroke.remove("locked");stroke.remove("visible");objects[0]=stroke;page["objects"]=objects;pages[0]=page;root["pages"]=pages;
         const auto old=ProjectStore::deserialize(QJsonDocument(root).toJson());QVERIFY(bool(old));QCOMPARE(old.project.pages[0].strokes.size(),std::size_t(1));QCOMPARE(old.project.pages[0].strokes[0].style.pattern,LinePattern::Solid);
+    }
+    void backgroundsTextAndMath(){
+        QTemporaryDir dir;Project p{newId(),"Texto e fundo","now","now",{{newId(),PageSize::letter(),0xffffffff,{}}}};
+        auto& page=p.pages[0];page.backgroundStyle={GridType::Isometric,0xcc5364ff,0.4,0.2,7,9};
+        TextObject t;t.id=newId();t.source="Área $x^2$";t.fontFamily="DejaVu Sans";t.fontSizePt=24;t.bold=true;t.italic=true;t.alignment=2;t.corners={{10,10},{80,10},{80,30},{10,30}};
+        t.math={{"x^2","<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1000 1000\"><path d=\"M0 0L1000 1000\"/></svg>",false,6,5,1,1}};page.texts.push_back(t);
+        const auto path=dir.filePath("v3.board");QVERIFY2(ProjectStore::save(path,p).isEmpty(),"v3 save");const auto loaded=ProjectStore::load(path);QVERIFY2(bool(loaded),qPrintable(loaded.error));
+        QCOMPARE(ProjectStore::serialize(loaded.project),ProjectStore::serialize(p));QCOMPARE(loaded.project.pages[0].texts[0].math[0].latex,std::string("x^2"));
+        auto broken=p;broken.pages[0].texts[0].math[0].start=0;QVERIFY(!ProjectStore::deserialize(ProjectStore::serialize(broken)));
+        broken=p;broken.pages[0].backgroundStyle.spacingY=0;QVERIFY(!ProjectStore::deserialize(ProjectStore::serialize(broken)));
+        broken=p;broken.pages[0].texts[0].math[0].svg="<svg><image href=\"file:///tmp/private.png\"/></svg>";QVERIFY(!ProjectStore::deserialize(ProjectStore::serialize(broken)));
+        {Library library(dir.filePath("presets.sqlite"));QVERIFY(library.saveBackgroundPreset("Minha grade",backgroundValues(page.background,page.backgroundStyle)));}
+        {Library library(dir.filePath("presets.sqlite"));QCOMPARE(library.backgroundPresets().size(),1);std::uint32_t color;BackgroundStyle style;QVERIFY(parseBackground(library.backgroundPresets()[0].toMap(),color,style));QVERIFY(style==page.backgroundStyle);}
     }
     void corruptArchive(){
         auto data=ProjectStore::archive("{}");QString error;data[42]='!';

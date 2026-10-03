@@ -1,5 +1,6 @@
 #include "commands/History.h"
 #include "rendering/StrokeMesh.h"
+#include "rendering/BackgroundMesh.h"
 #include <iostream>
 #include <fstream>
 #include "persistence/ZipArchive.h"
@@ -34,6 +35,21 @@ int main(int argc,char** argv) {
         check(!history.canRedo() && !history.redo(page),"redo branch retained");
         const auto stored=page.strokes.front().samples.front().position;
         view.zoomAt({100,100},2); check(page.strokes.front().samples.front().position==stored,"zoom mutated document");
+        BackgroundStyle background;History backgroundHistory;Page gridPage;
+        background.gridType=GridType::Square;background.spacingX=5;background.spacingY=10;
+        backgroundHistory.background(gridPage,0x18221eff,background);
+        check(backgroundHistory.undo(gridPage)&&gridPage.background==0xffffffff&&gridPage.backgroundStyle.gridType==GridType::None,"background undo");
+        check(backgroundHistory.redo(gridPage)&&gridPage.backgroundStyle.spacingY==10,"background redo");
+        for(auto type:{GridType::Ruled,GridType::Square,GridType::Dots,GridType::Millimetric,GridType::Isometric}){
+            background.gridType=type;const auto grid=backgroundMesh(background,{0,0,210,297},1);
+            check(!grid.empty()&&grid.size()%3==0,"invalid grid mesh");for(auto p:grid)check(std::isfinite(p.x)&&std::isfinite(p.y),"nonfinite grid");
+        }
+        background.spacingX=0;check(backgroundMesh(background,{0,0,210,297}).empty(),"zero grid spacing accepted");
+        TextObject text;text.id=newId();text.source="Aula";text.corners={{10,10},{30,10},{30,20},{10,20}};
+        check(hitTest(text,{15,15},0),"text hit test");
+        const auto moved=transformed(text,{},{5,8},2,2);near(bounds(moved).left,25);near(bounds(moved).top,28);
+        History textHistory;Page textPage;textHistory.apply(textPage,{{{},CanvasObject(text)}},CommandKind::AddObject);
+        check(textPage.texts.size()==1&&textHistory.undo(textPage)&&textPage.texts.empty()&&textHistory.redo(textPage)&&textPage.texts.size()==1,"text history");
         const std::string fixture="{\"format\":\"scalar.board\",\"version\":1,\"units\":\"mm\"}";
         const Bytes payload(fixture.begin(),fixture.end());
         const auto archive=packBoard(payload); const auto decoded=unpackBoard(archive);

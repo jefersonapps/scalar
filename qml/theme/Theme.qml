@@ -16,6 +16,14 @@ QtObject {
     readonly property color border: dark ? "#303033" : "#dce5e9"
     readonly property color shadow: dark ? "#70000000" : "#1026384a"
     readonly property color scrim: dark ? "#80000000" : "#60202020"
+    readonly property var backgroundColors: ["#ffffff","#fff7e6","#fef3c7","#dcfce7","#dbeafe","#fce7f3","#ede9fe","#214f43","#18221e","#000000"]
+    readonly property var basicColors: ["#ffffff","#000000","#ef4444","#f97316","#eab308","#22c55e","#14b8a6","#3b82f6","#8b5cf6","#ec4899"]
+    readonly property var inkHues: [0.46,0.60,0.97,0.11,0.76]
+    readonly property var inkSaturations: [0.65,0.75,0.65,0.75,0.65]
+    readonly property var inkLightnessOnLight: [0.32,0.40,0.39,0.32,0.40]
+    readonly property var inkLightnessOnDark: [0.72,0.75,0.76,0.72,0.78]
+    readonly property color inkNeutralOnLight: "#18181b"
+    readonly property color inkNeutralOnDark: "#f4f4f5"
     readonly property color danger: dark ? "#ffb4ab" : "#b33b3b"
     readonly property int xs: 4
     readonly property int sm: 8
@@ -55,6 +63,8 @@ QtObject {
     readonly property int focusBorder: 2
     readonly property real selectedIconScale: 1.06
     readonly property real pressedIconScale: 0.96
+    readonly property int colorPlaneHeight: 160
+    readonly property int colorHueHeight: 24
     readonly property int dialogWidth: 460
     readonly property int maxContent: 1040
     readonly property int topbarHeight: 72

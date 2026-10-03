@@ -1,7 +1,9 @@
 #include "Thumbnail.h"
 #include "rendering/StrokeMesh.h"
 #include "rendering/ShapeMesh.h"
+#include "rendering/BackgroundMesh.h"
 #include "geometry/Geometry.h"
+#include "rendering/TextRenderer.h"
 #include <QImage>
 #include <QPainter>
 #include <QPainterPath>
@@ -17,6 +19,10 @@ bool saveThumbnail(const Project& project,const QString& path){
     const auto color=[](std::uint32_t c){return QColor((c>>24)&255,(c>>16)&255,(c>>8)&255,c&255);};
     painter.fillRect(QRectF(0,0,page.size.widthMm,page.size.heightMm),color(page.background));
     painter.setClipRect(QRectF(0,0,page.size.widthMm,page.size.heightMm));painter.setPen(Qt::NoPen);
+    const auto grid=backgroundMesh(page.backgroundStyle,{0,0,page.size.widthMm,page.size.heightMm},4/scale);
+    QPainterPath gridPath;gridPath.setFillRule(Qt::WindingFill);
+    for(std::size_t i=0;i+2<grid.size();i+=3){gridPath.moveTo(grid[i].x,grid[i].y);gridPath.lineTo(grid[i+1].x,grid[i+1].y);gridPath.lineTo(grid[i+2].x,grid[i+2].y);gridPath.closeSubpath();}
+    auto gridColor=color(page.backgroundStyle.gridColor);gridColor.setAlphaF(gridColor.alphaF()*page.backgroundStyle.opacity);painter.fillPath(gridPath,gridColor);
     for(const auto& view:objectViews(page))std::visit([&](const auto* object){
         if(!object->properties.visible)return;
         using T=std::decay_t<decltype(*object)>;
@@ -31,6 +37,9 @@ bool saveThumbnail(const Project& project,const QString& path){
             const auto mesh=shapeBorderMesh(*object);QPainterPath border;border.setFillRule(Qt::WindingFill);
             for(std::size_t i=0;i+2<mesh.size();i+=3){border.moveTo(mesh[i].x,mesh[i].y);border.lineTo(mesh[i+1].x,mesh[i+1].y);border.lineTo(mesh[i+2].x,mesh[i+2].y);border.closeSubpath();}
             painter.fillPath(border,color(object->style.rgba));
+        }else if constexpr(std::is_same_v<T,TextObject>){
+            if(object->corners.size()!=4)return;const auto origin=object->corners[0],edge=object->corners[1]-origin;
+            painter.save();painter.translate(origin.x,origin.y);painter.rotate(std::atan2(edge.y,edge.x)*180/3.141592653589793);painter.drawImage(QRectF(0,0,length(edge),length(object->corners[3]-origin)),textBitmap(*object,scale));painter.restore();
         }else {
             if(object->corners.size()!=4)return;
             const auto bitmap=QImage::fromData(reinterpret_cast<const uchar*>(object->png->data()),int(object->png->size()),"PNG");const auto origin=object->corners[0],edge=object->corners[1]-origin;

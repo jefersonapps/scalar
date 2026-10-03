@@ -1,0 +1,17 @@
+# Milestone 3 — entrega e verificações
+
+Implementado: presets de fundos, grades físicas, customização e presets SQLite; caneta contínua/tracejada/pontilhada com espaçamentos; texto editável com fontes do sistema, tamanho, bold/italic/alinhamento/cor; LaTeX inline/display via MathJax local; equações vetoriais em Scene Graph; serialização v3 e leitura v1/v2; undo/redo e autosave das alterações.
+
+Inclui solicitações adicionais: lixeira com confirmação, restore, exclusão definitiva e retenção de 30 dias; reconhecimento de regulares 5–12 lados em vez de polígonos livres; hold sempre converte a melhor candidata; tremor final tolerado; fechamento automático de linhas próximas com fill e undo para segmentos originais. Presets incluem paleta e seletor HSV/hex; formulário com quebra de linhas e rolagem vertical evita overflow.
+
+Build: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON; cmake --build build --parallel 4; ctest --test-dir build --output-on-failure. Matemática é preparada automaticamente no build; alvo estrito math_runtime e install/CPack incluem dependências, sem npm/Node manual para usuário final.
+
+Validação automatizada: propriedades físicas, mesh de grade, undo de fundo/texto, roundtrip v3/fonte/SVG, presets SQLite, retenção exata 30 dias, restauração sem sobrescrita, confirmação na Home, reconhecimento com tremor e polígonos regulares, fechamento de linhas e undo, conversão real MathJax, SVG armazenado offline, tesselação com furos/transforms e bitmap de equação sem tinta (canvas usa mesh), telas/popovers e ausência de warnings QML. Artefatos em build/screenshots.
+
+Verificação em Linux/Qt 6.4.2: compilação Release concluída; 9/9 suítes CTest passaram, incluindo MathJax real sem skips; script de testes core passou. Instalação em `/tmp/scalar-m3-install` concluída e conversão LaTeX testada com o runtime do pacote instalado. Permissões executáveis do Node são preservadas no pacote. Paleta revisada visualmente e testada em janelas de 1200 × 800 e 520 × 640: cores quebram em linhas e ficam dentro do painel, com rolagem vertical.
+
+Limites: conversão heurística ao segurar pode escolher forma diferente da pretendida; Ctrl+Z restaura original. União de linhas usa tolerância de 3 mm e ciclos de até 12 segmentos. A limpeza dos 30 dias depende de o aplicativo executar; itens vencidos com app fechado são removidos ao reabrir. Texto comum usa cache por resolução; equações usam paths/meshes vetoriais. Parser cobre SVG emitido pelo MathJax local (paths, rects, lines, ellipses, polygon e texto de fallback); não é importador SVG genérico. GPU, stylus física, múltiplos DPI e deploy Windows ainda precisam de validação nesses ambientes. Pacote TGZ inclui matemática, mas não substitui um instalador nativo com deploy completo do Qt.
+
+Redimensionamento: o canvas preserva o ponto central em coordenadas do documento e o zoom ao ampliar ou reduzir a janela. Uma página centralizada permanece centralizada; o pan manual é preservado em relação ao centro. Teste desktop cobre expansão para 1920 × 1080, redução para 800 × 600 e nova expansão após zoom e pan.
+
+Revisão de cores: preto puro na paleta do fundo; edição de fundo em tempo real; paleta da caneta adaptada à luminosidade da página preservando matiz/saturação; seletor personalizado compartilhado com plano HSV, barra de matiz, RGB, hexadecimal, prévia e cancelamento. Teste desktop cobre atualização imediata, undo/redo do fundo, variantes da paleta, entrada RGB, interação no plano e restauração ao cancelar.

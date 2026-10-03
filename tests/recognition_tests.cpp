@@ -69,18 +69,8 @@ int main(){try{
         std::rotate(round.samples.begin(),round.samples.begin()+seam,round.samples.end());round.samples.push_back(round.samples.front());
         const auto result=recognizeShape(round);check(result.shape&&result.shape->kind==ShapeKind::Circle,"wobbly circle recognized as polygon");
     }
-    for(const double bow:{1.0,2.5,4.0}){
-        const std::vector<Point> vertices{{15,0},{40,0},{25,35},{0,35}};
-        StrokeObject parallelogram{newId(),{}, {}};
-        for(std::size_t edge=0;edge<4;++edge)for(int i=0;i<80;++i){
-            const double t=i/80.;const auto a=vertices[edge],d=vertices[(edge+1)%4]-a;
-            const Point n{-d.y/length(d),d.x/length(d)};
-            parallelogram.samples.push_back({a+d*t+n*(edge==1?bow*std::sin(std::numbers::pi*t):0)});
-        }
-        parallelogram.samples.push_back(parallelogram.samples.front());
-        const auto result=recognizeShape(parallelogram);
-        check(result.shape&&result.shape->kind==ShapeKind::Polygon&&result.shape->vertices.size()==4,"bowed parallelogram gained a side");
-    }
+    auto shaky=path({{0,0},{40,0},{39,2},{41,-1},{40,1}},false);
+    const auto straightened=recognizeShape(shaky);check(straightened.shape&&straightened.shape->kind==ShapeKind::Line,"terminal tremor prevents line recognition");
     std::vector<Point> pentagon;
     for(int i=0;i<5;++i){const auto angle=2*std::numbers::pi*i/5;pentagon.push_back({20*std::cos(angle),20*std::sin(angle)});}
     const auto pentagonFit=recognizeShape(path(pentagon,true));
@@ -92,31 +82,24 @@ int main(){try{
         check(result.shape&&result.shape->kind==ShapeKind::Polygon,"many-sided polygon recognition");
         check(result.shape->vertices.size()==std::size_t(sides),"many-sided polygon lost corners");
     }
-    std::vector<Point> star;
-    for(int i=0;i<24;++i){const double a=2*std::numbers::pi*i/24,r=i%2?20:40;star.push_back({r*std::cos(a),r*std::sin(a)});}
-    const auto starFit=recognizeShape(path(star,true));
-    check(starFit.shape&&starFit.shape->kind==ShapeKind::Polygon&&starFit.shape->vertices.size()==24,"24 sharp corners lost");
-    for(auto polygon:std::vector<std::vector<Point>>{
-        {{10,0},{30,0},{45,40},{0,40}}, // trapezoid
-        {{0,0},{40,0},{40,40},{30,40},{30,10},{10,10},{10,40},{0,40}}, // concave U
-        {{0,0},{25,0},{40,15},{30,30},{5,40},{-10,20}},
-        {{0,10},{25,10},{25,0},{45,20},{25,40},{25,30},{0,30}}}){
-        for(auto& point:polygon)point=rotatePoint(point,{20,20},0.35)+Point{30,50};
-        for(const bool reversed:{false,true}){
-            if(reversed)std::reverse(polygon.begin(),polygon.end());
-            const auto result=recognizeShape(path(polygon,true));
-            check(result.shape&&result.shape->kind==ShapeKind::Polygon,"generic polygon recognition");
-            check(result.shape->vertices.size()==polygon.size(),"generic polygon lost vertices");
-        }
+    for(auto polygon:std::vector<std::vector<Point>>{{{10,0},{30,0},{45,40},{0,40}},{{0,0},{40,0},{40,40},{30,40},{30,10},{10,10},{10,40},{0,40}}}){
+        const auto result=recognizeShape(path(polygon,true));check(result.shape.has_value(),"hold produced no shape");
+        check(result.shape->kind!=ShapeKind::Polygon,"arbitrary polygon recognition retained");
     }
+    Page assembled;
+    for(const auto& vertices:std::vector<std::vector<Point>>{{{0,0},{40,0}},{{40.8,0.5},{40,30}},{{40,30.8},{0,30}},{{0.6,30},{0.2,0.8}}}){
+        ShapeObject edge;edge.id=newId();edge.kind=ShapeKind::Line;edge.vertices=vertices;assembled.shapes.push_back(edge);
+    }
+    const auto closed=closeConnectedLines(assembled,assembled.shapes.back().id);check(closed&&closed->lineIds.size()==4&&closed->polygon.vertices.size()==4&&closed->polygon.fillOpacity>0,"nearby lines not closed");
+    auto disconnected=assembled;disconnected.shapes[0].vertices[0]={10,10};check(!closeConnectedLines(disconnected,disconnected.shapes.back().id),"disconnected lines joined");
     ShapeObject concave;concave.kind=ShapeKind::Polygon;
     concave.vertices={{0,0},{40,0},{40,40},{30,40},{30,10},{10,10},{10,40},{0,40}};
     const auto concaveMesh=shapeFillMesh(concave);
     check(covers(concaveMesh,{5,25})&&!covers(concaveMesh,{20,25}),"concave fill covers notch");
     double meshArea=0;for(std::size_t i=0;i+2<concaveMesh.size();i+=3){const auto a=concaveMesh[i+1]-concaveMesh[i],b=concaveMesh[i+2]-concaveMesh[i];meshArea+=std::abs(a.x*b.y-a.y*b.x)/2;}
     check(std::abs(meshArea-1000)<1e-6,"concave triangulation area");
-    check(!recognizeShape(path({{0,0},{40,40},{0,40},{40,0}},true)).shape,"crossing polygon recognized");
-    check(!recognizeShape(path({{0,0},{10,30},{20,0},{30,30},{40,0},{0,0}},false)).shape,"scribble recognized");
+    check(recognizeShape(path({{0,0},{40,40},{0,40},{40,0}},true)).shape.has_value(),"hold must produce fallback for crossing gesture");
+    check(recognizeShape(path({{0,0},{10,30},{20,0},{30,30},{40,0},{0,0}},false)).shape.has_value(),"hold must produce fallback for ambiguous gesture");
     check(simplifyRdp({{0,0},{1,0.01},{2,0}},0.1).size()==2,"RDP collinear");
     auto samples=resample({{0,0},{0,0},{10,0}},11);check(samples.size()==11&&std::abs(samples[5].x-5)<1e-8,"resampling duplicate");
     Page page;History history;history.add(page,line);history.apply(page,{{CanvasObject(line),CanvasObject(*fitted.shape)}},CommandKind::ConvertStrokeToShape);
@@ -124,5 +107,5 @@ int main(){try{
     auto moved=transformed(*fitted.shape,{0,0},{5,8});history.apply(page,{{CanvasObject(*fitted.shape),moved}},CommandKind::TransformObject);history.undo(page);
     check(length(page.shapes[0].vertices[0]-fitted.shape->vertices[0])<1e-8,"undo move");
     check(hitTest(*fitted.shape,{20,17},2),"line hit");check(!hitTest(*fitted.shape,{100,100},2),"line miss");
-    std::cout<<"PASS: line, circle, ellipse, rotated and bowed triangle/rectangle/square, seam independence, generic convex/concave polygons, concave fill, scribble rejection, RDP, resampling, conversion undo, transform, hit test\n";
+    std::cout<<"PASS: line, circle, ellipse, rotated and bowed triangle/rectangle/square, seam independence, regular polygons, concave stored fill, explicit hold fallback, connected lines, RDP, resampling, conversion undo, transform, hit test\n";
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

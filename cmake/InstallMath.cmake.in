@@ -1,0 +1,7 @@
+# Both cmake --install and CPack prepare and include the offline dependencies.
+execute_process(COMMAND "@Python3_EXECUTABLE@" "@CMAKE_CURRENT_SOURCE_DIR@/scripts/prepare_math.py"
+    --destination "@CMAKE_CURRENT_SOURCE_DIR@/third_party/mathjax"
+    RESULT_VARIABLE scalar_math_result)
+if(NOT scalar_math_result EQUAL 0)
+    message(FATAL_ERROR "Cannot package Scalar without the complete offline MathJax runtime. Network is required only while preparing the installer.")
+endif()

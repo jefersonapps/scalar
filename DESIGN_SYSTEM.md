@@ -43,3 +43,13 @@ Settings e criação têm scroll em telas menores. Toolbar expandida ainda cabe 
 Configurações organizam rótulo e controle na mesma linha, com divisores discretos. Tamanho e orientação padrão ficam lado a lado. O seletor de formas usa uma grade e estilos Contínuo, Tracejado e Pontilhado. Shift durante o hold aplica tracejado à forma reconhecida.
 
 Propriedades da forma distinguem “Cor do contorno”, “Cor do preenchimento” e “Opacidade do preenchimento”. Cada paleta destaca a cor atual. O painel usa espaçamento compacto e também atende polígonos genéricos.
+
+## Componentes do ciclo 3
+
+BackgroundOptions reúne preset, paleta de nove fundos, hexadecimal, CustomColorDialog com HSV e preview, tipo de grade, cor/espessura/espaçamento/opacidade. O formulário tem largura vinculada ao viewport, Flow quebra a paleta em linhas e ScrollView tem apenas rolagem vertical. Paletas claras usam check escuro para contraste.
+
+TextDialog reutiliza ModernDialog/Field/ActionButton/ColorPicker/SelectField para fonte, tamanho, negrito, itálico, alinhamento e código LaTeX. Entrada de canvas e atalhos ficam suspensos durante edição/modal. Tema não muda a página.
+
+ProjectCard inclui ação acessível de lixeira. DeleteProjectDialog informa nome, caminho e retenção/irreversibilidade antes de confirmar; TrashDialog apresenta expiração, restaurar e excluir. Superfícies, margens, duração, typography e touch targets usam Theme, incluindo estados disabled/pressed/checked.
+
+Paletas e seletor de cores: `Theme.backgroundColors` inclui preto puro; matizes e saturações da caneta são compartilhadas entre variantes claras e escuras, com luminosidade adaptada ao fundo da página. `CustomColorDialog` oferece plano saturação/luminosidade, barra de matiz, cores básicas, prévia anterior/nova, RGB e hexadecimal, além de ajuste por setas. Fundo e caneta usam o mesmo componente. Cancelar restaura a cor anterior; confirmar preserva a seleção. Ajustes de fundo são aplicados imediatamente, sem botão Aplicar.

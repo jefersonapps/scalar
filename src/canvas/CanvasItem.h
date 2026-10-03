@@ -14,6 +14,10 @@ class CanvasItem : public QQuickItem {
     Q_PROPERTY(QColor penColor READ penColor WRITE setPenColor NOTIFY penChanged)
     Q_PROPERTY(double penWidth READ penWidth WRITE setPenWidth NOTIFY penChanged)
     Q_PROPERTY(double pressureGamma READ pressureGamma WRITE setPressureGamma NOTIFY penChanged)
+    Q_PROPERTY(QString penLineStyle READ penLineStyle WRITE setPenLineStyle NOTIFY penChanged)
+    Q_PROPERTY(double dashLength READ dashLength WRITE setDashLength NOTIFY penChanged)
+    Q_PROPERTY(double gapLength READ gapLength WRITE setGapLength NOTIFY penChanged)
+    Q_PROPERTY(double dotSpacing READ dotSpacing WRITE setDotSpacing NOTIFY penChanged)
     Q_PROPERTY(QString shapeLineStyle READ shapeLineStyle WRITE setShapeLineStyle NOTIFY penChanged)
     Q_PROPERTY(double zoom READ zoom NOTIFY viewChanged)
     Q_PROPERTY(bool drawing READ drawing NOTIFY drawingChanged)
@@ -43,6 +47,14 @@ public:
     void setPenWidth(double width);
     double pressureGamma() const {return style_.gamma;}
     void setPressureGamma(double gamma);
+    QString penLineStyle() const;
+    void setPenLineStyle(const QString& value);
+    double dashLength() const {return style_.dashLengthMm;}
+    double gapLength() const {return style_.gapLengthMm;}
+    double dotSpacing() const {return style_.dotSpacingMm;}
+    void setDashLength(double value){style_.dashLengthMm=std::clamp(value,0.1,100.);emit penChanged();}
+    void setGapLength(double value){style_.gapLengthMm=std::clamp(value,0.1,100.);emit penChanged();}
+    void setDotSpacing(double value){style_.dotSpacingMm=std::clamp(value,0.1,100.);emit penChanged();}
     QString shapeLineStyle() const;
     void setShapeLineStyle(const QString& style);
     double zoom() const {return view_.zoom;}
@@ -59,6 +71,8 @@ public:
     QColor selectedBorderColor() const;
     double selectedWidth() const;
     QString interactionHint() const;
+    Q_INVOKABLE void editSelectedText();
+    Q_INVOKABLE QString selectedTextId() const;
     Q_INVOKABLE void deleteSelection();
     Q_INVOKABLE void duplicateSelection();
     Q_INVOKABLE void recognizeSelection();
@@ -79,6 +93,7 @@ signals:
     void viewChanged();
     void drawingChanged();
     void selectionChanged();
+    void textRequested(QPointF position,QString id);
 protected:
     QSGNode* updatePaintNode(QSGNode*,UpdatePaintNodeData*) override;
     bool event(QEvent*) override;

@@ -10,7 +10,7 @@ AbstractButton {
     Accessible.name: text
     background: Rectangle {
         radius: Theme.radiusMedium
-        color: root.primary ? Theme.accent : root.down ? Theme.pressed : root.hovered ? Theme.hover : Theme.surface
+        color: root.primary ? Theme.accent : root.down ? Theme.pressed : root.checked ? Theme.accentSoft : root.hovered ? Theme.hover : Theme.surface
         border.width: root.primary ? 0 : 1
         border.color: Theme.border
         opacity: root.enabled ? (root.down ? 0.8 : 1) : 0.4

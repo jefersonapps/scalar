@@ -3,3 +3,8 @@
 *.board
 *.board.png
 fixture.board
+/third_party/mathjax/node_modules/
+/third_party/mathjax/node
+/third_party/mathjax/node.exe
+/third_party/mathjax/NODE-LICENSE
+/third_party/mathjax/.scalar-runtime.json
