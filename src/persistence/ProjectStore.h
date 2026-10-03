@@ -2,8 +2,10 @@
 #include "documents/Document.h"
 #include <QByteArray>
 #include <QString>
+#include <QHash>
+#include <QImage>
 namespace scalar {
-struct LoadResult { Project project; QString error; explicit operator bool() const { return error.isEmpty(); } };
+struct LoadResult { Project project; QString error; QHash<QString,QImage> images{}; explicit operator bool() const { return error.isEmpty(); } };
 class ProjectStore {
 public:
     static QByteArray serialize(const Project& project);

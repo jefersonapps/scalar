@@ -1,18 +1,20 @@
 #pragma once
-#include "documents/Document.h"
+#include "geometry/Geometry.h"
 namespace scalar {
-// Milestone 1 command: AddObject. Cursor determines undo/redo availability.
+enum class CommandKind { AddObject,DeleteObject,TransformObject,ConvertStrokeToShape,ChangeStyle };
+struct ObjectChange {std::optional<CanvasObject> before,after;};
 class History {
 public:
-    void add(Page& page, StrokeObject stroke);
+    void add(Page& page,StrokeObject stroke);
+    void apply(Page& page,std::vector<ObjectChange> changes,CommandKind kind);
     bool undo(Page& page);
     bool redo(Page& page);
     void clear();
-    bool canUndo() const { return cursor_ > 0; }
-    bool canRedo() const { return cursor_ < commands_.size(); }
+    bool canUndo() const {return cursor_>0;}
+    bool canRedo() const {return cursor_<commands_.size();}
 private:
-    struct AddObjectCommand { StrokeObject object; };
-    std::vector<AddObjectCommand> commands_;
-    std::size_t cursor_ = 0;
+    struct Command {std::vector<ObjectChange> changes;CommandKind kind;};
+    std::vector<Command> commands_;
+    std::size_t cursor_=0;
 };
 }

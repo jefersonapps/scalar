@@ -4,6 +4,9 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <variant>
+#include <memory>
+#include <optional>
 
 namespace scalar {
 struct Point {
@@ -28,23 +31,55 @@ struct PointerSample {
     std::uint32_t buttons = 0;
     DeviceType device = DeviceType::Mouse;
 };
+enum class LinePattern { Solid, Dashed, Dotted };
 struct PenStyle {
     std::uint32_t rgba = 0x263345ff;
     double minWidthMm = 0.15, maxWidthMm = 0.85, gamma = 1.2, sensitivity = 1;
+    LinePattern pattern = LinePattern::Solid;
+    double dashLengthMm = 3, gapLengthMm = 2, dotSpacingMm = 2.5;
     double width(double pressure) const {
         return minWidthMm + (maxWidthMm-minWidthMm)*std::pow(std::clamp(pressure*sensitivity,0.0,1.0),gamma);
     }
+};
+struct ObjectProperties {
+    bool locked=false,visible=true;
+    std::int64_t zIndex=0;
+    std::uint64_t revision=0; // render cache generation, never serialized
 };
 struct StrokeObject {
     std::string id;
     PenStyle style;
     std::vector<PointerSample> samples;
+    ObjectProperties properties{};
 };
+enum class ShapeKind { Line, Circle, Ellipse, Triangle, Rectangle, Square, Polygon };
+struct ShapeObject {
+    std::string id;
+    ShapeKind kind=ShapeKind::Line;
+    PenStyle style;
+    std::vector<Point> vertices; // line endpoints or polygon vertices, in mm
+    Point center;
+    double radiusX=1,radiusY=1,rotation=0; // rotation in radians
+    double fillOpacity=0.10;
+    std::optional<std::uint32_t> fillRgba; // absent in older projects: follows the border
+    std::uint32_t fillColor() const { return fillRgba.value_or(style.rgba); }
+    ObjectProperties properties{};
+};
+struct ImageObject {
+    std::string id;
+    std::vector<Point> corners;
+    std::shared_ptr<const std::vector<std::uint8_t>> png = std::make_shared<const std::vector<std::uint8_t>>();
+    int pixelWidth=0,pixelHeight=0;
+    ObjectProperties properties{};
+};
+using CanvasObject=std::variant<StrokeObject,ShapeObject,ImageObject>;
 struct Page {
     std::string id;
     PageSize size;
     std::uint32_t background = 0xffffffff;
     std::vector<StrokeObject> strokes;
+    std::vector<ShapeObject> shapes{};
+    std::vector<ImageObject> images{};
 };
 struct Project {
     std::string id, name, createdAt, updatedAt;

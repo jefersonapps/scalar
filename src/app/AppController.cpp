@@ -7,6 +7,8 @@
 #include <QGuiApplication>
 #include <QPalette>
 #include <QEvent>
+#include <QClipboard>
+#include <QMimeData>
 #include <QStyleHints>
 #include <QtConcurrent>
 #include <QLoggingCategory>
@@ -16,10 +18,17 @@ namespace { QString now(){return QDateTime::currentDateTimeUtc().toString(Qt::IS
 AppController::AppController(QObject* parent,const QString& dataDirectory):QObject(parent) {
     dataDir_=dataDirectory.isEmpty()?QStandardPaths::writableLocation(QStandardPaths::AppDataLocation):dataDirectory;
     QDir().mkpath(dataDir_+"/projects"); library_=std::make_unique<Library>(dataDir_+"/library.sqlite");
+    recognitionEnabled_=library_->setting("recognitionEnabled",true).toBool();holdDelay_=std::clamp(library_->setting("holdDelay",500).toInt(),250,1500);
     qGuiApp->installEventFilter(this);
 #if QT_VERSION >= QT_VERSION_CHECK(6,5,0)
     connect(qGuiApp->styleHints(),&QStyleHints::colorSchemeChanged,this,[this]{emit preferencesChanged();});
 #endif
+    connect(&imageWatcher_,&QFutureWatcher<ImportedImage>::finished,this,[this]{
+        imageImportPending_=false;const auto imported=imageWatcher_.result();if(importProjectId_!=QString::fromStdString(project_.id))return;
+        if(!imported.error.isEmpty()){status_=imported.error;emit changed();return;}
+        auto object=imported.object;object.properties.zIndex=nextZIndex();images_.insert(QString::fromStdString(object.id),imported.image);
+        history_.apply(project_.pages[0],{{{},CanvasObject(std::move(object))}},CommandKind::AddObject);mutate();
+    });
     recovery_=library_->setting("cleanShutdown","true").toString()=="false"&&QFile::exists(dataDir_+"/session.board");
     library_->setSetting("cleanShutdown","false");
     status_=library_->error().isEmpty()?"Pronto para suas ideias":library_->error();
@@ -31,7 +40,7 @@ AppController::AppController(QObject* parent,const QString& dataDirectory):QObje
         if(result){
             const bool recovered=pendingOpenPath_==dataDir_+"/session.board";
             const auto target=recovered ? dataDir_+"/projects/"+QString::fromStdString(result.project.id)+".board" : pendingOpenPath_;
-            install(result.project,target);library_->remember(QString::fromStdString(result.project.id),QString::fromStdString(result.project.name),target,QString::fromStdString(result.project.updatedAt));emit recentChanged();status_=recovered?"Quadro recuperado":"Projeto aberto";
+            install(result.project,target);images_=result.images;emit documentChanged();library_->remember(QString::fromStdString(result.project.id),QString::fromStdString(result.project.name),target,QString::fromStdString(result.project.updatedAt));emit recentChanged();status_=recovered?"Quadro recuperado":"Projeto aberto";
             if(recovered){mutate();beginSave();}
         } else {status_=result.error;qCWarning(appLog)<<status_;}
         emit changed();
@@ -41,7 +50,7 @@ bool AppController::eventFilter(QObject* watched,QEvent* event){
     if(watched==qGuiApp && event->type()==QEvent::ApplicationPaletteChange)emit preferencesChanged();
     return QObject::eventFilter(watched,event);
 }
-AppController::~AppController(){ if(!closed_)flush(); loadWatcher_.waitForFinished(); }
+AppController::~AppController(){ if(!closed_)flush(); loadWatcher_.waitForFinished();imageWatcher_.waitForFinished(); }
 QColor AppController::pageColor() const { const auto c=page()?page()->background:0xffffffff;return QColor(int((c>>24)&255),int((c>>16)&255),int((c>>8)&255),int(c&255)); }
 bool AppController::systemDark() const {
 #if QT_VERSION >= QT_VERSION_CHECK(6,5,0)
@@ -60,7 +69,7 @@ bool AppController::defaultLandscape() const{return library_->setting("defaultLa
 void AppController::setDefaultLandscape(bool v){library_->setSetting("defaultLandscape",v);emit preferencesChanged();}
 QString AppController::defaultBackground() const{return library_->setting("defaultBackground","Branco").toString();}
 void AppController::setDefaultBackground(const QString& v){if(v!="Branco"&&v!="Preto"&&v!="Verde")return;library_->setSetting("defaultBackground",v);emit preferencesChanged();}
-void AppController::install(Project p,const QString& path){project_=std::move(p);path_=path;history_.clear();dirty_=false;++revision_;emit documentChanged();emit changed();}
+void AppController::install(Project p,const QString& path){project_=std::move(p);path_=path;images_.clear();history_.clear();dirty_=false;++revision_;emit documentChanged();emit changed();}
 void AppController::newProject(const QString& name,const QString& preset,double width,double height,bool landscape,const QString& background) {
     if(loading_)return;
     PageSize size=preset=="A4"?PageSize::a4():preset=="Carta"?PageSize::letter():PageSize{width,height};
@@ -75,7 +84,32 @@ void AppController::newProject(const QString& name,const QString& preset,double 
 }
 void AppController::newDefault(){newProject("Novo quadro",defaultSize(),210,297,defaultLandscape(),defaultBackground());}
 void AppController::mutate(){dirty_=true;++revision_;project_.updatedAt=now().toStdString();autosave_.start();emit documentChanged();emit changed();}
-void AppController::addStroke(StrokeObject s){if(!active()||loading_||s.samples.empty())return;history_.add(project_.pages[0],std::move(s));mutate();}
+void AppController::addStroke(StrokeObject s){if(!active()||loading_||s.samples.empty())return;s.properties.zIndex=nextZIndex();history_.add(project_.pages[0],std::move(s));mutate();}
+std::int64_t AppController::nextZIndex() const{
+    std::int64_t value=0;if(page()){for(const auto& s:page()->strokes)value=std::max(value,s.properties.zIndex+1);for(const auto& s:page()->shapes)value=std::max(value,s.properties.zIndex+1);for(const auto& s:page()->images)value=std::max(value,s.properties.zIndex+1);}return value;
+}
+void AppController::addRecognizedStroke(StrokeObject stroke,ShapeObject shape){
+    if(!active()||loading_)return;stroke.properties.zIndex=nextZIndex();shape.properties.zIndex=stroke.properties.zIndex;
+    history_.add(project_.pages[0],stroke);history_.apply(project_.pages[0],{{CanvasObject(stroke),CanvasObject(std::move(shape))}},CommandKind::ConvertStrokeToShape);mutate();
+}
+void AppController::importImage(const QUrl& url,QPointF center){
+    if(!active()||loading_||imageImportPending_||!url.isLocalFile())return;importProjectId_=QString::fromStdString(project_.id);const auto size=page()->size;const auto path=url.toLocalFile();
+    imageImportPending_=true;imageWatcher_.setFuture(QtConcurrent::run([path,center,size]{return importImageFile(path,{center.x(),center.y()},size);}));status_="Importando imagem…";emit changed();
+}
+void AppController::pasteImage(QPointF center){
+    if(!active()||loading_||imageImportPending_)return;
+    const auto* mime=QGuiApplication::clipboard()->mimeData();
+    if(mime->hasImage()){const auto image=QGuiApplication::clipboard()->image();const auto size=page()->size;importProjectId_=QString::fromStdString(project_.id);
+        imageImportPending_=true;imageWatcher_.setFuture(QtConcurrent::run([image,center,size]{return encodeImage(image,{center.x(),center.y()},size);}));status_="Colando imagem…";emit changed();}
+    else if(mime->hasUrls()&&!mime->urls().isEmpty())importImage(mime->urls().first(),center);
+    else {status_="A área de transferência não contém uma imagem.";emit changed();}
+}
+void AppController::addShape(ShapeObject shape){if(!active()||loading_)return;shape.properties.zIndex=nextZIndex();history_.apply(project_.pages[0],{{{},CanvasObject(std::move(shape))}},CommandKind::AddObject);mutate();}
+void AppController::changeObjects(std::vector<ObjectChange> changes,CommandKind kind){if(!active()||loading_||changes.empty())return;history_.apply(project_.pages[0],std::move(changes),kind);mutate();}
+bool AppController::recognitionEnabled() const{return recognitionEnabled_;}
+void AppController::setRecognitionEnabled(bool value){recognitionEnabled_=value;library_->setSetting("recognitionEnabled",value);emit preferencesChanged();}
+int AppController::holdDelay() const{return holdDelay_;}
+void AppController::setHoldDelay(int value){holdDelay_=std::clamp(value,250,1500);library_->setSetting("holdDelay",holdDelay_);emit preferencesChanged();}
 void AppController::undo(){if(active()&&history_.undo(project_.pages[0]))mutate();}
 void AppController::redo(){if(active()&&history_.redo(project_.pages[0]))mutate();}
 void AppController::save(){if(active()){dirty_=true;beginSave();}}
@@ -102,6 +136,7 @@ void AppController::finishSave(){
     emit changed();
 }
 bool AppController::flush(){
+    if(imageImportPending_){status_="Aguarde a importação da imagem.";emit changed();return false;}
     autosave_.stop();
     if(saveWatcher_.isRunning()){saveWatcher_.waitForFinished();finishSave();}
     if(active()&&dirty_){beginSave();saveWatcher_.waitForFinished();finishSave();}
@@ -112,7 +147,7 @@ void AppController::openPath(const QString& path){
     if(loading_||!flush())return;loading_=true;pendingOpenPath_=path;status_="Abrindo projeto…";
     loadWatcher_.setFuture(QtConcurrent::run([path]{return ProjectStore::load(path);}));emit changed();
 }
-void AppController::home(){if(loading_||!flush())return;project_={};history_.clear();++revision_;emit documentChanged();emit changed();}
+void AppController::home(){if(loading_||!flush())return;project_={};images_.clear();history_.clear();++revision_;emit documentChanged();emit changed();}
 void AppController::recover(){if(!recovery_)return;recovery_=false;openPath(dataDir_+"/session.board");}
 void AppController::discardRecovery(){recovery_=false;QFile::remove(dataDir_+"/session.board");emit changed();}
 bool AppController::shutdown(){

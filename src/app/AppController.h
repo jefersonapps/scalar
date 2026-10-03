@@ -3,6 +3,7 @@
 #include "commands/History.h"
 #include "persistence/Library.h"
 #include "persistence/ProjectStore.h"
+#include "clipboard/ImageImporter.h"
 #include <QObject>
 #include <QTimer>
 #include <QFutureWatcher>
@@ -30,6 +31,8 @@ class AppController : public QObject {
     Q_PROPERTY(QString defaultSize READ defaultSize WRITE setDefaultSize NOTIFY preferencesChanged)
     Q_PROPERTY(bool defaultLandscape READ defaultLandscape WRITE setDefaultLandscape NOTIFY preferencesChanged)
     Q_PROPERTY(QString defaultBackground READ defaultBackground WRITE setDefaultBackground NOTIFY preferencesChanged)
+    Q_PROPERTY(bool recognitionEnabled READ recognitionEnabled WRITE setRecognitionEnabled NOTIFY preferencesChanged)
+    Q_PROPERTY(int holdDelay READ holdDelay WRITE setHoldDelay NOTIFY preferencesChanged)
     Q_PROPERTY(bool recoveryAvailable READ recoveryAvailable NOTIFY changed)
 public:
     explicit AppController(QObject* parent=nullptr,const QString& dataDirectory={});
@@ -44,7 +47,7 @@ public:
     bool dirty() const { return dirty_; }
     bool loading() const { return loading_; }
     bool systemDark() const;
-    bool busy() const { return loading_||saveWatcher_.isRunning(); }
+    bool busy() const { return loading_||saveWatcher_.isRunning()||imageImportPending_; }
     QString status() const { return status_; }
     QVariantList recentProjects() const { return library_->recent(); }
     QString theme() const;
@@ -60,6 +63,18 @@ public:
     bool recoveryAvailable() const { return recovery_; }
     const Page* page() const { return active()?&project_.pages[0]:nullptr; }
     void addStroke(StrokeObject stroke);
+    void addRecognizedStroke(StrokeObject stroke,ShapeObject shape);
+    void addShape(ShapeObject shape);
+    Q_INVOKABLE void importImage(const QUrl& url,QPointF center);
+    Q_INVOKABLE void pasteImage(QPointF center);
+    void aliasImage(const std::string& from,const std::string& to){images_.insert(QString::fromStdString(to),image(from));}
+    QImage image(const std::string& id) const {return images_.value(QString::fromStdString(id));}
+    void changeObjects(std::vector<ObjectChange> changes,CommandKind kind);
+    bool recognitionEnabled() const;
+    void setRecognitionEnabled(bool value);
+    int holdDelay() const;
+    void setHoldDelay(int value);
+    std::int64_t nextZIndex() const;
     Q_INVOKABLE void newProject(const QString& name,const QString& preset,double width,double height,bool landscape,const QString& background);
     Q_INVOKABLE void newDefault();
     Q_INVOKABLE void undo();
@@ -93,7 +108,13 @@ private:
     QTimer autosave_;
     QFutureWatcher<SaveResult> saveWatcher_;
     QFutureWatcher<LoadResult> loadWatcher_;
+    QFutureWatcher<ImportedImage> imageWatcher_;
+    QString importProjectId_;
+    QHash<QString,QImage> images_;
     quint64 revision_=0;
+    bool recognitionEnabled_=true;
+    int holdDelay_=500;
+    bool imageImportPending_=false;
     bool dirty_=false,loading_=false,recovery_=false,closed_=false;
 };
 }

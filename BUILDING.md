@@ -10,7 +10,7 @@ Execute a instalação em uma máquina onde tenha permissão de administrar o si
 
 ```sh
 sudo apt install build-essential cmake ninja-build qt6-base-dev qt6-declarative-dev \
-  libqt6sql6-sqlite qml6-module-qtquick qml6-module-qtquick-controls \
+  libqt6sql6-sqlite qt6-image-formats-plugins qml6-module-qtquick qml6-module-qtquick-controls \
   qml6-module-qtquick-layouts qml6-module-qtquick-dialogs qml6-module-qtquick-shapes \
   qml6-module-qtquick-templates qml6-module-qtquick-window qml6-module-qtqml qml6-module-qtqml-workerscript
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
@@ -18,6 +18,8 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ./build/scalar
 ```
+
+WEBP usa o plugin Qt de formatos de imagem. Se esse plugin não estiver disponível, CMake detecta opcionalmente `libwebp` (headers e biblioteca) e habilita um decoder alternativo offline. Em Ubuntu/Mint, `libwebp-dev` fornece essa alternativa. Ela é justificada para manter a importação WEBP funcional em instalações Qt mínimas, sem adicionar um subprocesso ou serviço. Em Windows, inclua o plugin WEBP no deploy do Qt ou disponibilize libwebp ao CMake.
 
 Qt instalado fora do sistema: acrescente `-DCMAKE_PREFIX_PATH=/caminho/Qt/6.x/gcc_64`.
 
@@ -79,8 +81,14 @@ Logging usa categorias `scalar.app` e `scalar.persistence.sqlite`, níveis info/
 
 Linux Mint 22.3, GCC 13.3, Qt 6.4.2. Após a instalação das dependências pelo usuário, CMake configurou e o aplicativo compilou. O caminho dos recursos QML foi corrigido com BASE explícito; ApplicationPaletteChange substituiu o sinal deprecated paletteChanged.
 
-`ctest --test-dir build --output-on-failure`: **5/5 passaram** — core, persistence, desktop, smoke_home e smoke_editor. O teste desktop abre Home, cria quadro pela UI, desenha com eventos de mouse, verifica undo/redo, zoom sem mutação, tema dark com página branca, save/load e ausência de warnings QML. Popovers e configurações também foram abertos. Cada teste desktop usa diretório temporário próprio, sem tocar nos projetos do usuário.
+`ctest --test-dir build --output-on-failure`: **7/7 passaram** — core, recognition, eraser, persistence, desktop, smoke_home e smoke_editor. O teste desktop abre Home, cria quadro pela UI, desenha com eventos de mouse, verifica undo/redo, zoom sem mutação, tema dark com página branca, save/load e ausência de warnings QML. Popovers e configurações também foram abertos. Cada teste desktop usa diretório temporário próprio, sem tocar nos projetos do usuário.
 
 Screenshots reais de offscreen ficam em `build/screenshots/`: home-light.png, new-project.png, editor-light.png, editor-dark.png, pen-options.png e settings-dark.png. **Essas capturas usam o backend software, que neste ambiente não exibiu os meshes de traços; não comprovam renderização acelerada do canvas.** O teste valida os objetos/amostras desenhados, não a aparência do stroke na GPU.
 
 A sessão gráfica `:0` não pode ser acessada pelo sandbox (`could not connect to display`); `/dev/dri` não está disponível. Inicie `./build/scalar` no seu terminal gráfico para validar traços visíveis, MSAA, tablet e desempenho. O build ainda pode emitir aviso não bloqueante do qmlimportscanner se qml6-module-qtqml estiver ausente; ele está incluído na lista de dependências acima.
+
+## Validação 0.2
+
+Desktop test também cobre hold-to-line, ajuste antes do release, undo para stroke, borracha parcial e undo/redo, inserção de círculo, seleção/handles, mover, escala/raio e rotação, estilo/fill, duplicar/excluir, Ctrl+V de bitmap, URLs no clipboard, importação por arquivo e drag/drop. Imagens e formas são salvas/reabertas. O teste de persistência verifica v1/v2, PNG incorporado, círculo e decode real; testes de núcleo verificam fitting de formas e cortes analíticos da borracha.
+
+Captura do tema novo com imagens: `build/screenshots/milestone2-dark-images.png`. Veja `docs/MILESTONE_2.md` para uso e limites. SVG/WebP dependem de plugins de imagem Qt; o diálogo inclui extensões, mas importer retorna erro claro se o codec não estiver disponível. Nenhuma biblioteca de imagem externa foi adicionada.

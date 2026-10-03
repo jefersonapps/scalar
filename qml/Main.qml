@@ -15,6 +15,7 @@ ApplicationWindow {
     color: Theme.background
     onClosing: close => { close.accepted = App.shutdown() }
     Loader {
+        id: pageLoader
         anchors.fill: parent
         sourceComponent: App.active ? editor : home
     }
@@ -24,12 +25,13 @@ ApplicationWindow {
     }
     Component {
         id: editor
-        EditorPage { overlaysOpen: settings.visible || saveFile.visible || openFile.visible || newProject.visible || recovery.visible; onSaveAsRequested: saveFile.open(); onSettingsRequested: settings.open() }
+        EditorPage { overlaysOpen: settings.visible || saveFile.visible || openFile.visible || imageFile.visible || newProject.visible || recovery.visible; onSaveAsRequested: saveFile.open(); onImageRequested: imageFile.open(); onSettingsRequested: settings.open() }
     }
     NewProjectDialog { id: newProject }
     SettingsDialog { id: settings }
     FileDialog { id: openFile; title: "Abrir quadro"; nameFilters: ["Projetos Scalar (*.board)"]; onAccepted: App.open(selectedFile) }
     FileDialog { id: saveFile; title: "Salvar quadro como"; fileMode: FileDialog.SaveFile; defaultSuffix: "board"; nameFilters: ["Projetos Scalar (*.board)"]; onAccepted: App.saveAs(selectedFile) }
+    FileDialog { id: imageFile; title: "Importar imagem"; nameFilters: ["Imagens (*.png *.jpg *.jpeg *.webp *.bmp *.svg)"]; onAccepted: { if(pageLoader.item) pageLoader.item.insertImage(selectedFile) } }
     C.ModernDialog {
         id: recovery
         closePolicy: Popup.NoAutoClose

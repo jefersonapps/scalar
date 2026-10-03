@@ -1,6 +1,8 @@
 #pragma once
 #include "app/AppController.h"
 #include "input/InputManager.h"
+#include "selection/SelectionModel.h"
+#include "recognition/ShapeRecognizer.h"
 #include <QQuickItem>
 #include <QQuickWindow>
 #include <QPointer>
@@ -12,8 +14,20 @@ class CanvasItem : public QQuickItem {
     Q_PROPERTY(QColor penColor READ penColor WRITE setPenColor NOTIFY penChanged)
     Q_PROPERTY(double penWidth READ penWidth WRITE setPenWidth NOTIFY penChanged)
     Q_PROPERTY(double pressureGamma READ pressureGamma WRITE setPressureGamma NOTIFY penChanged)
+    Q_PROPERTY(QString shapeLineStyle READ shapeLineStyle WRITE setShapeLineStyle NOTIFY penChanged)
     Q_PROPERTY(double zoom READ zoom NOTIFY viewChanged)
     Q_PROPERTY(bool drawing READ drawing NOTIFY drawingChanged)
+    Q_PROPERTY(double eraserRadius READ eraserRadius WRITE setEraserRadius NOTIFY penChanged)
+    Q_PROPERTY(QPointF eraserPosition READ eraserPosition NOTIFY selectionChanged)
+    Q_PROPERTY(int selectedCount READ selectedCount NOTIFY selectionChanged)
+    Q_PROPERTY(QVariantList selectionHandles READ selectionHandles NOTIFY selectionChanged)
+    Q_PROPERTY(QRectF selectionRect READ selectionRect NOTIFY selectionChanged)
+    Q_PROPERTY(QString selectionName READ selectionName NOTIFY selectionChanged)
+    Q_PROPERTY(double selectedWidth READ selectedWidth NOTIFY selectionChanged)
+    Q_PROPERTY(QColor selectedFillColor READ selectedFillColor NOTIFY selectionChanged)
+    Q_PROPERTY(QColor selectedBorderColor READ selectedBorderColor NOTIFY selectionChanged)
+    Q_PROPERTY(double selectedFill READ selectedFill NOTIFY selectionChanged)
+    Q_PROPERTY(QString interactionHint READ interactionHint NOTIFY drawingChanged)
     Q_PROPERTY(QRectF toolbarExclusion MEMBER toolbarExclusion_)
     Q_PROPERTY(QRectF optionsExclusion MEMBER optionsExclusion_)
 public:
@@ -29,9 +43,33 @@ public:
     void setPenWidth(double width);
     double pressureGamma() const {return style_.gamma;}
     void setPressureGamma(double gamma);
+    QString shapeLineStyle() const;
+    void setShapeLineStyle(const QString& style);
     double zoom() const {return view_.zoom;}
-    bool drawing() const {return state_==State::Drawing;}
+    bool drawing() const {return state_==State::Drawing||state_==State::PossibleHold||state_==State::ShapePreview||state_==State::CreatingShape;}
+    double eraserRadius() const {return eraserRadius_;}
+    void setEraserRadius(double radius){eraserRadius_=std::clamp(radius,0.5,20.);emit penChanged();}
+    QPointF eraserPosition() const {const auto p=view_.worldToScreen(lastPan_);return {p.x,p.y};}
+    int selectedCount() const {return int(selection_.ids().size());}
+    QVariantList selectionHandles() const;
+    QRectF selectionRect() const;
+    QString selectionName() const;
+    double selectedFill() const;
+    QColor selectedFillColor() const;
+    QColor selectedBorderColor() const;
+    double selectedWidth() const;
+    QString interactionHint() const;
+    Q_INVOKABLE void deleteSelection();
+    Q_INVOKABLE void duplicateSelection();
+    Q_INVOKABLE void recognizeSelection();
+    Q_INVOKABLE void setSelectedFill(double opacity);
+    Q_INVOKABLE void setSelectedFillColor(const QColor& color);
+    Q_INVOKABLE void setSelectedColor(const QColor& color);
+    Q_INVOKABLE void setSelectedWidth(double width);
     Q_INVOKABLE void fitPage();
+    Q_INVOKABLE QPointF viewportCenter() const {const auto p=view_.screenToWorld({width()/2,height()/2});return {p.x,p.y};}
+    Q_INVOKABLE void importImage(const QUrl& url){if(controller_)controller_->importImage(url,viewportCenter());}
+    Q_INVOKABLE void pasteImage(){if(controller_)controller_->pasteImage(viewportCenter());}
     Q_INVOKABLE void zoomBy(double factor);
     Q_INVOKABLE void cancelStroke();
 signals:
@@ -40,6 +78,7 @@ signals:
     void penChanged();
     void viewChanged();
     void drawingChanged();
+    void selectionChanged();
 protected:
     QSGNode* updatePaintNode(QSGNode*,UpdatePaintNodeData*) override;
     bool event(QEvent*) override;
@@ -48,17 +87,31 @@ protected:
     void mouseMoveEvent(QMouseEvent*) override;
     void mouseReleaseEvent(QMouseEvent*) override;
     void mouseUngrabEvent() override;
+    void hoverMoveEvent(QHoverEvent* event) override;
     void wheelEvent(QWheelEvent*) override;
     void touchEvent(QTouchEvent*) override;
     void keyPressEvent(QKeyEvent*) override;
     void keyReleaseEvent(QKeyEvent*) override;
     void geometryChange(const QRectF&,const QRectF&) override;
 private:
-    enum class State { Idle,Drawing,Panning,TouchGesture };
+    enum class State { Idle,Erasing,Drawing,PossibleHold,ShapePreview,CreatingShape,Panning,TouchGesture,Marquee,Moving,Resizing,Rotating,EditingHandle };
     Point world(QPointF p) const {return view_.screenToWorld({p.x(),p.y()});}
     void begin(PointerSample sample);
     void append(PointerSample sample);
     void commit();
+    void startPointer(PointerSample sample,Qt::KeyboardModifiers modifiers);
+    void movePointer(PointerSample sample);
+    void endPointer(PointerSample sample);
+    void beginRecognition();
+    void eraseAt(Point point);
+    void commitErase();
+    void beginSelection(Point point,Qt::KeyboardModifiers modifiers);
+    void updateSelection(Point point);
+    void commitSelection();
+    Bounds selectedBounds() const;
+    std::vector<CanvasObject> selectedObjects() const;
+    void selectionUpdated();
+    ShapeObject directShape(Point start,Point end) const;
     bool tablet(QTabletEvent* event,QPointF local);
     void viewUpdated();
     QPointer<AppController> controller_;
@@ -66,9 +119,24 @@ private:
     InputManager input_;
     ViewTransform view_;
     StrokeObject current_;
+    std::optional<ShapeObject> previewShape_;
+    QTimer holdTimer_;
+    QFutureWatcher<RecognitionResult> recognitionWatcher_;
+    std::uint64_t inputEpoch_=0,requestEpoch_=0;
+    Point holdAnchor_;
+    SelectionModel selection_;
+    std::vector<CanvasObject> editBefore_,editPreview_;
+    Point dragStart_;
+    Bounds editBounds_;
+    int handleIndex_=-1;
+    bool marqueeAdditive_=false;
+    double eraserRadius_=3;
+    std::vector<StrokeObject> eraseBefore_,erasePreview_;
     PenStyle style_;
     QColor color_{"#263345"};
     QString tool_="pen";
+    LinePattern manualShapePattern_=LinePattern::Solid;
+    bool shiftHeld_=false,recognitionDashed_=false;
     State state_=State::Idle;
     Point lastPan_;
     double touchDistance_=0;

@@ -6,6 +6,8 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QSet>
+#include <QBuffer>
+#include <QImageReader>
 #include <limits>
 namespace scalar {
 namespace {
@@ -21,11 +23,24 @@ QByteArray ProjectStore::serialize(const Project& p) {
         for(const auto& s:page.strokes) {
             QJsonArray points;
             for(const auto& v:s.samples) points.append(QJsonArray{v.position.x,v.position.y,v.pressure,v.tiltX,v.tiltY,v.rotation,double(v.timestamp),double(v.buttons),int(v.device)});
-            strokes.append(QJsonObject{{"id",text(s.id)},{"type","stroke"},{"style",QJsonObject{{"rgba",double(s.style.rgba)},{"minWidthMm",s.style.minWidthMm},{"maxWidthMm",s.style.maxWidthMm},{"gamma",s.style.gamma},{"sensitivity",s.style.sensitivity}}},{"samples",points}});
+            strokes.append(QJsonObject{{"id",text(s.id)},{"type","stroke"},{"style",QJsonObject{{"rgba",double(s.style.rgba)},{"minWidthMm",s.style.minWidthMm},{"maxWidthMm",s.style.maxWidthMm},{"gamma",s.style.gamma},{"sensitivity",s.style.sensitivity},{"pattern",int(s.style.pattern)},{"dashLengthMm",s.style.dashLengthMm},{"gapLengthMm",s.style.gapLengthMm},{"dotSpacingMm",s.style.dotSpacingMm}}},{"samples",points},{"zIndex",double(s.properties.zIndex)},{"locked",s.properties.locked},{"visible",s.properties.visible}});
+        }
+        for(const auto& shape:page.shapes){
+            QJsonArray vertices;for(auto p:shape.vertices)vertices.append(QJsonArray{p.x,p.y});
+            const auto& st=shape.style;
+            strokes.append(QJsonObject{{"id",text(shape.id)},{"type","shape"},{"kind",int(shape.kind)},
+                {"style",QJsonObject{{"rgba",double(st.rgba)},{"minWidthMm",st.minWidthMm},{"maxWidthMm",st.maxWidthMm},{"gamma",st.gamma},{"sensitivity",st.sensitivity},{"pattern",int(st.pattern)},{"dashLengthMm",st.dashLengthMm},{"gapLengthMm",st.gapLengthMm},{"dotSpacingMm",st.dotSpacingMm}}},
+                {"vertices",vertices},{"center",QJsonArray{shape.center.x,shape.center.y}},{"radiusX",shape.radiusX},{"radiusY",shape.radiusY},{"rotation",shape.rotation},{"fillOpacity",shape.fillOpacity},{"fillRgba",shape.fillRgba?QJsonValue(double(*shape.fillRgba)):QJsonValue(QJsonValue::Null)},
+                {"zIndex",double(shape.properties.zIndex)},{"locked",shape.properties.locked},{"visible",shape.properties.visible}});
+        }
+        for(const auto& image:page.images){
+            QJsonArray corners;for(auto p:image.corners)corners.append(QJsonArray{p.x,p.y});
+            const auto png=QByteArray(reinterpret_cast<const char*>(image.png->data()),qsizetype(image.png->size()));
+            strokes.append(QJsonObject{{"id",text(image.id)},{"type","image"},{"corners",corners},{"png",QString::fromLatin1(png.toBase64())},{"pixelWidth",image.pixelWidth},{"pixelHeight",image.pixelHeight},{"zIndex",double(image.properties.zIndex)},{"locked",image.properties.locked},{"visible",image.properties.visible}});
         }
         pages.append(QJsonObject{{"id",text(page.id)},{"widthMm",page.size.widthMm},{"heightMm",page.size.heightMm},{"background",double(page.background)},{"objects",strokes}});
     }
-    return QJsonDocument(QJsonObject{{"format","scalar.board"},{"version",1},{"units","mm"},{"id",text(p.id)},{"name",text(p.name)},{"createdAt",text(p.createdAt)},{"updatedAt",text(p.updatedAt)},{"pages",pages}}).toJson(QJsonDocument::Compact);
+    return QJsonDocument(QJsonObject{{"format","scalar.board"},{"version",2},{"units","mm"},{"id",text(p.id)},{"name",text(p.name)},{"createdAt",text(p.createdAt)},{"updatedAt",text(p.updatedAt)},{"pages",pages}}).toJson(QJsonDocument::Compact);
 }
 LoadResult ProjectStore::deserialize(const QByteArray& data) {
     auto fail=[](const QString& reason){return LoadResult{{},reason};};
@@ -33,7 +48,7 @@ LoadResult ProjectStore::deserialize(const QByteArray& data) {
     QJsonParseError error; const auto doc=QJsonDocument::fromJson(data,&error);
     if(error.error!=QJsonParseError::NoError||!doc.isObject()) return fail("JSON inválido.");
     const auto root=doc.object();
-    if(root["format"]!="scalar.board"||root["version"].toInt()!=1||root["units"]!="mm") return fail("Formato ou versão não suportado.");
+    if(root["format"]!="scalar.board"||(root["version"].toInt()!=1&&root["version"].toInt()!=2)||root["units"]!="mm") return fail("Formato ou versão não suportado.");
     Project p; p.id=root["id"].toString().toStdString(); p.name=root["name"].toString().toStdString();
     p.createdAt=root["createdAt"].toString().toStdString(); p.updatedAt=root["updatedAt"].toString().toStdString();
     if(p.id.empty()||p.name.empty()||!root["pages"].isArray()) return fail("Metadados incompletos.");
@@ -46,13 +61,52 @@ LoadResult ProjectStore::deserialize(const QByteArray& data) {
         page.id=o["id"].toString().toStdString(); page.size={o["widthMm"].toDouble(),o["heightMm"].toDouble()}; page.background=std::uint32_t(o["background"].toDouble());
         if(!page.size.valid())return fail("Dimensões físicas inválidas.");
         for(const auto& value:o["objects"].toArray()) {
-            const auto s=value.toObject(); const auto style=s["style"].toObject(); StrokeObject stroke;
-            if(s["type"]!="stroke"||!claim(s["id"].toString())||!color(style["rgba"])||!s["samples"].isArray())return fail("Objeto inválido.");
+            const auto s=value.toObject();
+            if(s["type"]=="image"){
+                if(root["version"].toInt()!=2||!claim(s["id"].toString())||!s["corners"].isArray()||!s["png"].isString()||!finite(s["zIndex"])||std::abs(s["zIndex"].toDouble())>9007199254740991.0||std::floor(s["zIndex"].toDouble())!=s["zIndex"].toDouble()||!s["locked"].isBool()||!s["visible"].isBool())return fail("Imagem inválida.");
+                ImageObject image;image.id=s["id"].toString().toStdString();image.pixelWidth=s["pixelWidth"].toInt();image.pixelHeight=s["pixelHeight"].toInt();
+                if(image.pixelWidth<=0||image.pixelHeight<=0||image.pixelWidth>8192||image.pixelHeight>8192||double(image.pixelWidth)*image.pixelHeight>32000000)return fail("Resolução de imagem inválida.");
+                const auto corners=s["corners"].toArray();if(corners.size()!=4)return fail("Imagem sem quatro cantos.");
+                for(const auto& v:corners){const auto c=v.toArray();if(c.size()!=2||!finite(c[0])||!finite(c[1])||std::abs(c[0].toDouble())>1e6||std::abs(c[1].toDouble())>1e6)return fail("Posição de imagem inválida.");image.corners.push_back({c[0].toDouble(),c[1].toDouble()});}
+                const auto decoded=QByteArray::fromBase64Encoding(s["png"].toString().toLatin1(),QByteArray::AbortOnBase64DecodingErrors);if(!decoded||decoded.decoded.size()>32*1024*1024||!decoded.decoded.startsWith(QByteArray::fromHex("89504e470d0a1a0a")))return fail("PNG inválido.");
+                image.png=std::make_shared<const std::vector<std::uint8_t>>(decoded.decoded.begin(),decoded.decoded.end());image.properties={s["locked"].toBool(),s["visible"].toBool(),std::int64_t(s["zIndex"].toDouble()),0};page.images.push_back(std::move(image));continue;
+            }
+            const auto style=s["style"].toObject(); StrokeObject stroke;
+            if((s["type"]!="stroke"&&s["type"]!="shape")||!claim(s["id"].toString())||!color(style["rgba"]))return fail("Objeto inválido.");
             stroke.id=s["id"].toString().toStdString();
             for(const char* key:{"minWidthMm","maxWidthMm","gamma","sensitivity"}) if(!finite(style[key]))return fail("Estilo inválido.");
             stroke.style={std::uint32_t(style["rgba"].toDouble()),style["minWidthMm"].toDouble(),style["maxWidthMm"].toDouble(),style["gamma"].toDouble(),style["sensitivity"].toDouble()};
+            if(style.contains("pattern")){
+                if(!finite(style["pattern"])||style["pattern"].toDouble()!=style["pattern"].toInt(-1)||style["pattern"].toInt(-1)<0||style["pattern"].toInt()>2)return fail("Padrão de contorno inválido.");
+                stroke.style.pattern=LinePattern(style["pattern"].toInt());
+            }
+            for(const auto& field:std::vector<std::pair<const char*,double*>>{{"dashLengthMm",&stroke.style.dashLengthMm},{"gapLengthMm",&stroke.style.gapLengthMm},{"dotSpacingMm",&stroke.style.dotSpacingMm}}){
+                if(style.contains(field.first)){
+                    if(!finite(style[field.first])||style[field.first].toDouble()<0.1||style[field.first].toDouble()>100)return fail("Espaçamento do contorno inválido.");
+                    *field.second=style[field.first].toDouble();
+                }
+            }
             const auto& st=stroke.style;
             if(st.minWidthMm<=0||st.maxWidthMm<st.minWidthMm||st.maxWidthMm>100||st.gamma<=0||st.gamma>10||st.sensitivity<=0||st.sensitivity>10) return fail("Pressão inválida.");
+            if(root["version"].toInt()==2){
+                if(!finite(s["zIndex"])||std::abs(s["zIndex"].toDouble())>9007199254740991.0||std::floor(s["zIndex"].toDouble())!=s["zIndex"].toDouble()||!s["locked"].isBool()||!s["visible"].isBool())return fail("Propriedades inválidas.");
+                stroke.properties={s["locked"].toBool(),s["visible"].toBool(),std::int64_t(s["zIndex"].toDouble()),0};
+            }else stroke.properties.zIndex=std::int64_t(page.strokes.size());
+            if(s["type"]=="shape"){
+                if(root["version"].toInt()!=2||!finite(s["kind"])||s["kind"].toInt(-1)<0||s["kind"].toInt(-1)>6||!s["vertices"].isArray()||!s["center"].isArray())return fail("Forma inválida.");
+                ShapeObject shape;shape.id=stroke.id;shape.style=stroke.style;shape.properties=stroke.properties;shape.kind=ShapeKind(s["kind"].toInt());
+                const auto c=s["center"].toArray();if(c.size()!=2||!finite(c[0])||!finite(c[1])||std::abs(c[0].toDouble())>1e6||std::abs(c[1].toDouble())>1e6)return fail("Centro inválido.");shape.center={c[0].toDouble(),c[1].toDouble()};
+                for(const char* key:{"radiusX","radiusY","rotation","fillOpacity"})if(!finite(s[key]))return fail("Forma não numérica.");
+                shape.radiusX=s["radiusX"].toDouble();shape.radiusY=s["radiusY"].toDouble();shape.rotation=s["rotation"].toDouble();shape.fillOpacity=s["fillOpacity"].toDouble();
+                if(s.contains("fillRgba")&&!s["fillRgba"].isNull()){if(!color(s["fillRgba"]))return fail("Cor de preenchimento inválida.");shape.fillRgba=std::uint32_t(s["fillRgba"].toDouble());}
+                if(shape.radiusX<=0||shape.radiusY<=0||shape.radiusX>5000||shape.radiusY>5000||shape.fillOpacity<0||shape.fillOpacity>1)return fail("Forma fora dos limites.");
+                const auto v=s["vertices"].toArray();const int expected=shape.kind==ShapeKind::Line?2:shape.kind==ShapeKind::Triangle?3:(shape.kind==ShapeKind::Rectangle||shape.kind==ShapeKind::Square)?4:0;
+                if(shape.kind==ShapeKind::Polygon?(v.size()<3||v.size()>2048):(v.size()!=expected))return fail("Vértices inválidos.");
+                for(const auto& vertex:v){const auto a=vertex.toArray();if(a.size()!=2||!finite(a[0])||!finite(a[1])||std::abs(a[0].toDouble())>1e6||std::abs(a[1].toDouble())>1e6)return fail("Vértice inválido.");shape.vertices.push_back({a[0].toDouble(),a[1].toDouble()});}
+                if(shape.kind==ShapeKind::Circle&&std::abs(shape.radiusX-shape.radiusY)>1e-6)return fail("Círculo inválido.");
+                page.shapes.push_back(std::move(shape));continue;
+            }
+            if(!s["samples"].isArray())return fail("Traço inválido.");
             const auto samples=s["samples"].toArray(); if(samples.isEmpty()) return fail("Traço vazio.");
             pointCount+=samples.size(); if(pointCount>2000000)return fail("Projeto excede 2 milhões de amostras.");
             for(const auto& sample:samples) {
@@ -87,6 +141,11 @@ QString ProjectStore::save(const QString& path,const Project& p) {
 LoadResult ProjectStore::load(const QString& path) {
     QFile file(path); if(!file.open(QIODevice::ReadOnly))return {{},file.errorString()};
     if(file.size()>maxBytes)return {{},"Arquivo excede 128 MiB."};
-    QString error; const auto json=unpack(file.readAll(),error); if(!error.isEmpty())return {{},error}; return deserialize(json);
+    QString error; const auto json=unpack(file.readAll(),error); if(!error.isEmpty())return {{},error}; auto result=deserialize(json);if(!result)return result;
+    for(const auto& page:result.project.pages)for(const auto& image:page.images){
+        auto bytes=QByteArray(reinterpret_cast<const char*>(image.png->data()),qsizetype(image.png->size()));QBuffer buffer(&bytes);buffer.open(QIODevice::ReadOnly);QImageReader reader(&buffer,"PNG");
+        if(reader.size()!=QSize(image.pixelWidth,image.pixelHeight))return {{},"Dimensões PNG não correspondem aos metadados."};
+        const auto decoded=reader.read();if(decoded.isNull())return {{},"PNG não pôde ser decodificado."};result.images.insert(QString::fromStdString(image.id),decoded);
+    }return result;
 }
 }

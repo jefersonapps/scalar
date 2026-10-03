@@ -14,8 +14,8 @@ Slider {
     handle: Rectangle {
         x: root.leftPadding+root.visualPosition*(root.availableWidth-width)
         y: root.topPadding+(root.availableHeight-height)/2
-        width: Theme.xl; height: Theme.xl; radius: Theme.xl/2
+        width: Theme.sliderHandle; height: Theme.sliderHandle; radius: Theme.sliderHandle/2
         color: root.pressed ? Theme.accent : Theme.surface
-        border.width: 2; border.color: Theme.accent
+        border.width: Theme.focusBorder; border.color: Theme.accent
     }
 }

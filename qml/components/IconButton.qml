@@ -6,9 +6,10 @@ AbstractButton {
     property string iconName: "pen"
     property string label: ""
     property bool selected: false
-    implicitWidth: Theme.touch
-    implicitHeight: Theme.touch
-    padding: (Theme.touch-Theme.icon)/2
+    property bool compact: false
+    implicitWidth: compact ? Theme.controlHeight : Theme.touch
+    implicitHeight: compact ? Theme.controlHeight : Theme.touch
+    padding: (implicitHeight-Theme.icon)/2
     hoverEnabled: true
     Accessible.name: label
     Accessible.role: Accessible.Button

@@ -11,7 +11,7 @@ Popup {
     padding: Theme.xl
     closePolicy: Popup.CloseOnEscape
     background: GlassPanel { radius: Theme.radiusFloating }
-    Overlay.modal: Rectangle { color: "#60202c38" }
+    Overlay.modal: Rectangle { color: Theme.scrim }
     enter: Transition { NumberAnimation { property: "opacity"; from: 0; to: 1; duration: Theme.normal } }
     exit: Transition { NumberAnimation { property: "opacity"; from: 1; to: 0; duration: Theme.fast } }
 }

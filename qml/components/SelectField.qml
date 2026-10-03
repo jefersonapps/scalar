@@ -3,7 +3,7 @@ import QtQuick.Controls
 import "../theme"
 ComboBox {
     id: root
-    implicitHeight: Theme.touch
+    implicitHeight: Theme.controlHeight
     font.pixelSize: Theme.body
     leftPadding: Theme.lg
     rightPadding: Theme.section

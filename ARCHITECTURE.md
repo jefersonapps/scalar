@@ -1,15 +1,20 @@
 # Arquitetura
 
-## Árvore do Milestone 1
+## Árvore atual
 
 ```text
 src/
   app/          entry point, AppController, ponte QML
   documents/    Project, Page, StrokeObject, PointerSample, unidades
-  commands/     histórico de AddObjectCommand
+  commands/     histórico de adição, conversão, transformação, estilo e exclusão
   input/        normalização de mouse e tablet, filtro de pressão
   canvas/       QQuickItem, máquina de estados, viewport, eventos
-  rendering/    tesselação portátil de traços
+  rendering/    tesselação de traços/formas e CanvasScene (Scene Graph)
+  geometry/     bounds, hit testing, transforms, views de objetos
+  recognition/  resampling, RDP, fitting e confiança
+  selection/    IDs selecionados e seleção por área
+  tools/        borracha por cápsula com divisão de strokes
+  clipboard/    importação/encoding de imagens em worker
   persistence/  ZIP, JSON, substituição atômica, SQLite, thumbnails
 qml/
   theme/        singleton Theme e tokens
@@ -22,7 +27,7 @@ scripts/        testes portáteis
  tests/         núcleo C++ e integração Qt Test
 ```
 
-Os módulos geometry, recognition, tools, selection, pdf, export, math e clipboard serão acrescentados quando houver comportamento implementado. Não há arquivos vazios para simular funcionalidades futuras.
+Os módulos pdf, export e math continuam planejados. Não há arquivos vazios para simular funcionalidades futuras.
 
 ## Documento e unidades
 
@@ -30,11 +35,11 @@ Project contém identidade, nome, datas e páginas. Cada página tem ID, largura
 
 As coordenadas do documento não dependem de DPI ou viewport. `screen = world * (96/25.4) * zoom + pan`. Tela usa pixels lógicos do Qt. Device pixel ratio e troca de monitor pertencem ao backend Qt Quick; a geometria original não é escalada nem regravada. Alterar orientação normaliza o par largura/altura; não transforma traços existentes porque configuração de página é apenas de criação neste ciclo.
 
-Não há CanvasObject polimórfico nem transforms de objeto no ciclo 1. Quando seleção/formas forem introduzidas, a coleção de objetos migrará para uma variant tipada com propriedades comuns e versões de serialização explícitas. Isso evita uma hierarquia fictícia antes da implementação real.
+CanvasObject é uma variant tipada de StrokeObject, ShapeObject e ImageObject. Page mantém coleções concretas; objectViews ordena referências por zIndex sem copiar amostras no render loop. ShapeObject é paramétrico: endpoints/vértices para linhas/polígonos, centro/raios/rotação para círculo/elipse. ImageObject tem quatro cantos e backing PNG imutável compartilhado; mover/duplicar não copia o bitmap. ObjectProperties tem locked, visible, zIndex e revisão transitória do cache. Transforms editam coordenadas físicas; undo guarda before/after. Não há matriz genérica persistida para strokes neste ciclo.
 
 ## Entrada
 
-UI e entrada estão na main thread. CanvasItem tem estados enum Idle, Drawing, Panning e TouchGesture. InputManager produz PointerSample; o renderer e o documento não conhecem QTabletEvent. Eventos de tablet são interceptados na QQuickWindow e mapeados para a área local do item; a toolbar é excluída. Eventos sintéticos de mouse são consumidos para evitar traços duplicados. O caminho de tablet precisa ser validado nos drivers Windows/Linux.
+UI e entrada estão na main thread. CanvasItem tem uma máquina de estados com Drawing, PossibleHold, ShapePreview, CreatingShape, Erasing e estados de navegação/edição. CanvasSelection separa seleção/handles; CanvasScene separa os nós gráficos do input. InputManager produz PointerSample; o renderer e o documento não conhecem QTabletEvent. Eventos de tablet são interceptados na QQuickWindow e mapeados para a área local do item; a toolbar é excluída. Eventos sintéticos de mouse são consumidos para evitar traços duplicados. O caminho de tablet precisa ser validado nos drivers Windows/Linux.
 
 Stylus desenha; mouse usa caneta/mão; toque navega. Middle drag ou Space drag faz pan. Wheel zoom ancora no ponteiro; pixel deltas do trackpad fazem pan, Ctrl + pixel delta faz zoom; ZoomNativeGesture trata pinch quando fornecido pelo sistema. Touch de dois dedos usa razão de distâncias. Durante stylus ativo, toque é ignorado: isso é uma proteção básica, não uma validação de palm rejection em hardware.
 
@@ -42,13 +47,17 @@ Pressão: minWidth + (maxWidth - minWidth) × pow(clamp(pressure × sensitivity)
 
 ## Renderização
 
-CanvasItem usa QQuickItem/Qt Quick Scene Graph. Cada stroke concluído gera QSGGeometryNode com triângulos em mm. Segmentos têm largura interpolada; discos aproximados por 12 segmentos fecham extremidades e junções. O stroke ativo possui nó separado. Traços concluídos não são retesselados a cada pointer move. Uma transformação de raiz implementa pan/zoom; clip limita o desenho à página.
+CanvasItem usa QQuickItem/Qt Quick Scene Graph. Cada stroke concluído gera QSGGeometryNode com triângulos em mm. Segmentos têm largura interpolada; discos aproximados por 12 segmentos fecham extremidades e junções. O stroke ativo possui nó separado. Traços e formas concluídos não são retesselados a cada pointer move; revisão/tipo invalidam apenas o nó alterado. Fill e borda de formas usam meshes separados. Imagens usam textura e transformação vetorial dos cantos; o bitmap é decodificado previamente em worker. Uma transformação de raiz implementa pan/zoom; clip limita o desenho à página.
 
 MSAA 4x é solicitado no início, mas disponibilidade e antialiasing real dependem do backend. Não há QQuickPaintedItem no canvas. QPainter é usado apenas para thumbnails de 640 × 400 em worker. Ainda não há culling, índice espacial, atualização incremental do mesh ativo ou batching explícito. A tesselação do traço ativo cresce linearmente com suas amostras e o sync percorre IDs de objetos existentes; benchmark será necessário antes de declarar 60 FPS ou baixa latência.
 
 ## Comandos
 
-History mantém AddObjectCommand e cursor. Undo remove o objeto por ID; redo recoloca o mesmo objeto e as mesmas amostras. Um comando novo após undo remove o ramo redo. O histórico não é persistido. Comandos de transformação, reconhecimento e mudança de estilo pertencem ao milestone 2.
+History armazena comandos com alterações before/after de objetos e CommandKind (Add, Delete, Transform, Convert, Style). Undo/redo aplica o mesmo ID e geometria; operações de seleção/borracha agrupam suas alterações em um comando. Reconhecimento faz primeiro Add do traço e depois Convert: primeiro undo restaura o original, segundo o remove. Histórico não é persistido.
+
+Reconhecimento roda em QtConcurrent após hold com tolerância 0,6 mm e tempo 250–1500 ms, padrão 500. Resampling para 128 pontos limita fitting/RDP; IDs e epochs descartam resultados após cancelamento/release. Linha aberta, círculos/ellipses por resíduos, e polígonos convexos com ângulos/lados validados. É heurístico, sem IA em nuvem; tolerâncias precisam de calibração com escrita real.
+
+Borracha calcula interseções analíticas dos segmentos de stroke com uma cápsula entre posições do ponteiro. Limites novos interpolam pressão e demais amostras. Preview preserva as partes não apagadas; release registra exclusão de originais + adição dos fragmentos. Shapes/images não são rasterizados nem apagados pela borracha por trecho; seleção + Delete os remove.
 
 ## Persistência e threads
 
@@ -60,4 +69,4 @@ Arquivos novos ficam em AppDataLocation/projects. `.board.png` é thumbnail secu
 
 ## Limites de escopo
 
-Não há renderização/exportação PDF, formas, seleção, texto, LaTeX, imagens de documento, grades, régua ou compasso. Futuro pipeline de exportação deverá consumir o mesmo modelo em mm e separar renderização de página da viewport. Qt PDF será dependência do módulo de importação; MathJax ficará empacotado offline quando matemática for implementada.
+Não há importação/exportação PDF, texto, LaTeX, grades, régua ou compasso. Futuro pipeline de exportação deverá consumir o mesmo modelo em mm e separar renderização de página da viewport. Qt PDF será dependência do módulo de importação; MathJax ficará empacotado offline quando matemática for implementada.
