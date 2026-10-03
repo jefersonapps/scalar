@@ -9,6 +9,7 @@ Item {
     signal createRequested()
     signal openRequested()
     signal settingsRequested()
+    signal importPdfRequested()
     DeleteProjectDialog { id: deletion }
     TrashDialog { id: trash; onPermanentDeletionRequested: entry => deletion.ask(entry,true) }
     ColumnLayout {
@@ -44,6 +45,7 @@ Item {
                 C.ActionButton { objectName: "newProjectButton"; text: "Novo quadro"; primary: true; onClicked: root.createRequested() }
                 C.ActionButton { text: "Criar com padrão"; enabled: !App.busy; onClicked: App.newDefault() }
                 C.ActionButton { text: "Abrir projeto"; onClicked: root.openRequested() }
+                C.ActionButton { text: "Importar PDF"; enabled: !App.busy; onClicked: root.importPdfRequested() }
             }
         }
         RowLayout {

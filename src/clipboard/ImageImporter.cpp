@@ -2,6 +2,11 @@
 #include <QImageReader>
 #include <QBuffer>
 #include <QFile>
+#include <QFileInfo>
+#include <QPainter>
+#ifdef SCALAR_HAVE_QT_SVG
+#include <QSvgRenderer>
+#endif
 #ifdef SCALAR_HAVE_WEBP
 #include <webp/decode.h>
 #endif
@@ -15,6 +20,15 @@ ImportedImage encodeImage(QImage image,Point center,PageSize page){
     return {std::move(object),std::move(image),{}};
 }
 ImportedImage importImageFile(const QString& path,Point center,PageSize page){
+#ifdef SCALAR_HAVE_QT_SVG
+    if(QFileInfo(path).suffix().compare("svg",Qt::CaseInsensitive)==0){
+        QFile file(path);if(!file.open(QIODevice::ReadOnly))return {{},{},file.errorString()};
+        if(file.size()>32*1024*1024)return {{},{},"SVG excede 32 MiB."};
+        QSvgRenderer renderer(file.readAll());const auto size=renderer.defaultSize();
+        if(!renderer.isValid()||size.isEmpty()||size.width()>8192||size.height()>8192||qint64(size.width())*size.height()>32000000)return {{},{},"SVG inválido ou muito grande."};
+        QImage image(size,QImage::Format_ARGB32_Premultiplied);image.fill(Qt::transparent);QPainter painter(&image);renderer.render(&painter);painter.end();return encodeImage(std::move(image),center,page);
+    }
+#endif
     QImageReader reader(path);reader.setAutoTransform(true);
     if(!reader.canRead()){
         QFile file(path);

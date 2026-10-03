@@ -19,7 +19,7 @@ bool finite(const QJsonValue& v) { return v.isDouble()&&std::isfinite(v.toDouble
 bool color(const QJsonValue& v) { return finite(v)&&v.toDouble()>=0&&v.toDouble()<=4294967295.0&&std::floor(v.toDouble())==v.toDouble(); }
 }
 QByteArray ProjectStore::serialize(const Project& p) {
-    QJsonArray pages;
+    QJsonArray pages;QJsonObject pdfAssets;
     for(const auto& page:p.pages) {
         QJsonArray strokes;
         for(const auto& s:page.strokes) {
@@ -45,9 +45,13 @@ QByteArray ProjectStore::serialize(const Project& p) {
             for(const auto& f:t.math)math.append(QJsonObject{{"latex",text(f.latex)},{"svg",text(f.svg)},{"display",f.display},{"start",double(f.start)},{"length",double(f.length)},{"widthEm",f.widthEm},{"heightEm",f.heightEm}});
             strokes.append(QJsonObject{{"id",text(t.id)},{"type","text"},{"source",text(t.source)},{"fontFamily",text(t.fontFamily)},{"fontSizePt",t.fontSizePt},{"bold",t.bold},{"italic",t.italic},{"alignment",t.alignment},{"rgba",double(t.style.rgba)},{"corners",corners},{"math",math},{"zIndex",double(t.properties.zIndex)},{"locked",t.properties.locked},{"visible",t.properties.visible}});
         }
-        pages.append(QJsonObject{{"id",text(page.id)},{"widthMm",page.size.widthMm},{"heightMm",page.size.heightMm},{"background",double(page.background)},{"backgroundStyle",QJsonObject::fromVariantMap(backgroundValues(page.background,page.backgroundStyle))},{"objects",strokes}});
+        QJsonObject record{{"id",text(page.id)},{"widthMm",page.size.widthMm},{"heightMm",page.size.heightMm},{"background",double(page.background)},{"backgroundStyle",QJsonObject::fromVariantMap(backgroundValues(page.background,page.backgroundStyle))},{"objects",strokes}};
+        if(page.pdf){const auto& pdf=*page.pdf;const auto bytes=pdf.data?QByteArray(reinterpret_cast<const char*>(pdf.data->data()),qsizetype(pdf.data->size())):QByteArray{};
+            pdfAssets.insert(text(pdf.assetId),QJsonObject{{"data",QString::fromLatin1(bytes.toBase64())},{"pageCount",pdf.sourcePageCount}});
+            record.insert("pdf",QJsonObject{{"asset",text(pdf.assetId)},{"pageIndex",pdf.pageIndex}});
+        }pages.append(record);
     }
-    return QJsonDocument(QJsonObject{{"format","scalar.board"},{"version",3},{"units","mm"},{"id",text(p.id)},{"name",text(p.name)},{"createdAt",text(p.createdAt)},{"updatedAt",text(p.updatedAt)},{"pages",pages}}).toJson(QJsonDocument::Compact);
+    return QJsonDocument(QJsonObject{{"format","scalar.board"},{"version",4},{"units","mm"},{"id",text(p.id)},{"name",text(p.name)},{"createdAt",text(p.createdAt)},{"updatedAt",text(p.updatedAt)},{"pages",pages},{"pdfAssets",pdfAssets}}).toJson(QJsonDocument::Compact);
 }
 LoadResult ProjectStore::deserialize(const QByteArray& data) {
     auto fail=[](const QString& reason){return LoadResult{{},reason};};
@@ -55,19 +59,35 @@ LoadResult ProjectStore::deserialize(const QByteArray& data) {
     QJsonParseError error; const auto doc=QJsonDocument::fromJson(data,&error);
     if(error.error!=QJsonParseError::NoError||!doc.isObject()) return fail("JSON inválido.");
     const auto root=doc.object();
-    if(root["format"]!="scalar.board"||(root["version"].toInt()<1||root["version"].toInt()>3)||root["units"]!="mm") return fail("Formato ou versão não suportado.");
+    if(root["format"]!="scalar.board"||(root["version"].toInt()<1||root["version"].toInt()>4)||root["units"]!="mm") return fail("Formato ou versão não suportado.");
     Project p; p.id=root["id"].toString().toStdString(); p.name=root["name"].toString().toStdString();
     p.createdAt=root["createdAt"].toString().toStdString(); p.updatedAt=root["updatedAt"].toString().toStdString();
     if(p.id.empty()||p.name.empty()||!root["pages"].isArray()) return fail("Metadados incompletos.");
     const auto pages=root["pages"].toArray(); if(pages.isEmpty()||pages.size()>1000) return fail("Quantidade de páginas inválida.");
     QSet<QString> ids; ids.insert(text(p.id)); qsizetype pointCount=0;
     auto claim=[&](const QString& id){if(id.isEmpty()||ids.contains(id))return false; ids.insert(id); return true;};
+    QHash<QString,PdfPageObject> assets;
+    if(root["version"].toInt()>=4){
+        if(!root["pdfAssets"].isObject())return fail("Assets PDF inválidos.");
+        const auto jsonAssets=root["pdfAssets"].toObject();
+        for(auto i=jsonAssets.begin();i!=jsonAssets.end();++i){
+            const auto entry=i.value().toObject();const auto count=entry["pageCount"].toInt(-1);
+            const auto decoded=QByteArray::fromBase64Encoding(entry["data"].toString().toLatin1(),QByteArray::AbortOnBase64DecodingErrors);
+            if(!claim(i.key())||!entry["data"].isString()||!decoded||decoded.decoded.size()>64*1024*1024||!decoded.decoded.left(1024).contains("%PDF-")||count<1||count>1000||entry["pageCount"].toDouble()!=count)return fail("PDF incorporado inválido.");
+            assets.insert(i.key(),PdfPageObject{i.key().toStdString(),std::make_shared<const std::vector<std::uint8_t>>(decoded.decoded.begin(),decoded.decoded.end()),0,count});
+        }
+    }
     for(const auto& pageValue:pages) {
         if(!pageValue.isObject()) return fail("Página inválida."); const auto o=pageValue.toObject(); Page page;
         if(!claim(o["id"].toString())||!finite(o["widthMm"])||!finite(o["heightMm"])||!color(o["background"])||!o["objects"].isArray()) return fail("Página inválida.");
         page.id=o["id"].toString().toStdString(); page.size={o["widthMm"].toDouble(),o["heightMm"].toDouble()}; page.background=std::uint32_t(o["background"].toDouble());
         if(o.contains("backgroundStyle")){std::uint32_t bg;if(!o["backgroundStyle"].isObject()||!parseBackground(o["backgroundStyle"].toObject().toVariantMap(),bg,page.backgroundStyle)||bg!=page.background)return fail("Fundo de página inválido.");}
         if(!page.size.valid())return fail("Dimensões físicas inválidas.");
+        if(o.contains("pdf")){
+            const auto ref=o["pdf"].toObject();const auto asset=ref["asset"].toString();const int index=ref["pageIndex"].toInt(-1);
+            if(root["version"].toInt()<4||!o["pdf"].isObject()||!assets.contains(asset)||index<0||index>=assets[asset].sourcePageCount||ref["pageIndex"].toDouble()!=index)return fail("Página PDF inválida.");
+            page.pdf=assets[asset];page.pdf->pageIndex=index;
+        }
         for(const auto& value:o["objects"].toArray()) {
             const auto s=value.toObject();
             if(s["type"]=="text"){

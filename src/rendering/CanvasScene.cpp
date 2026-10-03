@@ -22,6 +22,9 @@ struct SceneRoot : QSGTransformNode {
     std::unordered_map<std::string,Entry> strokes;
     QSGNode* live=nullptr;
     QSGNode* grid=nullptr;
+    QSGNode* pdf=nullptr;
+    quint64 pdfRevision=0;
+    std::string pdfPageId;
     BackgroundStyle gridStyle;
     QRectF gridBounds;
     double gridScale=0;
@@ -59,11 +62,17 @@ QSGNode* CanvasItem::updatePaintNode(QSGNode* old,UpdatePaintNodeData*){
     const auto a=view_.screenToWorld({0,0}),b=view_.screenToWorld({width(),height()});
     const QRectF visible=QRectF(a.x,a.y,b.x-a.x,b.y-a.y).intersected(root->paper->rect());
     const double scale=view_.pixelsPerMm*view_.zoom;
+    if(!page||root->pdfPageId!=page->id||root->pdfRevision!=(controller_?controller_->pdfImageRevision():0)){
+        if(root->pdf){root->clip->removeChildNode(root->pdf);delete root->pdf;root->pdf=nullptr;}
+        if(page&&page->pdf){ImageObject base;base.corners={{0,0},{page->size.widthMm,0},{page->size.widthMm,page->size.heightMm},{0,page->size.heightMm}};
+            root->pdf=imageNode(base,window(),controller_->pdfImage());root->clip->prependChildNode(root->pdf);}
+        root->pdfPageId=page?page->id:"";root->pdfRevision=controller_?controller_->pdfImageRevision():0;
+    }
     if(!page||!root->grid||root->gridStyle!=page->backgroundStyle||root->gridBounds!=visible||root->gridScale!=scale){
         if(root->grid){root->clip->removeChildNode(root->grid);delete root->grid;root->grid=nullptr;}
         if(page&&page->backgroundStyle.gridType!=GridType::None){auto color=fromRgba(page->backgroundStyle.gridColor);color.setAlphaF(color.alphaF()*page->backgroundStyle.opacity);
             root->grid=meshNode(backgroundMesh(page->backgroundStyle,{visible.left(),visible.top(),visible.right(),visible.bottom()},4/scale),color);
-            root->clip->prependChildNode(root->grid);root->gridStyle=page->backgroundStyle;root->gridBounds=visible;root->gridScale=scale;}
+            if(root->pdf)root->clip->insertChildNodeAfter(root->grid,root->pdf);else root->clip->prependChildNode(root->grid);root->gridStyle=page->backgroundStyle;root->gridBounds=visible;root->gridScale=scale;}
     }
 
     QSet<QString> present;

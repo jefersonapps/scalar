@@ -23,14 +23,28 @@ AppController::AppController(QObject* parent,const QString& dataDirectory):QObje
     QDir().mkpath(dataDir_+"/projects"); library_=std::make_unique<Library>(dataDir_+"/library.sqlite");
     recognitionEnabled_=library_->setting("recognitionEnabled",true).toBool();holdDelay_=std::clamp(library_->setting("holdDelay",500).toInt(),250,1500);
     qGuiApp->installEventFilter(this);
+    connect(&exportWatcher_,&QFutureWatcher<QString>::finished,this,[this]{exportPending_=false;const auto error=exportWatcher_.result();status_=error.isEmpty()?"PDF exportado · todas as páginas":error;emit changed();});
+    thumbnailsTimer_.setSingleShot(true);thumbnailsTimer_.setInterval(700);
+    connect(&thumbnailsTimer_,&QTimer::timeout,this,&AppController::beginThumbnails);
+    connect(&thumbnailsWatcher_,&QFutureWatcher<QHash<QString,QString>>::finished,this,[this]{
+        thumbnailsPending_=false;
+        if(thumbnailsRevision_!=revision_){scheduleThumbnails();return;}
+        const auto result=thumbnailsWatcher_.result();for(auto i=result.begin();i!=result.end();++i)thumbnails_.insert(i.key(),i.value());
+        for(const auto& id:renderingThumbnails_)dirtyThumbnails_.remove(id);emit pagesChanged();if(!dirtyThumbnails_.isEmpty())scheduleThumbnails();
+    });
+    connect(&pdfCache_,&PdfRenderCache::imageChanged,this,[this]{emit documentChanged();});
+    connect(&pdfCache_,&PdfRenderCache::failed,this,[this](const QString& error){status_=error;emit changed();});
+    connect(&pdfWatcher_,&QFutureWatcher<PdfInfo>::finished,this,[this]{pdfPending_=false;pdfInfo_=pdfWatcher_.result();status_=pdfInfo_.error.isEmpty()?"Escolha as páginas para importar":pdfInfo_.error;emit changed();});
 #if QT_VERSION >= QT_VERSION_CHECK(6,5,0)
     connect(qGuiApp->styleHints(),&QStyleHints::colorSchemeChanged,this,[this]{emit preferencesChanged();});
 #endif
-    connect(&imageWatcher_,&QFutureWatcher<ImportedImage>::finished,this,[this]{
-        imageImportPending_=false;const auto imported=imageWatcher_.result();if(importProjectId_!=QString::fromStdString(project_.id))return;
-        if(!imported.error.isEmpty()){status_=imported.error;emit changed();return;}
-        auto object=imported.object;object.properties.zIndex=nextZIndex();images_.insert(QString::fromStdString(object.id),imported.image);
-        history_.apply(project_.pages[0],{{{},CanvasObject(std::move(object))}},CommandKind::AddObject);mutate();
+    connect(&imageWatcher_,&QFutureWatcher<std::vector<ImportedImage>>::finished,this,[this]{
+        imageImportPending_=false;const auto imported=imageWatcher_.result();if(importProjectId_!=QString::fromStdString(project_.id)||!page()||importPageId_!=QString::fromStdString(page()->id)){emit changed();return;}
+        std::vector<ObjectChange> changes;QStringList errors;auto z=nextZIndex();
+        for(const auto& item:imported){if(!item.error.isEmpty()){errors.append(item.error);continue;}
+            auto object=item.object;object.properties.zIndex=z++;images_.insert(QString::fromStdString(object.id),item.image);changes.push_back({{},CanvasObject(std::move(object))});}
+        if(!changes.empty()){history().apply(current(),std::move(changes),CommandKind::AddObject);mutate();}
+        if(!errors.isEmpty()){status_=errors.join(" · ");emit changed();}else if(imported.empty())emit changed();
     });
     connect(&closedLinesWatcher_,&QFutureWatcher<std::optional<ClosedLines>>::finished,this,[this]{
         if(closeLinesRevision_!=revision_){if(active())closeLines(latestLineId_);return;}
@@ -51,15 +65,16 @@ AppController::AppController(QObject* parent,const QString& dataDirectory):QObje
     QTimer::singleShot(0,this,&AppController::maintainTrashedProjects);
     connect(&textWatcher_,&QFutureWatcher<PreparedText>::finished,this,[this]{
         textPending_=false;const auto prepared=textWatcher_.result();textError_=prepared.error;
-        if(textProjectId_!=QString::fromStdString(project_.id)){emit changed();return;}
+        if(textProjectId_!=QString::fromStdString(project_.id)||!page()||textPageId_!=QString::fromStdString(page()->id)){emit changed();return;}
         if(!prepared.error.isEmpty()){status_=prepared.error;emit changed();return;}
         auto object=prepared.object;images_.insert(QString::fromStdString(object.id),prepared.image);textMeshes_.insert(QString::fromStdString(object.id),prepared.geometry);textSizes_.insert(QString::fromStdString(object.id),prepared.naturalSize);
-        history_.apply(project_.pages[0],{{textBefore_,CanvasObject(object)}},textBefore_?CommandKind::ChangeStyle:CommandKind::AddObject);textRasterRevision_=0;mutate();emit textCommitted(QString::fromStdString(object.id));
+        history().apply(current(),{{textBefore_,CanvasObject(object)}},textBefore_?CommandKind::ChangeStyle:CommandKind::AddObject);textRasterRevision_=0;mutate();emit textCommitted(QString::fromStdString(object.id));
     });
     connect(&textRasterWatcher_,&QFutureWatcher<QHash<QString,TextVisual>>::finished,this,[this]{
+        textRasterPending_=false;
         if(textRasterRevision_!=revision_){textRasterRevision_=0;refreshTextTextures(textRasterScale_);return;}
         const auto results=textRasterWatcher_.result();for(auto i=results.begin();i!=results.end();++i){images_.insert(i.key(),i.value().text);textMeshes_.insert(i.key(),i.value().math);textSizes_.insert(i.key(),i.value().naturalSize);if(!i.value().error.isEmpty())status_=i.value().error;}
-        if(active())for(auto& object:project_.pages[0].texts)++object.properties.revision;
+        if(active())for(auto& object:current().texts)++object.properties.revision;
         emit documentChanged();
     });
     recovery_=library_->setting("cleanShutdown","true").toString()=="false"&&QFile::exists(dataDir_+"/session.board");
@@ -83,7 +98,7 @@ bool AppController::eventFilter(QObject* watched,QEvent* event){
     if(watched==qGuiApp && event->type()==QEvent::ApplicationPaletteChange)emit preferencesChanged();
     return QObject::eventFilter(watched,event);
 }
-AppController::~AppController(){ if(!closed_)flush(); loadWatcher_.waitForFinished();imageWatcher_.waitForFinished();textWatcher_.waitForFinished();textRasterWatcher_.waitForFinished();trashWatcher_.waitForFinished();closedLinesWatcher_.waitForFinished(); }
+AppController::~AppController(){ if(!closed_)flush(); loadWatcher_.waitForFinished();imageWatcher_.waitForFinished();textWatcher_.waitForFinished();textRasterWatcher_.waitForFinished();trashWatcher_.waitForFinished();closedLinesWatcher_.waitForFinished();pdfWatcher_.waitForFinished();thumbnailsWatcher_.waitForFinished();exportWatcher_.waitForFinished(); }
 QColor AppController::pageColor() const { const auto c=page()?page()->background:0xffffffff;return QColor(int((c>>24)&255),int((c>>16)&255),int((c>>8)&255),int(c&255)); }
 bool AppController::systemDark() const {
 #if QT_VERSION >= QT_VERSION_CHECK(6,5,0)
@@ -100,10 +115,10 @@ QString AppController::defaultSize() const{return library_->setting("defaultSize
 void AppController::setDefaultSize(const QString& v){if(v!="A4"&&v!="Carta")return;library_->setSetting("defaultSize",v);emit preferencesChanged();}
 bool AppController::defaultLandscape() const{return library_->setting("defaultLandscape",false).toBool();}
 void AppController::setDefaultLandscape(bool v){library_->setSetting("defaultLandscape",v);emit preferencesChanged();}
-QString AppController::defaultBackground() const{return library_->setting("defaultBackground","Branco").toString();}
-void AppController::setDefaultBackground(const QString& v){bool found=false;for(const auto& preset:backgroundPresets())if(preset.toMap().value("name").toString()==v)found=true;if(!found)return;library_->setSetting("defaultBackground",v);emit preferencesChanged();}
-void AppController::install(Project p,const QString& path){project_=std::move(p);path_=path;images_.clear();textMeshes_.clear();textSizes_.clear();history_.clear();dirty_=false;++revision_;emit documentChanged();emit changed();}
-void AppController::newProject(const QString& name,const QString& preset,double width,double height,bool landscape,const QString& background) {
+QString AppController::defaultBackground() const{const auto value=library_->setting("defaultBackground","Sem grade").toString();return value=="Branco"||value=="Preto"||value=="Verde"?"Sem grade":value;}
+void AppController::setDefaultBackground(const QString& v){bool found=false;for(const auto& preset:gridPresets())if(preset.toMap().value("name").toString()==v)found=true;if(!found)return;library_->setSetting("defaultBackground",v);emit preferencesChanged();}
+void AppController::install(Project p,const QString& path){project_=std::move(p);currentPage_=0;path_=path;images_.clear();textMeshes_.clear();textSizes_.clear();histories_.clear();thumbnails_.clear();dirtyThumbnails_.clear();for(const auto& page:project_.pages)dirtyThumbnails_.insert(QString::fromStdString(page.id));pdfCache_.clear();dirty_=false;++revision_;textRasterRevision_=0;scheduleThumbnails();refreshPdf(textRasterScale_);emit pagesChanged();emit pageChanged();emit documentChanged();emit changed();}
+void AppController::newProject(const QString& name,const QString& preset,double width,double height,bool landscape,const QString& background,const QString& pageColor) {
     if(loading_)return;
     PageSize size=preset=="A4"?PageSize::a4():preset=="Carta"?PageSize::letter():PageSize{width,height};
     if(!size.valid()){status_="Use dimensões entre 10 e 5000 mm.";emit changed();return;}
@@ -111,43 +126,57 @@ void AppController::newProject(const QString& name,const QString& preset,double 
     if(!landscape&&size.widthMm>size.heightMm)std::swap(size.widthMm,size.heightMm);
     if(!flush())return;
     Project p{newId(),(name.trimmed().isEmpty()?QString("Quadro sem título"):name.trimmed()).toStdString(),now().toStdString(),now().toStdString(),{}};
-    p.pages.push_back({newId(),size,background=="Preto"?0x18221effu:background=="Verde"?0x214f43ffu:0xffffffffu,{}});
-    for(const auto& preset:backgroundPresets())if(preset.toMap().value("name").toString()==background)parseBackground(preset.toMap(),p.pages[0].background,p.pages[0].backgroundStyle);
+    const bool dark=theme()=="Dark"||(theme()=="System"&&systemDark());
+    const QColor chosen=pageColor.isEmpty()?QColor(dark?"#000000":"#ffffff"):QColor(pageColor);
+    if(!chosen.isValid()){status_="Cor de página inválida.";emit changed();return;}
+    const auto rgba=(std::uint32_t(chosen.red())<<24)|(std::uint32_t(chosen.green())<<16)|(std::uint32_t(chosen.blue())<<8)|255;
+    p.pages.push_back({newId(),size,rgba,{}});
+    for(const auto& preset:backgroundPresets())if(preset.toMap().value("name").toString()==background){std::uint32_t ignored;parseBackground(preset.toMap(),ignored,p.pages[0].backgroundStyle);}
     const QString path=dataDir_+"/projects/"+QString::fromStdString(p.id)+".board";
     install(std::move(p),path); mutate(); beginSave();
 }
 void AppController::newDefault(){newProject("Novo quadro",defaultSize(),210,297,defaultLandscape(),defaultBackground());}
-void AppController::mutate(){dirty_=true;++revision_;project_.updatedAt=now().toStdString();autosave_.start();refreshTextTextures(textRasterScale_);emit documentChanged();emit changed();}
-void AppController::addStroke(StrokeObject s){if(!active()||loading_||s.samples.empty())return;s.properties.zIndex=nextZIndex();history_.add(project_.pages[0],std::move(s));mutate();}
+void AppController::mutate(){dirty_=true;++revision_;project_.updatedAt=now().toStdString();autosave_.start();refreshTextTextures(textRasterScale_);if(page())dirtyThumbnails_.insert(QString::fromStdString(page()->id));scheduleThumbnails();emit documentChanged();emit changed();}
+void AppController::addStroke(StrokeObject s){if(!active()||loading_||s.samples.empty())return;s.properties.zIndex=nextZIndex();history().add(current(),std::move(s));mutate();}
 std::int64_t AppController::nextZIndex() const{
     std::int64_t value=0;if(page()){for(const auto& s:page()->strokes)value=std::max(value,s.properties.zIndex+1);for(const auto& s:page()->shapes)value=std::max(value,s.properties.zIndex+1);for(const auto& s:page()->images)value=std::max(value,s.properties.zIndex+1);for(const auto& s:page()->texts)value=std::max(value,s.properties.zIndex+1);}return value;
 }
 void AppController::addRecognizedStroke(StrokeObject stroke,ShapeObject shape){
     const auto id=shape.id;const bool line=shape.kind==ShapeKind::Line;
     if(!active()||loading_)return;stroke.properties.zIndex=nextZIndex();shape.properties.zIndex=stroke.properties.zIndex;
-    history_.add(project_.pages[0],stroke);history_.apply(project_.pages[0],{{CanvasObject(stroke),CanvasObject(std::move(shape))}},CommandKind::ConvertStrokeToShape);mutate();if(line)closeLines(id);
+    history().add(current(),stroke);history().apply(current(),{{CanvasObject(stroke),CanvasObject(std::move(shape))}},CommandKind::ConvertStrokeToShape);mutate();if(line)closeLines(id);
 }
 void AppController::importImage(const QUrl& url,QPointF center){
-    if(!active()||loading_||imageImportPending_||!url.isLocalFile())return;importProjectId_=QString::fromStdString(project_.id);const auto size=page()->size;const auto path=url.toLocalFile();
-    imageImportPending_=true;imageWatcher_.setFuture(QtConcurrent::run([path,center,size]{return importImageFile(path,{center.x(),center.y()},size);}));status_="Importando imagem…";emit changed();
+    importImages({url},center);
+}
+void AppController::importImages(const QVariantList& urls,QPointF center){
+    if(!active()||loading_||imageImportPending_||urls.isEmpty())return;QStringList paths;
+    for(const auto& value:urls){const auto url=value.toUrl();if(url.isLocalFile())paths.append(url.toLocalFile());}
+    if(paths.isEmpty())return;if(paths.size()>32){status_="Importe até 32 imagens por vez.";emit changed();return;}
+    importProjectId_=QString::fromStdString(project_.id);importPageId_=QString::fromStdString(page()->id);const auto size=page()->size;
+    imageImportPending_=true;imageWatcher_.setFuture(QtConcurrent::run([paths,center,size]{std::vector<ImportedImage> result;qint64 memory=0;int offset=0;
+        for(const auto& path:paths){auto image=importImageFile(path,{center.x()+offset,center.y()+offset},size);memory+=image.image.sizeInBytes();
+            if(memory>256*1024*1024){result.push_back({{},{},"O lote excede 256 MiB de imagens decodificadas."});break;}
+            if(image.error.isEmpty())offset+=3;result.push_back(std::move(image));}return result;
+    }));status_="Importando imagens…";emit changed();
 }
 void AppController::pasteImage(QPointF center){
     if(!active()||loading_||imageImportPending_)return;
     const auto* mime=QGuiApplication::clipboard()->mimeData();
-    if(mime->hasImage()){const auto image=QGuiApplication::clipboard()->image();const auto size=page()->size;importProjectId_=QString::fromStdString(project_.id);
-        imageImportPending_=true;imageWatcher_.setFuture(QtConcurrent::run([image,center,size]{return encodeImage(image,{center.x(),center.y()},size);}));status_="Colando imagem…";emit changed();}
-    else if(mime->hasUrls()&&!mime->urls().isEmpty())importImage(mime->urls().first(),center);
+    if(mime->hasImage()){const auto image=QGuiApplication::clipboard()->image();const auto size=page()->size;importProjectId_=QString::fromStdString(project_.id);importPageId_=QString::fromStdString(page()->id);
+        imageImportPending_=true;imageWatcher_.setFuture(QtConcurrent::run([image,center,size]{return std::vector<ImportedImage>{encodeImage(image,{center.x(),center.y()},size)};}));status_="Colando imagem…";emit changed();}
+    else if(mime->hasUrls()&&!mime->urls().isEmpty()){const auto url=mime->urls().first();if(QFileInfo(url.toLocalFile()).suffix().compare("pdf",Qt::CaseInsensitive)==0)inspectPdfFile(url);else {QVariantList urls;for(const auto& u:mime->urls())urls.append(u);importImages(urls,center);}}
     else if(mime->hasText())upsertText({},center,{{"source",mime->text()},{"color",pageColor().lightness()<128?"#f4f4f5":"#263345"}});
     else {status_="A área de transferência não contém imagem ou texto.";emit changed();}
 }
-void AppController::addShape(ShapeObject shape){const auto id=shape.id;const bool line=shape.kind==ShapeKind::Line;if(!active()||loading_)return;shape.properties.zIndex=nextZIndex();history_.apply(project_.pages[0],{{{},CanvasObject(std::move(shape))}},CommandKind::AddObject);mutate();if(line)closeLines(id);}
-void AppController::changeObjects(std::vector<ObjectChange> changes,CommandKind kind){if(!active()||loading_||changes.empty())return;history_.apply(project_.pages[0],std::move(changes),kind);mutate();}
+void AppController::addShape(ShapeObject shape){const auto id=shape.id;const bool line=shape.kind==ShapeKind::Line;if(!active()||loading_)return;shape.properties.zIndex=nextZIndex();history().apply(current(),{{{},CanvasObject(std::move(shape))}},CommandKind::AddObject);mutate();if(line)closeLines(id);}
+void AppController::changeObjects(std::vector<ObjectChange> changes,CommandKind kind){if(!active()||loading_||changes.empty())return;history().apply(current(),std::move(changes),kind);mutate();}
 bool AppController::recognitionEnabled() const{return recognitionEnabled_;}
 void AppController::setRecognitionEnabled(bool value){recognitionEnabled_=value;library_->setSetting("recognitionEnabled",value);emit preferencesChanged();}
 int AppController::holdDelay() const{return holdDelay_;}
 void AppController::setHoldDelay(int value){holdDelay_=std::clamp(value,250,1500);library_->setSetting("holdDelay",holdDelay_);emit preferencesChanged();}
-void AppController::undo(){if(active()&&history_.undo(project_.pages[0]))mutate();}
-void AppController::redo(){if(active()&&history_.redo(project_.pages[0]))mutate();}
+void AppController::undo(){if(active()&&history().undo(current()))mutate();}
+void AppController::redo(){if(active()&&history().redo(current()))mutate();}
 void AppController::save(){if(active()){dirty_=true;beginSave();}}
 void AppController::saveAs(const QUrl& url){if(!active()||!url.isLocalFile()||!flush())return;path_=url.toLocalFile();if(!path_.endsWith(".board",Qt::CaseInsensitive))path_+=".board";dirty_=true;beginSave();}
 void AppController::beginSave(){
@@ -172,6 +201,7 @@ void AppController::finishSave(){
     emit changed();
 }
 bool AppController::flush(){
+    if(pdfPending_){status_="Aguarde a leitura do PDF.";emit changed();return false;}
     if(textPending_){status_="Aguarde a conversão do texto.";emit changed();return false;}
     if(imageImportPending_){status_="Aguarde a importação da imagem.";emit changed();return false;}
     autosave_.stop();
@@ -185,7 +215,7 @@ void AppController::openPath(const QString& path){
     if(trashPending_||loading_||!flush())return;loading_=true;pendingOpenPath_=path;status_="Abrindo projeto…";
     loadWatcher_.setFuture(QtConcurrent::run([path]{return ProjectStore::load(path);}));emit changed();
 }
-void AppController::home(){if(loading_||!flush())return;project_={};images_.clear();textMeshes_.clear();textSizes_.clear();history_.clear();++revision_;emit documentChanged();emit changed();}
+void AppController::home(){if(loading_||!flush())return;project_={};currentPage_=0;images_.clear();textMeshes_.clear();textSizes_.clear();histories_.clear();thumbnails_.clear();pdfCache_.clear();thumbnailsTimer_.stop();++revision_;emit pagesChanged();emit pageChanged();emit documentChanged();emit changed();}
 void AppController::recover(){if(!recovery_)return;recovery_=false;openPath(dataDir_+"/session.board");}
 void AppController::discardRecovery(){recovery_=false;QFile::remove(dataDir_+"/session.board");emit changed();}
 bool AppController::shutdown(){
@@ -200,9 +230,9 @@ void AppController::setBackground(const QVariantMap& values){
     std::uint32_t color;BackgroundStyle style;
     if(!active()||loading_||!parseBackground(values,color,style))return;
     if(page()->background==color&&page()->backgroundStyle==style)return;
-    history_.background(project_.pages[0],color,style);mutate();
+    history().background(current(),color,style);mutate();
 }
-void AppController::applyBackgroundPreset(const QString& name){for(const auto& preset:backgroundPresets())if(preset.toMap().value("name").toString()==name){setBackground(preset.toMap());return;}}
+void AppController::applyBackgroundPreset(const QString& name){for(const auto& preset:gridPresets())if(preset.toMap().value("name").toString()==name){auto value=background();for(const auto* key:{"gridType","spacingX","spacingY"})value[key]=preset.toMap().value(key);setBackground(value);return;}}
 void AppController::saveBackgroundPreset(const QString& name,const QVariantMap& values){
     std::uint32_t color;BackgroundStyle style;const auto label=name.trimmed();
     if(label.isEmpty()||label.size()>80||!parseBackground(values,color,style))return;
@@ -225,13 +255,13 @@ void AppController::upsertText(const QString& id,QPointF position,const QVariant
     t.source=source.toStdString();t.fontFamily=v.value("fontFamily").toString().toStdString();t.fontSizePt=v.value("fontSizePt",18).toDouble();t.bold=v.value("bold",false).toBool();t.italic=v.value("italic",false).toBool();t.alignment=v.value("alignment",0).toInt();
     if(source.trimmed().isEmpty()||t.source.size()>32768||!c.isValid()||!std::isfinite(t.fontSizePt)||t.fontSizePt<6||t.fontSizePt>144||t.alignment<0||t.alignment>2){textError_="Use texto de até 32 KiB e tamanho de 6 a 144 pt.";emit changed();return;}
     t.style.rgba=(std::uint32_t(c.red())<<24)|(std::uint32_t(c.green())<<16)|(std::uint32_t(c.blue())<<8)|255;
-    textProjectId_=QString::fromStdString(project_.id);textPending_=true;textError_.clear();textWatcher_.setFuture(QtConcurrent::run([t]{return prepareText(t);}));emit changed();
+    textProjectId_=QString::fromStdString(project_.id);textPageId_=QString::fromStdString(page()->id);textPending_=true;textError_.clear();textWatcher_.setFuture(QtConcurrent::run([t]{return prepareText(t);}));emit changed();
 }
 void AppController::refreshTextTextures(double scale){
-    if(!active()||page()->texts.empty()||textRasterWatcher_.isRunning())return;
+    if(!active()||page()->texts.empty()||textRasterPending_)return;
     const double bucket=std::pow(2.,std::ceil(std::log2(std::clamp(scale,1.,64.))));
     if(bucket==textRasterScale_&&textRasterRevision_==revision_)return;
-    textRasterScale_=bucket;textRasterRevision_=revision_;const auto texts=page()->texts;
+    textRasterScale_=bucket;textRasterRevision_=revision_;textRasterPending_=true;const auto texts=page()->texts;
     textRasterWatcher_.setFuture(QtConcurrent::run([texts,bucket]{QHash<QString,TextVisual> result;for(const auto& t:texts)result.insert(QString::fromStdString(t.id),textVisual(t,bucket));return result;}));
 }
 

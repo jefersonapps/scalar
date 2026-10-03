@@ -1,16 +1,17 @@
-# Formato .board — versão 3 (leitura das versões 1 e 2)
+# Formato .board — versão 4 (leitura das versões 1, 2 e 3)
 
 `.board` é ZIP padrão, não JSON renomeado. Perfil inicial: uma única entrada `project.json`, método STORE sem compressão, sem encryption, sem ZIP64. Cabeçalhos local/central, EOCD, nome, tamanhos e CRC-32 são validados. O leitor recusa perfis diferentes. Para manter interoperabilidade no futuro, uma versão nova deverá expandir o leitor antes de adicionar entries assets/pages/thumbnails ou compressão. Pastas vazias não são gravadas.
 
 ```json
 {
   "format": "scalar.board",
-  "version": 3,
+  "version": 4,
   "units": "mm",
   "id": "project-id",
   "name": "Aula de geometria",
   "createdAt": "2026-10-03T12:00:00.000Z",
   "updatedAt": "2026-10-03T12:01:00.000Z",
+  "pdfAssets": {},
   "pages": [{
     "id": "page-id",
     "widthMm": 210,
@@ -54,7 +55,7 @@ Se o aplicativo terminar sem shutdown normal, cleanShutdown=false e session.boar
 
 ## Objetos da versão 2
 
-O writer produz v3; o reader aceita v1/v2/v3. Arquivos v1 com strokes recebem zIndex na ordem original e defaults locked=false/visible=true. Abrir não regrava; após alteração/save, o arquivo migra para v3. Aplicativos Scalar 0.1 não leem v2.
+O writer produz v4; o reader aceita v1/v2/v3/v4. Arquivos v1 com strokes recebem zIndex na ordem original e defaults locked=false/visible=true. Abrir não regrava; após alteração/save, o arquivo migra para v4. Aplicativos antigos não leem versões futuras.
 
 Shape: type=shape, kind=0 linha/1 círculo/2 elipse/3 triângulo/4 retângulo/5 quadrado/6 polígono genérico, style igual ao stroke, vertices (2/3/4 pontos, 3–2048 para polígono genérico, ou vazio para curvas), center, radiusX/radiusY em mm, rotation em radianos e fillOpacity 0–1. Circle exige raios iguais. Propriedades comuns: zIndex, locked e visible. Revision é transient e não viaja no JSON.
 
@@ -71,3 +72,9 @@ Page.background permanece RGBA. backgroundStyle armazena color (string #RRGGBB o
 TextObject: type=text, id, source UTF-8 (até 32 KiB), fontFamily, fontSizePt (6–144), bold, italic, alignment 0 esquerda/1 centro/2 direita, rgba, corners e propriedades comuns. math contém LaTeX e SVG autossuficiente por fragmento, display, start/length em bytes UTF-8 incluindo delimitadores e widthEm/heightEm. A fonte delimitada precisa corresponder aos offsets; XML é validado sem scripts, imagens externas, eventos ou DTD. Renderização vetorial recompõe glyphs a partir do SVG armazenado sem depender do npm ou do arquivo de origem. Geometria e texturas são caches transitórios.
 
 A lixeira pertence à biblioteca local, não ao arquivo portátil. Sua tabela trash guarda id/name/originalPath/trashPath/deletedAt. Presets ficam em background_presets(name,settings). Undo de fundo/texto continua local à sessão.
+
+## Versão 4
+
+`pdfAssets` é um mapa obrigatório (vazio quando não há PDF) com `assetId: {data: "base64 do PDF original", pageCount: 3}`. Páginas importadas acrescentam `pdf: {asset: "assetId", pageIndex: 0}`; o índice começa em zero. Várias páginas ou duplicatas referenciam o mesmo asset, gravado uma única vez. O leitor valida referências, índices, limites e cabeçalho PDF; o módulo Qt PDF valida o conteúdo ao renderizar. Cada fonte admite até 64 MiB e 1000 páginas; o limite total de 128 MiB inclui o overhead base64. Os bytes originais ficam incorporados e não dependem do caminho externo.
+
+Miniaturas por página, cache PDF, índice de página atual e históricos de undo são transitórios. Tamanho físico e fundo pertencem a cada página. A base PDF não pode ser apagada pela borracha de traços.

@@ -7,6 +7,7 @@
 #include "rendering/TextRenderer.h"
 #include "persistence/TrashStore.h"
 #include "recognition/ShapeRecognizer.h"
+#include "pdf/PdfRenderCache.h"
 #include <QObject>
 #include <QTimer>
 #include <QFutureWatcher>
@@ -14,12 +15,15 @@
 #include <QUrl>
 #include <memory>
 #include <span>
+#include <unordered_map>
+#include <QSet>
 namespace scalar {
 class AppController : public QObject {
     Q_OBJECT
     Q_PROPERTY(QVariantList trashedProjects READ trashedProjects NOTIFY recentChanged)
     Q_PROPERTY(QVariantMap background READ background NOTIFY changed)
     Q_PROPERTY(QVariantList backgroundPresets READ backgroundPresets NOTIFY preferencesChanged)
+    Q_PROPERTY(QVariantList gridPresets READ gridPresets NOTIFY preferencesChanged)
     Q_PROPERTY(bool textBusy READ textBusy NOTIFY changed)
     Q_PROPERTY(QString textError READ textError NOTIFY changed)
     Q_PROPERTY(bool active READ active NOTIFY changed)
@@ -43,6 +47,15 @@ class AppController : public QObject {
     Q_PROPERTY(bool recognitionEnabled READ recognitionEnabled WRITE setRecognitionEnabled NOTIFY preferencesChanged)
     Q_PROPERTY(int holdDelay READ holdDelay WRITE setHoldDelay NOTIFY preferencesChanged)
     Q_PROPERTY(bool recoveryAvailable READ recoveryAvailable NOTIFY changed)
+    Q_PROPERTY(int currentPage READ currentPage NOTIFY pageChanged)
+    Q_PROPERTY(int pageCount READ pageCount NOTIFY pagesChanged)
+    Q_PROPERTY(QVariantList pages READ pages NOTIFY pagesChanged)
+    Q_PROPERTY(bool pdfSupported READ pdfSupported CONSTANT)
+    Q_PROPERTY(bool pdfBusy READ pdfBusy NOTIFY changed)
+    Q_PROPERTY(int pdfPageCount READ pdfPageCount NOTIFY changed)
+    Q_PROPERTY(QString pdfName READ pdfName NOTIFY changed)
+    Q_PROPERTY(QString pdfError READ pdfError NOTIFY changed)
+    Q_PROPERTY(bool exporting READ exporting NOTIFY changed)
 public:
     explicit AppController(QObject* parent=nullptr,const QString& dataDirectory={});
     ~AppController() override;
@@ -53,21 +66,22 @@ public:
     void refreshTextTextures(double pixelsPerMm);
     bool active() const { return !project_.pages.empty(); }
     QString projectName() const { return QString::fromStdString(project_.name); }
-    double pageWidth() const { return active()?project_.pages[0].size.widthMm:210; }
-    double pageHeight() const { return active()?project_.pages[0].size.heightMm:297; }
+    double pageWidth() const { return page()?page()->size.widthMm:210; }
+    double pageHeight() const { return page()?page()->size.heightMm:297; }
     QColor pageColor() const;
     QVariantMap background() const;
     QVariantList backgroundPresets() const;
+    QVariantList gridPresets() const;
     Q_INVOKABLE bool validBackground(const QVariantMap& values) const;
     Q_INVOKABLE void setBackground(const QVariantMap& values);
     Q_INVOKABLE void applyBackgroundPreset(const QString& name);
     Q_INVOKABLE void saveBackgroundPreset(const QString& name,const QVariantMap& values);
-    bool canUndo() const { return history_.canUndo(); }
-    bool canRedo() const { return history_.canRedo(); }
+    bool canUndo() const {const auto i=histories_.find(page()?page()->id:"");return i!=histories_.end()&&i->second.canUndo();}
+    bool canRedo() const {const auto i=histories_.find(page()?page()->id:"");return i!=histories_.end()&&i->second.canRedo();}
     bool dirty() const { return dirty_; }
     bool loading() const { return loading_; }
     bool systemDark() const;
-    bool busy() const { return loading_||saveWatcher_.isRunning()||imageImportPending_||textPending_||trashPending_; }
+    bool busy() const { return loading_||saveWatcher_.isRunning()||imageImportPending_||textPending_||trashPending_||pdfPending_; }
     QString status() const { return status_; }
     QVariantList trashedProjects() const {return library_->trash();}
     Q_INVOKABLE void trashProject(const QString& id);
@@ -86,11 +100,31 @@ public:
     QString defaultBackground() const;
     void setDefaultBackground(const QString& value);
     bool recoveryAvailable() const { return recovery_; }
-    const Page* page() const { return active()?&project_.pages[0]:nullptr; }
+    const Page* page() const { return active()?&project_.pages[currentPage_]:nullptr; }
+    int currentPage() const {return currentPage_;}
+    int pageCount() const {return int(project_.pages.size());}
+    QVariantList pages() const;
+    Q_INVOKABLE void selectPage(int index);
+    Q_INVOKABLE void addPage();
+    Q_INVOKABLE void duplicatePage();
+    bool pdfSupported() const {return pdfAvailable();}
+    bool pdfBusy() const {return pdfPending_;}
+    int pdfPageCount() const {return int(pdfInfo_.sizes.size());}
+    QString pdfName() const {return pdfInfo_.name;}
+    QString pdfError() const {return pdfInfo_.error;}
+    Q_INVOKABLE void inspectPdfFile(const QUrl& url);
+    Q_INVOKABLE void importPdfPages(const QString& range);
+    Q_INVOKABLE void cancelPdfImport();
+    bool exporting() const {return exportPending_;}
+    Q_INVOKABLE void exportPdf(const QUrl& url);
+    void refreshPdf(double scale){if(page())pdfCache_.request(page()->pdf,page()->size,scale);}
+    QImage pdfImage() const {return pdfCache_.image();}
+    quint64 pdfImageRevision() const {return pdfCache_.revision();}
     void addStroke(StrokeObject stroke);
     void addRecognizedStroke(StrokeObject stroke,ShapeObject shape);
     void addShape(ShapeObject shape);
     Q_INVOKABLE void importImage(const QUrl& url,QPointF center);
+    Q_INVOKABLE void importImages(const QVariantList& urls,QPointF center);
     Q_INVOKABLE void pasteImage(QPointF center);
     void aliasImage(const std::string& from,const std::string& to){images_.insert(QString::fromStdString(to),image(from));textMeshes_.insert(QString::fromStdString(to),textMeshes_.value(QString::fromStdString(from)));textSizes_.insert(QString::fromStdString(to),textSize(from));}
     std::span<const Point> mathGeometry(const std::string& id) const {const auto i=textMeshes_.constFind(QString::fromStdString(id));return i==textMeshes_.cend()?std::span<const Point>{}:std::span<const Point>{i.value()};}
@@ -102,7 +136,7 @@ public:
     int holdDelay() const;
     void setHoldDelay(int value);
     std::int64_t nextZIndex() const;
-    Q_INVOKABLE void newProject(const QString& name,const QString& preset,double width,double height,bool landscape,const QString& background);
+    Q_INVOKABLE void newProject(const QString& name,const QString& preset,double width,double height,bool landscape,const QString& background,const QString& color={});
     Q_INVOKABLE void newDefault();
     Q_INVOKABLE void undo();
     Q_INVOKABLE void redo();
@@ -120,6 +154,10 @@ signals:
     void recentChanged();
     void preferencesChanged();
     void textCommitted(const QString& id);
+    void pagesChanged();
+    void pageChanged();
+    void pdfImportRequested();
+    void pdfImported();
 protected:
     bool eventFilter(QObject* watched,QEvent* event) override;
 private:
@@ -133,8 +171,25 @@ private:
     bool flush();
     void finishSave();
     void install(Project project,const QString& path);
+    Page& current(){return project_.pages[currentPage_];}
+    History& history(){return histories_[current().id];}
+    void scheduleThumbnails();
+    void beginThumbnails();
     Project project_;
-    History history_;
+    std::unordered_map<std::string,History> histories_;
+    int currentPage_=0;
+    QTimer thumbnailsTimer_;
+    QFutureWatcher<QHash<QString,QString>> thumbnailsWatcher_;
+    QHash<QString,QString> thumbnails_;
+    QSet<QString> dirtyThumbnails_,renderingThumbnails_;
+    quint64 thumbnailsRevision_=0;
+    bool thumbnailsPending_=false;
+    PdfRenderCache pdfCache_;
+    QFutureWatcher<PdfInfo> pdfWatcher_;
+    PdfInfo pdfInfo_;
+    bool pdfPending_=false;
+    QFutureWatcher<QString> exportWatcher_;
+    bool exportPending_=false;
     std::unique_ptr<Library> library_;
     QString dataDir_,path_,status_,pendingOpenPath_;
     bool trashPending_=false;
@@ -142,15 +197,18 @@ private:
     QFutureWatcher<TrashResult> trashWatcher_;
     QFutureWatcher<SaveResult> saveWatcher_;
     QFutureWatcher<LoadResult> loadWatcher_;
-    QFutureWatcher<ImportedImage> imageWatcher_;
+    QFutureWatcher<std::vector<ImportedImage>> imageWatcher_;
     QFutureWatcher<PreparedText> textWatcher_;
     QFutureWatcher<QHash<QString,TextVisual>> textRasterWatcher_;
     QString textProjectId_,textError_;
+    QString textPageId_;
     std::optional<CanvasObject> textBefore_;
     bool textPending_=false;
+    bool textRasterPending_=false;
     double textRasterScale_=96./25.4;
     quint64 textRasterRevision_=0;
     QString importProjectId_;
+    QString importPageId_;
     QHash<QString,QImage> images_;
     QHash<QString,std::vector<Point>> textMeshes_;
     QHash<QString,QSizeF> textSizes_;

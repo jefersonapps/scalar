@@ -83,6 +83,7 @@ public:
     Q_INVOKABLE void fitPage();
     Q_INVOKABLE QPointF viewportCenter() const {const auto p=view_.screenToWorld({width()/2,height()/2});return {p.x,p.y};}
     Q_INVOKABLE void importImage(const QUrl& url){if(controller_)controller_->importImage(url,viewportCenter());}
+    Q_INVOKABLE void importImages(const QVariantList& urls){if(controller_)controller_->importImages(urls,viewportCenter());}
     Q_INVOKABLE void pasteImage(){if(controller_)controller_->pasteImage(viewportCenter());}
     Q_INVOKABLE void zoomBy(double factor);
     Q_INVOKABLE void cancelStroke();

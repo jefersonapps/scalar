@@ -2,14 +2,14 @@
 
 ## Dependências
 
-C++20, CMake >= 3.21, Qt >= 6.4 com Core, Gui, Quick, QuickControls2, Concurrent, Sql e Test. SQLite plugin QSQLITE precisa estar disponível. QML usa QtQuick, Controls, Layouts, Dialogs, Shapes, Templates, Window e QtQml.WorkerScript. Não precisa de Qt Widgets. O build prepara automaticamente as dependências locais de matemática quando Python >= 3.12 está disponível na máquina de desenvolvimento. O usuário final recebe essas dependências no pacote.
+C++20, CMake >= 3.21, Qt >= 6.4 com Core, Gui, Quick, QuickControls2, Concurrent, Sql, Pdf e Test. Qt Svg é opcional e fornece importação SVG; inclua-o na distribuição completa. SQLite plugin QSQLITE precisa estar disponível. QML usa QtQuick, Controls, Layouts, Dialogs, Shapes, Templates, Window e QtQml.WorkerScript. Não precisa de Qt Widgets. O build prepara automaticamente as dependências locais de matemática quando Python >= 3.12 está disponível na máquina de desenvolvimento. O usuário final recebe essas dependências no pacote.
 
 ### Ubuntu / Mint
 
 Execute a instalação em uma máquina onde tenha permissão de administrar o sistema:
 
 ```sh
-sudo apt install build-essential cmake ninja-build qt6-base-dev qt6-declarative-dev \
+sudo apt install build-essential cmake ninja-build qt6-base-dev qt6-declarative-dev qt6-pdf-dev qt6-svg-dev \
   libqt6sql6-sqlite qt6-image-formats-plugins qml6-module-qtquick qml6-module-qtquick-controls \
   qml6-module-qtquick-layouts qml6-module-qtquick-dialogs qml6-module-qtquick-shapes \
   qml6-module-qtquick-templates qml6-module-qtquick-window qml6-module-qtqml qml6-module-qtqml-workerscript
@@ -25,7 +25,7 @@ Qt instalado fora do sistema: acrescente `-DCMAKE_PREFIX_PATH=/caminho/Qt/6.x/gc
 
 ### Windows 10/11
 
-Instale Qt 6 com kit MSVC x64 e Visual Studio Build Tools com C++20. No Developer PowerShell, ajustando o caminho do Qt:
+Instale Qt 6 com kit MSVC x64, módulos Qt PDF/Qt SVG e Visual Studio Build Tools com C++20. No Developer PowerShell, ajustando o caminho do Qt:
 
 ```powershell
 cmake -S . -B build -DCMAKE_PREFIX_PATH="C:/Qt/6.8.3/msvc2022_64" -DBUILD_TESTING=ON
@@ -110,3 +110,9 @@ A instalação e o CPack recusam distribuir matemática incompleta. Incluem runt
 O pacote TGZ atual não é um instalador completo dos runtimes Qt do sistema. No Linux, as bibliotecas Qt/QML/SQLite ainda precisam estar disponíveis; no Windows, windeployqt é necessário na máquina que gera a distribuição. Node/MathJax já são incluídos e não dependem de instalação manual pelo usuário final. Assinatura e instaladores nativos Windows/Linux seguem pendentes.
 
 Nove entradas CTest cobrem núcleo, reconhecimento, borracha, persistência, lixeira, matemática, desktop e dois smokes. A suíte MathTests executa conversão real quando o runtime está presente; qualquer skip precisa ser reportado. Capturas da M3 ficam em build/screenshots/milestone3-*.png. Equações e grades são meshes QSG e não aparecem no backend offscreen software desta máquina; suas geometrias são verificadas pelos testes. GPU/stylus física e deploy Windows continuam exigindo validação manual.
+
+## Milestone 4
+
+Qt PDF é obrigatório no build desktop. Após instalar novos módulos, execute novamente a configuração CMake antes do build. A suíte adicional `pdf` usa documentos reais gerados temporariamente para verificar A4, A4 paisagem, Carta, intervalos, cache, incorporação e reabertura sem o arquivo original. Há dez entradas CTest; a UI também cobre miniaturas, navegação, importação e layout em janela pequena. Veja [o relatório](docs/MILESTONE_4.md) para resultados e limites.
+
+A exportação multipágina usa as mesmas dependências, sem biblioteca adicional. A suíte `pdf` também valida a saída A4/paisagem/Carta, texto selecionável, geometria vetorial, imagens, anotações sobre PDF e substituição segura do destino. A suíte desktop verifica o navegador de páginas persistente no editor. Veja [PDF_EXPORT.md](docs/PDF_EXPORT.md).

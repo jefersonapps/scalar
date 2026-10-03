@@ -15,6 +15,8 @@ src/
   selection/    IDs selecionados e seleção por área
   tools/        borracha por cápsula com divisão de strokes
   clipboard/    importação/encoding de imagens em worker
+  pdf/          inspeção, intervalos e cache de renderização Qt PDF
+  export/       PDF multipágina com validação e substituição atômica
   persistence/  ZIP, JSON, substituição atômica, SQLite, thumbnails
 qml/
   theme/        singleton Theme e tokens
@@ -27,11 +29,11 @@ scripts/        testes portáteis
  tests/         núcleo C++ e integração Qt Test
 ```
 
-Os módulos pdf e export continuam planejados; math já contém o conversor local e validação SVG. Não há arquivos vazios para simular funcionalidades futuras.
+O módulo export produz PDF multipágina; math contém o conversor local e validação SVG, e pdf contém a importação. Não há arquivos vazios para simular funcionalidades futuras.
 
 ## Documento e unidades
 
-Project contém identidade, nome, datas e páginas. Cada página tem ID, largura/altura em milímetros, fundo RGBA e objetos StrokeObject com identidade e estilo próprios. As amostras têm posição em mm, pressão, tilt, rotação, timestamp, botões e origem. A UI do ciclo inicial edita somente a primeira página; persistência aceita várias páginas e tamanhos individuais.
+Project contém identidade, nome, datas e páginas. Cada página tem ID, largura/altura em milímetros, fundo RGBA e objetos com identidade e estilo próprios. As amostras têm posição em mm, pressão, tilt, rotação, timestamp, botões e origem. O editor seleciona a página atual; persistência e UI suportam várias páginas com tamanhos individuais e histórico por ID de página.
 
 As coordenadas do documento não dependem de DPI ou viewport. `screen = world * (96/25.4) * zoom + pan`. Tela usa pixels lógicos do Qt. Device pixel ratio e troca de monitor pertencem ao backend Qt Quick; a geometria original não é escalada nem regravada. Alterar orientação normaliza o par largura/altura; não transforma traços existentes porque configuração de página é apenas de criação neste ciclo.
 
@@ -69,7 +71,21 @@ Arquivos novos ficam em AppDataLocation/projects. `.board.png` é thumbnail secu
 
 ## Limites de escopo
 
-Não há importação/exportação PDF, régua ou compasso. Futuro pipeline de exportação deverá consumir o mesmo modelo em mm e separar renderização de página da viewport. Qt PDF será dependência do módulo de importação; MathJax e Node são incorporados ao pacote offline.
+Não há exportação PNG, régua ou compasso. Qt PDF é dependência da importação e validação da exportação; MathJax e Node são incorporados ao pacote offline.
+
+## Exportação PDF
+
+PageRenderer recebe QPainter e Page em mm, independentemente da viewport, e atende tanto miniaturas quanto exportação. Traços e bordas usam paths do mesh, grades e preenchimentos usam paths vetoriais. TextRenderer compartilha seu layout entre canvas e exportação; texto comum usa drawText (fonte incorporada pelo Qt PDF) e matemática usa paths dos glyphs SVG, sem bitmap. Imagens e a base PDF usam raster com resolução limitada. O PDF importado não é mesclado vetorialmente por Qt PDF.
+
+PdfExporter usa QPdfWriter a 300 dpi, margens zero e tamanho físico por página. Um arquivo temporário no diretório de destino é reaberto com Qt PDF para conferir contagem e medidas antes da cópia via QSaveFile e substituição atômica. O AppController envia um snapshot a um worker; editar e navegar não altera a exportação já iniciada nem bloqueia a entrada da caneta.
+
+## Milestone 4
+
+PdfPageObject é uma base opcional imutável da página, com bytes originais compartilhados, ID do asset e índice da página fonte. Cada worker cria seu próprio QPdfDocument. Inspeção converte pontos tipográficos em mm; páginas importadas mantêm papel branco. PdfRenderCache limita o cache a 96 MiB e cada bitmap a 4096 px por lado / 16 MP. Faixas de resolução acompanham zoom e DPI; durante atualização mantém-se a resolução anterior da mesma página. A base PDF precede grade e objetos no Scene Graph; as anotações continuam vetoriais.
+
+Miniaturas são geradas em lotes de até 16 páginas em worker, com debounce de 700 ms e invalidação por revisão. Importação de até 32 imagens agrupa um único comando de undo, respeitando a página selecionada. IDs de projeto/página descartam resultados antigos. SVG usa Qt SVG quando disponível e é normalizado em PNG, como os demais ImageObjects.
+
+Presets de grade e cor de fundo são independentes na interface. Selecionar grade altera tipo e espaçamento, preservando cores, opacidade e espessura. O tema define somente a cor inicial de um novo quadro; o fundo armazenado nunca é recalculado ao trocar o tema.
 
 ## Milestone 3
 

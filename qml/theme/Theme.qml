@@ -68,9 +68,12 @@ QtObject {
     readonly property int dialogWidth: 460
     readonly property int maxContent: 1040
     readonly property int topbarHeight: 72
+    readonly property int navigationInlineBreakpoint: 1100
     readonly property int toolbarHeight: 56
     readonly property int handleSize: 12
     readonly property int propertiesWidth: 280
+    readonly property int pagesPanelWidth: 344
+    readonly property int pageTileHeight: 172
     readonly property int cardWidth: 280
     readonly property int cardHeight: 232
 }

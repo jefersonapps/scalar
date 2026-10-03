@@ -13,6 +13,12 @@ C.GlassPopover {
     property var draft: ({})
     function change(key, value) { const next = Object.assign({}, draft); next[key] = value; draft = next; applyLive() }
     function applyLive() { if(App.validBackground(draft)) App.setBackground(draft) }
+    function chooseGrid(index) {
+        if(index < 0 || index >= App.gridPresets.length) return
+        const preset = App.gridPresets[index]
+        draft = Object.assign({},draft,{gridType:preset.gridType,spacingX:preset.spacingX,spacingY:preset.spacingY})
+        applyLive()
+    }
     onOpened: draft = Object.assign({}, App.background)
     contentItem: ScrollView {
         id: backgroundScroll
@@ -25,15 +31,15 @@ C.GlassPopover {
         id: form
         width: backgroundScroll.availableWidth
         spacing: Theme.sm
-        Text { text: "Fundo da página"; color: Theme.text; font.pixelSize: Theme.body; font.weight: Font.DemiBold }
+        Text { text: "Fundo e grade"; color: Theme.text; font.pixelSize: Theme.body; font.weight: Font.DemiBold }
         C.SelectField {
-            Layout.fillWidth: true; model: App.backgroundPresets.map(p => p.name).concat(["Personalizado"])
+            objectName: "gridPresetSelector"
+            Layout.fillWidth: true; model: App.gridPresets.map(p => p.name).concat(["Personalizado"])
             currentIndex: {
-                const keys = ["color","gridType","gridColor","opacity","thicknessMm","spacingX","spacingY"]
-                const index = App.backgroundPresets.findIndex(p => keys.every(k => p[k] === root.draft[k]))
-                return index < 0 ? App.backgroundPresets.length : index
+                const index = App.gridPresets.findIndex(p => p.gridType === root.draft.gridType && p.spacingX === root.draft.spacingX && p.spacingY === root.draft.spacingY)
+                return index < 0 ? App.gridPresets.length : index
             }
-            onActivated: if(index < App.backgroundPresets.length) { root.draft = Object.assign({}, App.backgroundPresets[index]); root.applyLive() }
+            onActivated: root.chooseGrid(index)
         }
         Text { text: "Cor do fundo"; color: Theme.secondary; font.pixelSize: Theme.caption }
         Flow {

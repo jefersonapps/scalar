@@ -6,7 +6,8 @@ import "../theme"
 C.ModernDialog {
     id: root
     objectName: "newProjectDialog"
-    onOpened: { nameField.text = ""; preset.currentIndex = App.defaultSize === "Carta" ? 1 : 0; orientation.currentIndex = App.defaultLandscape ? 1 : 0; background.currentIndex = background.model.indexOf(App.defaultBackground); nameField.forceActiveFocus() }
+    property color pageColor: "#ffffff"
+    onOpened: { pageColor = Theme.dark ? "#000000" : "#ffffff"; nameField.text = ""; preset.currentIndex = App.defaultSize === "Carta" ? 1 : 0; orientation.currentIndex = App.defaultLandscape ? 1 : 0; background.currentIndex = background.model.indexOf(App.defaultBackground); nameField.forceActiveFocus() }
     contentItem: Flickable {
         implicitHeight: form.implicitHeight
         contentHeight: form.implicitHeight
@@ -41,8 +42,10 @@ C.ModernDialog {
             Text { text: "mm"; color: Theme.secondary; font.pixelSize: Theme.caption }
         }
         C.SegmentedControl { id: orientation; Layout.fillWidth: true; options: ["Retrato", "Paisagem"]; onSelected: index => currentIndex = index }
-        Text { text: "Fundo da página"; color: Theme.secondary; font.pixelSize: Theme.caption }
-        C.SelectField { id: background; Layout.fillWidth: true; model: App.backgroundPresets.map(p => p.name) }
+        Text { text: "Grade da página"; color: Theme.secondary; font.pixelSize: Theme.caption }
+        C.SelectField { id: background; Layout.fillWidth: true; model: App.gridPresets.map(p => p.name) }
+        Text { text: "Cor do fundo · padrão acompanha o tema"; color: Theme.secondary; font.pixelSize: Theme.caption }
+        C.ColorPicker { Layout.fillWidth: true; colors: Theme.backgroundColors; selectedColor: root.pageColor; onPicked: value => root.pageColor = value }
         Text {
             Layout.fillWidth: true
             text: preset.currentIndex === 0 ? "A4 · 210 × 297 mm" : preset.currentIndex === 1 ? "Carta · 215,9 × 279,4 mm" : "Dimensões em milímetros · mínimo 10, máximo 5000"
@@ -51,7 +54,7 @@ C.ModernDialog {
         C.ActionButton {
             objectName: "createProjectButton"; text: "Criar quadro"; primary: true; Layout.fillWidth: true
             enabled: !App.busy && (preset.currentIndex !== 2 || (pageWidth.acceptableInput && pageHeight.acceptableInput))
-            onClicked: { App.newProject(nameField.text, preset.currentText, Number(pageWidth.text), Number(pageHeight.text), orientation.currentIndex === 1, background.currentText); if (App.active) root.close() }
+            onClicked: { App.newProject(nameField.text, preset.currentText, Number(pageWidth.text), Number(pageHeight.text), orientation.currentIndex === 1, background.currentText,root.pageColor.toString()); if (App.active) root.close() }
         }
     }
     }

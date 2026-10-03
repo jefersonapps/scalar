@@ -21,17 +21,20 @@ ApplicationWindow {
     }
     Component {
         id: home
-        HomePage { onCreateRequested: newProject.open(); onOpenRequested: openFile.open(); onSettingsRequested: settings.open() }
+        HomePage { onCreateRequested: newProject.open(); onOpenRequested: openFile.open(); onImportPdfRequested: pdfFile.open(); onSettingsRequested: settings.open() }
     }
     Component {
         id: editor
-        EditorPage { overlaysOpen: settings.visible || saveFile.visible || openFile.visible || imageFile.visible || newProject.visible || recovery.visible; onSaveAsRequested: saveFile.open(); onImageRequested: imageFile.open(); onSettingsRequested: settings.open() }
+        EditorPage { overlaysOpen: settings.visible || saveFile.visible || openFile.visible || imageFile.visible || pdfFile.visible || exportFile.visible || pdfImport.visible || newProject.visible || recovery.visible; onSaveAsRequested: saveFile.open(); onImageRequested: imageFile.open(); onImportPdfRequested: pdfFile.open(); onExportPdfRequested: exportFile.open(); onSettingsRequested: settings.open() }
     }
     NewProjectDialog { id: newProject }
     SettingsDialog { id: settings }
+    ImportPdfDialog { id: pdfImport }
+    FileDialog { id: pdfFile; title: "Importar PDF"; nameFilters: ["PDF (*.pdf)"]; onAccepted: App.inspectPdfFile(selectedFile) }
     FileDialog { id: openFile; title: "Abrir quadro"; nameFilters: ["Projetos Scalar (*.board)"]; onAccepted: App.open(selectedFile) }
     FileDialog { id: saveFile; title: "Salvar quadro como"; fileMode: FileDialog.SaveFile; defaultSuffix: "board"; nameFilters: ["Projetos Scalar (*.board)"]; onAccepted: App.saveAs(selectedFile) }
-    FileDialog { id: imageFile; title: "Importar imagem"; nameFilters: ["Imagens (*.png *.jpg *.jpeg *.webp *.bmp *.svg)"]; onAccepted: { if(pageLoader.item) pageLoader.item.insertImage(selectedFile) } }
+    FileDialog { id: exportFile; objectName: "exportPdfFileDialog"; title: "Exportar todas as páginas como PDF"; fileMode: FileDialog.SaveFile; defaultSuffix: "pdf"; nameFilters: ["PDF (*.pdf)"]; onAccepted: App.exportPdf(selectedFile) }
+    FileDialog { id: imageFile; title: "Importar imagens"; fileMode: FileDialog.OpenFiles; nameFilters: ["Imagens (*.png *.jpg *.jpeg *.webp *.bmp *.svg)"]; onAccepted: { if(pageLoader.item) pageLoader.item.insertImages(selectedFiles) } }
     C.ModernDialog {
         id: recovery
         closePolicy: Popup.NoAutoClose

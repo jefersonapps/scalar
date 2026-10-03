@@ -3,6 +3,7 @@
 #include <QImage>
 #include <QString>
 #include <QSizeF>
+class QPainter;
 namespace scalar {
 struct PreparedText {TextObject object;QImage image;QString error;std::vector<Point> geometry{};QSizeF naturalSize{};};
 struct TextVisual {QImage text;std::vector<Point> math;QString error;QSizeF naturalSize;};
@@ -11,4 +12,5 @@ TextVisual textVisual(const TextObject& object,double pixelsPerMm);
 PreparedText prepareText(TextObject object);
 QImage textBitmap(const TextObject& object,double pixelsPerMm);
 bool svgRenderingAvailable();
+QString paintVectorText(QPainter& painter,const TextObject& object);
 }

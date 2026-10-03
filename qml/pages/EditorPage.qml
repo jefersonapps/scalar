@@ -10,18 +10,23 @@ import "../dialogs"
 Item {
     id: root
     property bool overlaysOpen: false
+    readonly property bool inlineNavigation: width >= Theme.navigationInlineBreakpoint
+    readonly property real headerHeight: inlineNavigation ? Theme.topbarHeight : Theme.topbarHeight + navigator.implicitHeight + Theme.lg
     signal saveAsRequested()
     signal imageRequested()
+    signal importPdfRequested()
+    signal exportPdfRequested()
     function insertImage(url) { board.importImage(url) }
+    function insertImages(urls) { board.importImages(urls) }
     signal settingsRequested()
     Rectangle { anchors.fill: parent; color: Theme.workspace }
     BoardCanvas {
         id: board
         objectName: "boardCanvas"
         anchors.fill: parent
-        anchors.topMargin: Theme.topbarHeight
+        anchors.topMargin: root.headerHeight
         controller: App
-        enabled: !root.overlaysOpen && !textDialog.visible && !App.loading && !penOptions.visible && !penOptions.colorDialogOpen && !shapeOptions.visible && !eraserOptions.visible && !backgroundOptions.visible && !backgroundOptions.colorDialogOpen
+        enabled: !root.overlaysOpen && !textDialog.visible && !App.loading && !pagesPanel.visible && !penOptions.visible && !penOptions.colorDialogOpen && !shapeOptions.visible && !eraserOptions.visible && !backgroundOptions.visible && !backgroundOptions.colorDialogOpen
         toolbarExclusion: Qt.rect(toolbar.x, toolbar.y-y, toolbar.width, toolbar.height)
         optionsExclusion: properties.visible ? Qt.rect(properties.x,properties.y-y,properties.width,properties.height) : Qt.rect(0,0,0,0)
         onTextRequested: (position, id) => textDialog.begin(position,id,board.penColor)
@@ -47,9 +52,19 @@ Item {
         visible: board.tool === "eraser"
         color: "#20ffffff"; border.color: Theme.accent; border.width: Theme.hairline
     }
-    DropArea { anchors.fill: board; onDropped: drop => { if(drop.hasUrls && drop.urls.length > 0) { board.importImage(drop.urls[0]); drop.acceptProposedAction() } } }
-    PropertiesPanel { id: properties; canvas: board; visible: board.selectedCount > 0 && board.tool === "select"; anchors.top: parent.top; anchors.right: parent.right; anchors.topMargin: Theme.topbarHeight+Theme.lg; anchors.rightMargin: Theme.lg }
+    DropArea {
+        anchors.fill: board; enabled: !root.overlaysOpen && !textDialog.visible
+        onDropped: drop => {
+            if(drop.hasUrls && drop.urls.length > 0) {
+                if(drop.urls[0].toString().toLowerCase().endsWith(".pdf")) App.inspectPdfFile(drop.urls[0])
+                else board.importImages(drop.urls)
+                drop.acceptProposedAction()
+            }
+        }
+    }
+    PropertiesPanel { id: properties; canvas: board; visible: board.selectedCount > 0 && board.tool === "select"; anchors.top: parent.top; anchors.right: parent.right; anchors.topMargin: root.headerHeight+Theme.lg; anchors.rightMargin: Theme.lg }
     RowLayout {
+        id: topbar
         anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
         anchors.margins: Theme.lg
         spacing: Theme.sm
@@ -59,7 +74,10 @@ Item {
             Text { text: App.projectName; Layout.fillWidth: true; elide: Text.ElideRight; color: Theme.text; font.pixelSize: Theme.body; font.weight: Font.DemiBold }
             Text { text: App.pageWidth.toFixed(1) + " × " + App.pageHeight.toFixed(1) + " mm"; color: Theme.secondary; font.pixelSize: Theme.caption }
         }
+        Item { id: navigationSpace; visible: root.inlineNavigation; Layout.preferredWidth: navigator.implicitWidth; Layout.preferredHeight: navigator.implicitHeight }
         C.IconButton { iconName: "save"; label: "Salvar como (Ctrl+Shift+S)"; enabled: !App.busy; onClicked: { board.cancelStroke(); root.saveAsRequested() } }
+        C.IconButton { objectName: "openPagesButton"; visible: root.width > Theme.zoomBreakpoint; iconName: "page"; label: "Páginas · " + (App.currentPage+1) + "/" + App.pageCount; onClicked: { board.cancelStroke(); pagesPanel.open() } }
+        C.IconButton { objectName: "exportPdfButton"; iconName: "export"; label: "Exportar todas as páginas como PDF"; enabled: !App.busy && !App.exporting; onClicked: { board.cancelStroke(); root.exportPdfRequested() } }
         C.IconButton { iconName: "minus"; label: "Diminuir zoom"; visible: root.width > Theme.zoomBreakpoint; onClicked: board.zoomBy(1/1.2) }
         Text { text: Math.round(board.zoom*100) + "%"; color: Theme.secondary; font.pixelSize: Theme.caption; visible: root.width > Theme.minimumWidth }
         C.IconButton { iconName: "plus"; label: "Aumentar zoom"; visible: root.width > Theme.zoomBreakpoint; onClicked: board.zoomBy(1.2) }
@@ -78,8 +96,17 @@ Item {
         onEraserOptionsRequested: eraserOptions.open()
         onImageRequested: root.imageRequested()
     }
+    C.PageNavigator {
+        id: navigator
+        x: root.inlineNavigation ? topbar.x + navigationSpace.x : (root.width-width)/2
+        y: root.inlineNavigation ? topbar.y : Theme.topbarHeight + Theme.sm
+        onPreviousRequested: { board.cancelStroke(); App.selectPage(App.currentPage-1); board.forceActiveFocus() }
+        onNextRequested: { board.cancelStroke(); App.selectPage(App.currentPage+1); board.forceActiveFocus() }
+        onOverviewRequested: { board.cancelStroke(); pagesPanel.open() }
+    }
     TextDialog { id: textDialog }
-    BackgroundOptions { id: backgroundOptions; x: Math.max(Theme.lg,root.width-width-Theme.lg); y: Theme.topbarHeight }
+    PagesPanel { id: pagesPanel; x: Math.max(Theme.lg,root.width-width-Theme.lg); y: root.headerHeight; onImportPdfRequested: root.importPdfRequested(); onClosed: board.forceActiveFocus() }
+    BackgroundOptions { id: backgroundOptions; x: Math.max(Theme.lg,root.width-width-Theme.lg); y: root.headerHeight }
     PenOptions {
         id: penOptions; canvas: board
         function reposition() { x = Math.max(Theme.lg,(root.width-width)/2); y = Math.max(Theme.lg,toolbar.y-height-Theme.md) }
@@ -119,4 +146,6 @@ Item {
     Shortcut { sequence: "Ctrl+Shift+Z"; enabled: !root.overlaysOpen && !textDialog.visible && !board.drawing; onActivated: App.redo() }
     Shortcut { sequence: "Ctrl+S"; enabled: !root.overlaysOpen && !textDialog.visible; onActivated: App.save() }
     Shortcut { sequence: "Ctrl+Shift+S"; enabled: !root.overlaysOpen && !textDialog.visible; onActivated: root.saveAsRequested() }
+    Shortcut { sequence: "Ctrl+PgDown"; enabled: !root.overlaysOpen && !textDialog.visible; onActivated: { board.cancelStroke(); App.selectPage(App.currentPage+1) } }
+    Shortcut { sequence: "Ctrl+PgUp"; enabled: !root.overlaysOpen && !textDialog.visible; onActivated: { board.cancelStroke(); App.selectPage(App.currentPage-1) } }
 }

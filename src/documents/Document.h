@@ -88,6 +88,12 @@ struct TextObject {
     std::vector<MathFragment> math;
     ObjectProperties properties{};
 };
+struct PdfPageObject {
+    std::string assetId;
+    std::shared_ptr<const std::vector<std::uint8_t>> data;
+    int pageIndex=0;
+    int sourcePageCount=0;
+};
 using CanvasObject=std::variant<StrokeObject,ShapeObject,ImageObject,TextObject>;
 enum class GridType { None, Ruled, Square, Dots, Millimetric, Isometric };
 struct BackgroundStyle {
@@ -111,6 +117,7 @@ struct Page {
     std::vector<ImageObject> images{};
     BackgroundStyle backgroundStyle{};
     std::vector<TextObject> texts{};
+    std::optional<PdfPageObject> pdf{}; // original PDF, immutable page base
 };
 struct Project {
     std::string id, name, createdAt, updatedAt;

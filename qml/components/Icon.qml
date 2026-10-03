@@ -8,6 +8,7 @@ Item {
     implicitWidth: Theme.icon
     implicitHeight: Theme.icon
     readonly property var paths: ({
+        export: "M12 15 V3 M7 8 L12 3 L17 8 M4 14 V19 Q4 21 6 21 H18 Q20 21 20 19 V14",
         palette: "M12 3 A9 9 0 1 0 12 21 H14 Q17 21 16 18 Q15 16 18 15 Q22 14 21 10 Q20 3 12 3 Z M7 9 H7.01 M10 6 H10.01 M15 6 H15.01 M18 10 H18.01",
         text: "M4 5 V3 H20 V5 M12 3 V21 M8 21 H16",
         background: "M4 4 H20 V20 H4 Z M9 4 V20 M15 4 V20 M4 9 H20 M4 15 H20",

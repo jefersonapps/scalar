@@ -14,6 +14,9 @@
 #include <QDropEvent>
 #include <QTabletEvent>
 #include <QPointingDevice>
+#include <QPdfWriter>
+#include <QPainter>
+#include <QPageSize>
 #include <QSGTransformNode>
 #include <memory>
 #include <array>
@@ -36,6 +39,65 @@ public:
 class DesktopTests : public QObject {
     Q_OBJECT
 private slots:
+    void quickPageNavigation(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.setTheme("Dark");controller.newDefault();controller.addPage();controller.selectPage(0);
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());
+        auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));QTRY_VERIFY(!controller.busy());
+        auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);
+        auto* next=findVisualItem(window->contentItem(),"nextPageButton");QVERIFY(next);QVERIFY(next->mapToScene(QPointF(0,next->height())).y()<=canvas->y());
+        QDir().mkpath("screenshots");QVERIFY(window->grabWindow().save("screenshots/quick-pages-dark-top.png"));
+        auto click=[&](const QString& name){auto* button=findVisualItem(window->contentItem(),name);if(!button)return false;QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,button->mapToScene(QPointF(button->width()/2,button->height()/2)).toPoint());return true;};
+        QVERIFY(click("nextPageButton"));QCOMPARE(controller.currentPage(),1);QVERIFY(controller.page()->strokes.empty());QVERIFY(click("previousPageButton"));QCOMPARE(controller.currentPage(),0);
+        QVERIFY(!findVisualItem(window->contentItem(),"previousPageButton")->isEnabled());QVERIFY(click("pageCounterButton"));auto* panel=window->findChild<QObject*>("pagesPanel");QVERIFY(panel);QTRY_VERIFY(panel->property("opened").toBool());QVERIFY(QMetaObject::invokeMethod(panel,"close"));QTRY_VERIFY(!panel->property("visible").toBool());
+        window->resize(520,640);QTest::qWait(200);auto* exportButton=findVisualItem(window->contentItem(),"exportPdfButton");QVERIFY(exportButton);QVERIFY(exportButton->mapToScene(QPointF(exportButton->width(),0)).x()<=window->width());
+        QVERIFY(next->mapToScene(QPointF(0,next->height())).y()<=canvas->y());
+        QDir().mkpath("screenshots");QVERIFY(window->grabWindow().save("screenshots/quick-pages-dark-small.png"));QCOMPARE(warnings.size(),0);QVERIFY(controller.shutdown());
+    }
+    void multipleImagesOnSelectedPage(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.filePath("data"));controller.newDefault();controller.addPage();
+        QImage image(64,48,QImage::Format_RGB32);image.fill(QColor("#397ce0"));QVariantList urls;
+        for(const auto& suffix:QStringList{"png","jpg","bmp"}){const auto path=directory.filePath("image."+suffix);QVERIFY(image.save(path));urls.append(QUrl::fromLocalFile(path));}
+        controller.importImages(urls,{50,60});QTRY_COMPARE(controller.page()->images.size(),std::size_t(3));
+        controller.undo();QVERIFY(controller.page()->images.empty());controller.redo();QCOMPARE(controller.page()->images.size(),std::size_t(3));
+        controller.selectPage(0);QVERIFY(controller.page()->images.empty());controller.selectPage(1);
+        auto* mime=new QMimeData;mime->setUrls({urls[0].toUrl(),urls[1].toUrl()});QGuiApplication::clipboard()->setMimeData(mime);
+        controller.pasteImage({80,80});QTRY_COMPARE(controller.page()->images.size(),std::size_t(5));controller.undo();QCOMPARE(controller.page()->images.size(),std::size_t(3));
+        QGuiApplication::clipboard()->setText("Texto na segunda página");controller.pasteImage({80,100});QTRY_COMPARE(controller.page()->texts.size(),std::size_t(1));controller.selectPage(0);QVERIFY(controller.page()->texts.empty());
+        QGuiApplication::clipboard()->clear();QVERIFY(controller.shutdown());
+    }
+    void themeDefaultAndIndependentGrid(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.setTheme("Dark");controller.newDefault();QCOMPARE(controller.pageColor(),QColor("#000000"));
+        auto values=controller.background();values["color"]="#214f43";values["gridColor"]="#abcdef";values["opacity"]=0.7;values["thicknessMm"]=0.4;controller.setBackground(values);
+        controller.applyBackgroundPreset("Milimetrado");QCOMPARE(controller.pageColor(),QColor("#214f43"));QCOMPARE(controller.background()["gridColor"].toString(),QString("#abcdef"));QCOMPARE(controller.background()["opacity"].toDouble(),0.7);QCOMPARE(controller.background()["thicknessMm"].toDouble(),0.4);QCOMPARE(controller.page()->backgroundStyle.gridType,GridType::Millimetric);
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());
+        auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));auto* background=window->findChild<QObject*>("backgroundOptions");QVERIFY(background);QVERIFY(QMetaObject::invokeMethod(background,"open"));QTRY_VERIFY(background->property("opened").toBool());
+        int index=-1;const auto presets=controller.gridPresets();for(int i=0;i<presets.size();++i)if(presets[i].toMap()["name"]=="Isométrico")index=i;QVERIFY(index>=0);
+        QVERIFY(QMetaObject::invokeMethod(background,"chooseGrid",Q_ARG(QVariant,index)));QCOMPARE(controller.pageColor(),QColor("#214f43"));QCOMPARE(controller.background()["gridColor"].toString(),QString("#abcdef"));QCOMPARE(controller.page()->backgroundStyle.gridType,GridType::Isometric);
+        controller.setTheme("Light");QCOMPARE(controller.pageColor(),QColor("#214f43"));controller.newDefault();QCOMPARE(controller.pageColor(),QColor("#ffffff"));
+        QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
+    }
+    void pagesAndPdfImportDialog(){
+        QTemporaryDir directory;const auto path=directory.filePath("lesson.pdf");
+        {QPdfWriter writer(path);writer.setResolution(72);writer.setPageSize(QPageSize(QPageSize::A4));QPainter painter(&writer);painter.fillRect(QRect(50,50,120,100),Qt::blue);writer.setPageSize(QPageSize(QPageSize::Letter));QVERIFY(writer.newPage());painter.fillRect(QRect(50,50,120,100),Qt::red);}
+        AppController controller(nullptr,directory.filePath("data"));QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());
+        auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));controller.inspectPdfFile(QUrl::fromLocalFile(path));
+        auto* dialog=window->findChild<QObject*>("importPdfDialog");QVERIFY(dialog);QTRY_VERIFY(dialog->property("opened").toBool());QTRY_VERIFY(!controller.pdfBusy());QCOMPARE(controller.pdfPageCount(),2);
+        QDir().mkpath("screenshots");QVERIFY(window->grabWindow().save("screenshots/milestone4-pdf-dialog.png"));
+        auto* confirm=findVisualItem(window->contentItem(),"confirmPdfImport");QVERIFY(confirm);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,confirm->mapToScene(QPointF(confirm->width()/2,confirm->height()/2)).toPoint());
+        QTRY_COMPARE(controller.pageCount(),2);QTRY_VERIFY(!dialog->property("visible").toBool());
+        auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);QTRY_VERIFY(!controller.pdfImage().isNull());
+        QTRY_VERIFY(!controller.pages()[0].toMap()["thumbnail"].toString().isEmpty());QTRY_VERIFY(!controller.busy());
+        controller.duplicatePage();QCOMPARE(controller.pageCount(),3);QCOMPARE(controller.currentPage(),2);controller.addPage();QCOMPARE(controller.pageCount(),4);QVERIFY(!controller.page()->pdf);
+        auto* open=findVisualItem(window->contentItem(),"openPagesButton");QVERIFY(open);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,open->mapToScene(QPointF(open->width()/2,open->height()/2)).toPoint());auto* panel=window->findChild<QObject*>("pagesPanel");QVERIFY(panel);QTRY_VERIFY(panel->property("opened").toBool());QVERIFY(!canvas->isEnabled());
+        QTRY_VERIFY(!controller.pages()[3].toMap()["thumbnail"].toString().isEmpty());QTRY_VERIFY(!controller.busy());QTest::qWait(200);QVERIFY(window->grabWindow().save("screenshots/milestone4-pages.png"));
+        auto* thumbnail=findVisualItem(window->contentItem(),"pageThumbnail_1");QVERIFY(thumbnail);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,thumbnail->mapToScene(QPointF(thumbnail->width()/2,thumbnail->height()/2)).toPoint());QCOMPARE(controller.currentPage(),1);QVERIFY(std::abs(controller.pageWidth()-215.9)<0.4);
+        QVERIFY(QMetaObject::invokeMethod(panel,"close"));QTRY_VERIFY(!panel->property("visible").toBool());QTest::keyClick(window,Qt::Key_PageUp,Qt::ControlModifier);QCOMPARE(controller.currentPage(),0);QTRY_VERIFY(!controller.pdfImage().isNull());
+        const auto sourceBytes=*controller.page()->pdf->data;QSignalSpy request(&controller,&AppController::pdfImportRequested);
+        QMimeData mime;mime.setUrls({QUrl::fromLocalFile(path)});const auto point=canvas->mapToScene(QPointF(260,200)).toPoint();QDragEnterEvent enter(point,Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QCoreApplication::sendEvent(window,&enter);QDropEvent drop(QPointF(point),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QCoreApplication::sendEvent(window,&drop);
+        QTRY_COMPARE(request.size(),1);QTRY_VERIFY(!controller.pdfBusy());QTRY_VERIFY(dialog->property("opened").toBool());QVERIFY(QMetaObject::invokeMethod(dialog,"close"));QTRY_VERIFY(!dialog->property("visible").toBool());QCOMPARE(*controller.page()->pdf->data,sourceBytes);
+        window->resize(520,640);QVERIFY(QMetaObject::invokeMethod(panel,"open"));QTRY_VERIFY(panel->property("opened").toBool());QTest::qWait(200);QVERIFY(window->grabWindow().save("screenshots/milestone4-pages-small.png"));
+        QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
+    }
     void liveBackgroundAndAdaptivePenColors(){
         QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
         QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());

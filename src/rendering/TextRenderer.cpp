@@ -47,6 +47,19 @@ Layout layout(const TextObject& t){
 }
 }
 bool svgRenderingAvailable(){return true;}
+QString paintVectorText(QPainter& painter,const TextObject& t){
+    const auto l=layout(t);const double em=font(t,baseScale).pixelSize();
+    painter.save();painter.scale(1/baseScale,1/baseScale);painter.translate(2,2);painter.setFont(font(t,baseScale));painter.setPen(textColor(t));
+    const QFontMetricsF metrics(painter.font());
+    for(const auto& run:l.runs){
+        if(!run.math){painter.drawText(QPointF(run.x,run.y+metrics.ascent()),run.text);continue;}
+        const auto mesh=svgMathMesh(run.math->svg);if(!mesh.error.isEmpty()){painter.restore();return mesh.error;}
+        QPainterPath path;path.setFillRule(Qt::WindingFill);
+        for(std::size_t i=0;i+2<mesh.vertices.size();i+=3){const auto a=mesh.vertices[i],b=mesh.vertices[i+1],c=mesh.vertices[i+2];path.moveTo(run.x+a.x*em,run.y+a.y*em);path.lineTo(run.x+b.x*em,run.y+b.y*em);path.lineTo(run.x+c.x*em,run.y+c.y*em);path.closeSubpath();}
+        painter.fillPath(path,textColor(t));
+    }
+    painter.restore();return {};
+}
 static QImage renderBitmap(const TextObject& t,double scale,bool includeMath){
     const auto l=layout(t);const double ratio=std::min(scale/baseScale,4096./std::max(l.width+4,l.height+4));
     QImage image(std::max(1,int(std::ceil((l.width+4)*ratio))),std::max(1,int(std::ceil((l.height+4)*ratio))),QImage::Format_ARGB32_Premultiplied);image.fill(Qt::transparent);

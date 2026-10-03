@@ -28,7 +28,9 @@ CanvasItem::CanvasItem(QQuickItem* parent):QQuickItem(parent){
 CanvasItem::~CanvasItem(){if(filteredWindow_)filteredWindow_->removeEventFilter(this);}
 void CanvasItem::setController(AppController* c){
     if(controller_==c)return;if(controller_)disconnect(controller_,nullptr,this,nullptr);controller_=c;
-    if(c)connect(c,&AppController::documentChanged,this,[this]{if(controller_->page())selection_.prune(*controller_->page());else selection_.clear();selectionUpdated();update();});if(c&&c->pageColor().lightness()<128)setPenColor(QColor("#f4f4f5"));emit controllerChanged();update();
+    if(c)connect(c,&AppController::documentChanged,this,[this]{if(controller_->page())selection_.prune(*controller_->page());else selection_.clear();selectionUpdated();update();});
+    if(c)connect(c,&AppController::pageChanged,this,[this]{cancelStroke();selection_.clear();selectionUpdated();fitPage();});
+    if(c&&c->pageColor().lightness()<128)setPenColor(QColor("#f4f4f5"));emit controllerChanged();update();
 }
 void CanvasItem::setTool(const QString& t){if(t!="text"&&t!="eraser"&&t!="pen"&&t!="hand"&&t!="select"&&t!="line"&&t!="circle"&&t!="ellipse"&&t!="triangle"&&t!="rectangle")return;cancelStroke();tool_=t;emit toolChanged();}
 void CanvasItem::setPenColor(const QColor& c){if(!c.isValid())return;color_=c;style_.rgba=(std::uint32_t(c.red())<<24)|(std::uint32_t(c.green())<<16)|(std::uint32_t(c.blue())<<8)|255;emit penChanged();}
@@ -45,7 +47,7 @@ void CanvasItem::setPenLineStyle(const QString& value){
     if(value!="solid"&&value!="dashed"&&value!="dotted")return;
     style_.pattern=value=="dashed"?LinePattern::Dashed:value=="dotted"?LinePattern::Dotted:LinePattern::Solid;emit penChanged();
 }
-void CanvasItem::viewUpdated(){if(controller_)controller_->refreshTextTextures(view_.pixelsPerMm*view_.zoom*(window()?window()->devicePixelRatio():1));update();emit viewChanged();emit selectionChanged();}
+void CanvasItem::viewUpdated(){if(controller_){const auto scale=view_.pixelsPerMm*view_.zoom*(window()?window()->devicePixelRatio():1);controller_->refreshTextTextures(scale);controller_->refreshPdf(scale);}update();emit viewChanged();emit selectionChanged();}
 void CanvasItem::fitPage(){
     if(!controller_||!controller_->active()||width()<1||height()<1)return;
     cancelStroke();const double margin=40;
