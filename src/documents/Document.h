@@ -1,0 +1,65 @@
+#pragma once
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace scalar {
+struct Point {
+    double x = 0, y = 0;
+    Point operator+(Point b) const { return {x+b.x,y+b.y}; }
+    Point operator-(Point b) const { return {x-b.x,y-b.y}; }
+    Point operator*(double k) const { return {x*k,y*k}; }
+    bool operator==(const Point&) const = default;
+};
+inline double length(Point p) { return std::hypot(p.x,p.y); }
+struct PageSize {
+    double widthMm = 210, heightMm = 297;
+    bool valid() const { return std::isfinite(widthMm) && std::isfinite(heightMm) && widthMm >= 10 && heightMm >= 10 && widthMm <= 5000 && heightMm <= 5000; }
+    static PageSize a4(bool landscape = false) { return landscape ? PageSize{297,210} : PageSize{210,297}; }
+    static PageSize letter(bool landscape = false) { return landscape ? PageSize{279.4,215.9} : PageSize{215.9,279.4}; }
+};
+enum class DeviceType { Mouse, Stylus, Touch };
+struct PointerSample {
+    Point position; // world millimetres
+    double pressure = 1, tiltX = 0, tiltY = 0, rotation = 0;
+    std::uint64_t timestamp = 0;
+    std::uint32_t buttons = 0;
+    DeviceType device = DeviceType::Mouse;
+};
+struct PenStyle {
+    std::uint32_t rgba = 0x263345ff;
+    double minWidthMm = 0.15, maxWidthMm = 0.85, gamma = 1.2, sensitivity = 1;
+    double width(double pressure) const {
+        return minWidthMm + (maxWidthMm-minWidthMm)*std::pow(std::clamp(pressure*sensitivity,0.0,1.0),gamma);
+    }
+};
+struct StrokeObject {
+    std::string id;
+    PenStyle style;
+    std::vector<PointerSample> samples;
+};
+struct Page {
+    std::string id;
+    PageSize size;
+    std::uint32_t background = 0xffffffff;
+    std::vector<StrokeObject> strokes;
+};
+struct Project {
+    std::string id, name, createdAt, updatedAt;
+    std::vector<Page> pages;
+};
+struct ViewTransform {
+    double pixelsPerMm = 96.0/25.4, zoom = 1;
+    Point pan {40,40}; // logical screen pixels
+    Point worldToScreen(Point p) const { return p*(pixelsPerMm*zoom)+pan; }
+    Point screenToWorld(Point p) const { return (p-pan)*(1.0/(pixelsPerMm*zoom)); }
+    void zoomAt(Point screen, double factor) {
+        const auto world = screenToWorld(screen);
+        zoom = std::clamp(zoom*factor,0.05,8.0);
+        pan = screen-world*(pixelsPerMm*zoom);
+    }
+};
+std::string newId();
+}

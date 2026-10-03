@@ -1,0 +1,5 @@
+/build*/
+*.user
+*.board
+*.board.png
+fixture.board
