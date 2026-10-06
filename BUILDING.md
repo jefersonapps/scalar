@@ -109,6 +109,43 @@ A instalação e o CPack recusam distribuir matemática incompleta. Incluem runt
 
 O pacote TGZ atual não é um instalador completo dos runtimes Qt do sistema. No Linux, as bibliotecas Qt/QML/SQLite ainda precisam estar disponíveis; no Windows, windeployqt é necessário na máquina que gera a distribuição. Node/MathJax já são incluídos e não dependem de instalação manual pelo usuário final. Assinatura e instaladores nativos Windows/Linux seguem pendentes.
 
+## Pacotes para usuários finais
+
+O alvo `package` prepara o runtime offline de LaTeX (MathJax e Node privado) e o inclui no pacote. Portanto, o computador do usuário não precisa de Node, npm, Python, TeX Live ou conexão com a internet para escrever fórmulas.
+
+### Debian, Ubuntu e Linux Mint
+
+Gere o pacote em uma máquina Debian/Ubuntu/Mint compatível com a versão que será atendida:
+
+```sh
+bash scripts/package-linux.sh
+```
+
+O script gera em diretório temporário, descompacta o `.deb` inteiro para validar sua integridade e só então o publica em `build-package/packages/`. Assim, um pacote interrompido durante a compressão não aparece como arquivo pronto para distribuição. Ele instala o aplicativo no menu do sistema, inclui a matemática offline e declara dependências de Qt, QML, SQLite e codecs de imagem. Ao abrir pelo gerenciador de pacotes ou instalar com `apt`, as bibliotecas do sistema são resolvidas automaticamente:
+
+```sh
+sudo apt install ./build-package/packages/scalar_*.deb
+```
+
+O comando instalado é `scalar-whiteboard`; o nome no menu continua Scalar. O Git já fornece `/usr/bin/scalar`, por isso o pacote usa um comando distinto para evitar conflito na instalação.
+
+### Windows 10 e 11
+
+Gere o instalador no próprio Windows, usando um kit Qt MSVC x64 que contenha Qt PDF, Qt SVG e `windeployqt`, além de NSIS instalado e disponível no `PATH`:
+
+```powershell
+cmake -S . -B build-package -G Ninja `
+  -DCMAKE_BUILD_TYPE=Release `
+  -DCMAKE_PREFIX_PATH="C:/Qt/6.8.3/msvc2022_64" `
+  -DBUILD_TESTING=OFF
+cmake --build build-package --parallel
+cpack --config build-package/CPackConfig.cmake -G NSIS
+```
+
+O `.exe` é gerado em `build-package/packages/`. Durante o empacotamento, `windeployqt` copia as DLLs do Qt, imports QML, plugins de plataforma, SQLite, codecs de imagem e o runtime do compilador para o instalador. O usuário final só executa esse `.exe`; não precisa instalar Qt, Visual C++, Node, npm, Python ou LaTeX separadamente.
+
+Para uma versão portátil, sem assistente de instalação, use `-G ZIP` no último comando. Cada pacote deve ser produzido no sistema operacional de destino: o `.deb` no Linux e o instalador NSIS no Windows.
+
 Nove entradas CTest cobrem núcleo, reconhecimento, borracha, persistência, lixeira, matemática, desktop e dois smokes. A suíte MathTests executa conversão real quando o runtime está presente; qualquer skip precisa ser reportado. Capturas da M3 ficam em build/screenshots/milestone3-*.png. Equações e grades são meshes QSG e não aparecem no backend offscreen software desta máquina; suas geometrias são verificadas pelos testes. GPU/stylus física e deploy Windows continuam exigindo validação manual.
 
 ## Milestone 4
