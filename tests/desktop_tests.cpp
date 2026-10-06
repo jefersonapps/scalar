@@ -1,4 +1,5 @@
 #include <QtTest>
+#include "app/Branding.h"
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickWindow>
@@ -13,17 +14,25 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QTabletEvent>
+#include <QWheelEvent>
 #include <QPointingDevice>
 #include <QPdfWriter>
 #include <QPainter>
 #include <QPageSize>
 #include <QSGTransformNode>
+#include <QSGGeometryNode>
+#include <QSGSimpleTextureNode>
 #include <memory>
 #include <array>
 #include <cmath>
+#include <numbers>
 #include "app/AppController.h"
 #include "canvas/CanvasItem.h"
 #include "clipboard/ImageImporter.h"
+#include "tools/RegionFill.h"
+#include "rendering/TextRenderer.h"
+#include "rendering/PageRenderer.h"
+#include "rendering/ShapeRasterCache.h"
 using namespace scalar;
 QQuickItem* findVisualItem(QQuickItem* parent,const QString& name){
     if(parent->objectName()==name)return parent;
@@ -36,9 +45,494 @@ public:
     using CanvasItem::mousePressEvent;
     using CanvasItem::mouseReleaseEvent;
 };
+class ZoomInspectableCanvas : public CanvasItem {
+public:
+    using CanvasItem::CanvasItem;
+    double tileWidth=0;
+    int renderedFrames=0;
+protected:
+    QSGNode* updatePaintNode(QSGNode* old,UpdatePaintNodeData* data) override {
+        auto* root=CanvasItem::updatePaintNode(old,data);++renderedFrames;
+        auto* clip=root->firstChild()->nextSibling();
+        auto* object=clip->lastChild();
+        if(object&&object->firstChild())if(auto* texture=dynamic_cast<QSGSimpleTextureNode*>(object->firstChild()))tileWidth=texture->rect().width();
+        return root;
+    }
+};
 class DesktopTests : public QObject {
     Q_OBJECT
 private slots:
+    void highZoomRetainsVectorGeometryAndLayerOrder(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();QTRY_VERIFY(!controller.busy());
+        auto background=controller.background();background["gridType"]=int(GridType::None);controller.setBackground(background);
+        ShapeObject circle;circle.id=newId();circle.kind=ShapeKind::Circle;circle.center={105,148.5};circle.radiusX=circle.radiusY=20;circle.properties.zIndex=1;
+        controller.addShape(circle);auto second=circle;second.id=newId();second.radiusX=second.radiusY=40;second.properties.zIndex=2;controller.addShape(second);
+        InspectableCanvas canvas;canvas.setWidth(800);canvas.setHeight(600);canvas.setController(&controller);canvas.fitPage();
+        std::unique_ptr<QSGNode> scene(canvas.updatePaintNode(nullptr,nullptr));auto* clip=scene->firstChild()->nextSibling();
+        auto* first=clip->firstChild();auto* last=clip->lastChild();QVERIFY(first!=last);QCOMPARE(clip->childCount(),2);
+        auto* border=static_cast<QSGGeometryNode*>(first->lastChild());auto* geometry=border->geometry();QCOMPARE(geometry->vertexCount(),128*6);
+        QElapsedTimer timer;timer.start();
+        for(int i=0;i<300;++i){QVERIFY(canvas.setZoom(2+(i%61)*.1));scene.reset(canvas.updatePaintNode(scene.release(),nullptr));
+            QCOMPARE(clip->firstChild(),first);QCOMPARE(clip->lastChild(),last);QCOMPARE(border->geometry(),geometry);}
+        qInfo()<<"300 vector scene updates at 200–800% zoom:"<<timer.nsecsElapsed()/1000000.<<"ms (CPU scene synchronization)";
+        second=controller.page()->shapes.back();auto moved=second;moved.properties.zIndex=-1;++moved.properties.revision;
+        controller.changeObjects({{CanvasObject(second),CanvasObject(moved)}},CommandKind::ChangeStyle);
+        scene.reset(canvas.updatePaintNode(scene.release(),nullptr));QCOMPARE(clip->lastChild(),first);QCOMPARE(clip->childCount(),2);
+        controller.undo();scene.reset(canvas.updatePaintNode(scene.release(),nullptr));QCOMPARE(clip->firstChild(),first);QCOMPARE(clip->childCount(),2);
+        QVERIFY(controller.shutdown());
+    }
+    void zoomReusesErasedShapeTexturesUntilSettled(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();QTRY_VERIFY(!controller.busy());
+        QQuickWindow window;window.resize(800,700);auto* canvas=new ZoomInspectableCanvas(window.contentItem());canvas->setWidth(800);canvas->setHeight(700);canvas->setController(&controller);
+        ShapeObject circle;circle.id=newId();circle.kind=ShapeKind::Circle;circle.center={105,148.5};circle.radiusX=circle.radiusY=20;
+        for(int i=0;i<400;++i){Point p{105+(i%20)*.5,148.5+(i/20)*.5};circle.erasedRegions.push_back({p,p,.5,i%3==0});}
+        controller.addShape(circle);canvas->fitPage();window.show();QVERIFY(QTest::qWaitForWindowExposed(&window));QVERIFY(canvas->setZoom(2));QTest::qWait(220);QVERIFY(canvas->tileWidth>0);
+        const auto initialWidth=canvas->tileWidth;const int frames=canvas->renderedFrames;QElapsedTimer timer;timer.start();
+        for(int i=0;i<10;++i){canvas->zoomBy(1.05);QTest::qWait(12);QCOMPARE(canvas->tileWidth,initialWidth);}
+        QVERIFY(canvas->renderedFrames>frames);qInfo()<<"10 zoom steps with cached mask textures:"<<timer.elapsed()<<"ms (includes 120 ms of event waits)";
+        QTRY_VERIFY(canvas->tileWidth<initialWidth);QCOMPARE(controller.page()->shapes[0].erasedRegions.size(),circle.erasedRegions.size());
+        // Zooming back out also updates the viewport and remains bounded.
+        for(int i=0;i<10;++i){canvas->zoomBy(1/1.05);QTest::qWait(12);}QTRY_COMPARE(canvas->tileWidth,initialWidth);
+        window.hide();delete canvas;QVERIFY(controller.shutdown());
+    }
+    void selectedContourPatternsAndIncircle(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);
+        engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));
+        controller.newDefault();QTRY_VERIFY(!controller.busy());auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);
+        ShapeObject triangle;triangle.id=newId();triangle.kind=ShapeKind::Triangle;triangle.vertices={{70,100},{140,100},{105,160}};triangle.style.pattern=LinePattern::Dashed;controller.addShape(triangle);
+        canvas->setTool("select");QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,canvas->mapToScene(canvas->screenPoint({105,120})).toPoint());QCOMPARE(canvas->selectedCount(),1);QCOMPARE(canvas->selectedPattern(),1);
+        for(int pattern:{0,2,1}){
+            auto* button=findVisualItem(window->contentItem(),"selectedPattern_"+QString::number(pattern));QVERIFY(button);QVERIFY(button->isVisible());
+            QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,button->mapToScene({button->width()/2,button->height()/2}).toPoint());
+            QCOMPARE(canvas->selectedPattern(),pattern);QCOMPARE(int(controller.page()->shapes[0].style.pattern),pattern);
+        }
+        controller.undo();QCOMPARE(canvas->selectedPattern(),2);controller.redo();QCOMPARE(canvas->selectedPattern(),1);canvas->setSelectedPattern(99);QCOMPARE(canvas->selectedPattern(),1);
+        auto* inscribed=findVisualItem(window->contentItem(),"constructIncircleButton");QVERIFY(inscribed);QVERIFY(QMetaObject::invokeMethod(inscribed,"clicked"));
+        QCOMPARE(controller.page()->shapes.size(),std::size_t(2));const auto circle=controller.page()->shapes.back();QCOMPARE(circle.kind,ShapeKind::Circle);
+        for(int i=0;i<3;++i)QVERIFY(std::abs(distanceToSegment(circle.center,triangle.vertices[i],triangle.vertices[(i+1)%3])-circle.radiusX)<1e-8);
+        controller.undo();QCOMPARE(controller.page()->shapes.size(),std::size_t(1));controller.redo();QCOMPARE(controller.page()->shapes.size(),std::size_t(2));
+        controller.setTheme("Dark");window->resize(760,600);QTest::qWait(100);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,canvas->mapToScene(canvas->screenPoint({105,120})).toPoint());QTest::qWait(50);auto* panel=findVisualItem(window->contentItem(),"objectPropertiesPanel");QVERIFY(panel);QVERIFY(panel->isVisible());QVERIFY(panel->height()+panel->y()<=canvas->parentItem()->height()-89);
+        auto* duplicate=findVisualItem(window->contentItem(),"duplicateSelectionButton");QVERIFY(duplicate);QVERIFY(duplicate->mapToScene({0,duplicate->height()}).y()<=window->height());
+        QDir().mkpath("screenshots");QVERIFY(window->grabWindow().save("screenshots/object-properties-organized.png"));QVERIFY(warnings.isEmpty());QVERIFY(controller.shutdown());
+    }
+    void bucketFillErasesLocallyAndRestores(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);
+        engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));controller.newDefault();QTRY_VERIFY(!controller.busy());
+        auto background=controller.background();background["color"]="#000000";background["gridType"]=int(GridType::None);controller.setBackground(background);
+        auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);QVERIFY(canvas->setZoom(3));
+        StrokeObject boundary;boundary.id=newId();boundary.samples={{{90,135}},{{120,135}},{{120,165}},{{90,165}},{{90,135}}};controller.addStroke(boundary);
+        controller.fillRegion({105,150},Qt::white,.25);QTRY_VERIFY(!controller.documentBusy());QCOMPARE(controller.page()->images.size(),std::size_t(1));const auto original=controller.page()->images.front();QVERIFY(original.inkFill);
+        const auto screen=[&](QPointF p){return canvas->mapToScene(canvas->screenPoint(p)).toPoint();};
+        const auto sample=[&](QPointF p){QTest::qWait(50);const auto image=window->grabWindow();const auto point=screen(p);return image.pixelColor(int(point.x()*image.width()/double(window->width())),int(point.y()*image.height()/double(window->height()))).red();};
+        canvas->setTool("hand");QCOMPARE(sample({105,150}),64);
+        canvas->setTool("eraser");canvas->setEraserRadius(1);
+        QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,screen({102,150}));
+        for(int i=0;i<=10;++i)QTest::mouseMove(window,screen({102+i*.6,150}));
+        QCOMPARE(sample({105,150}),0);QCOMPARE(sample({105,152}),64); // live preview before release
+        QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,screen({108,150}));canvas->setTool("hand");
+        QCOMPARE(controller.page()->images.size(),std::size_t(1));QCOMPARE(controller.page()->images.front().id,original.id);QVERIFY(controller.page()->images.front().png==original.png);QVERIFY(!controller.page()->images.front().erasedRegions.empty());
+        controller.undo();QCOMPARE(sample({105,150}),64);controller.redo();QCOMPARE(sample({105,150}),0);
+        canvas->setTool("eraser");QTest::mouseClick(window,Qt::LeftButton,Qt::ShiftModifier,screen({105,150}));canvas->setTool("hand");QCOMPARE(sample({105,150}),64);QCOMPARE(sample({102,150}),0);
+        for(int i=0;i<3;++i){canvas->setTool("eraser");QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,screen({105,150}));canvas->setTool("hand");QCOMPARE(sample({105,150}),0);QCOMPARE(sample({105,152}),64);}
+        const auto filename=directory.filePath("erased-fill.board");controller.saveAs(QUrl::fromLocalFile(filename));QTRY_VERIFY(!controller.busy());const auto loaded=ProjectStore::load(filename);QVERIFY2(bool(loaded),qPrintable(loaded.error));const auto& imageObject=loaded.project.pages[0].images.front();QCOMPARE(imageObject.erasedRegions.size(),controller.page()->images.front().erasedRegions.size());
+        QImage exported(840,1188,QImage::Format_ARGB32_Premultiplied);exported.fill(Qt::transparent);QPainter painter(&exported);painter.scale(4,4);QVERIFY(paintPage(painter,loaded.project.pages[0],4).isEmpty());painter.end();QCOMPARE(exported.pixelColor(420,600).red(),0);QCOMPARE(exported.pixelColor(420,608).red(),64);
+        const auto moved=std::get<ImageObject>(transformed(CanvasObject(imageObject),{0,0},{5,0},1,1,.3));QVERIFY(length(moved.erasedRegions.back().from-rotatePoint(imageObject.erasedRegions.back().from,{0,0},.3)-Point{5,0})<1e-8);
+        // Only tiles touched by the brush are recomposed, including rotated fills.
+        ShapeRasterCache cache;auto fill=imageObject;const auto bitmap=controller.image(fill.id);cache.update(fill,bitmap,16,QRectF(80,120,60,60));const auto allocated=cache.tiles().size();
+        for(int i=0;i<100;++i){fill.erasedRegions.push_back({{105,150},{105.2,150},.5,bool(i%2)});cache.update(fill,bitmap,16,QRectF(80,120,60,60));QVERIFY(cache.updatedTiles()<=4);QCOMPARE(cache.tiles().size(),allocated);}
+        QVERIFY(warnings.isEmpty());QVERIFY(controller.shutdown());
+    }
+    void markerErasingPreservesOpacityAndRestoresLocally(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
+        auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));controller.newDefault();QTRY_VERIFY(!controller.busy());
+        auto background=controller.background();background["color"]="#000000";background["gridType"]=int(GridType::None);controller.setBackground(background);
+        auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);QVERIFY(canvas->setZoom(3));
+        StrokeObject marker;marker.id=newId();marker.marker=true;marker.style.rgba=0xffffff1a;marker.style.minWidthMm=marker.style.maxWidthMm=10;
+        // Retraced segments share one opacity, including after a partial cut.
+        marker.samples={{{85,148.5}},{{125,148.5}},{{85,148.5}}};controller.addStroke(marker);
+        const auto screen=[&](QPointF p){return canvas->mapToScene(canvas->screenPoint(p)).toPoint();};
+        const auto sample=[&](QPointF p){QTest::qWait(50);const auto image=window->grabWindow();if(image.isNull())return -1;const auto point=screen(p);return image.pixelColor(int(point.x()*image.width()/double(window->width())),int(point.y()*image.height()/double(window->height()))).red();};
+        canvas->setTool("hand");QCOMPARE(sample({105,148.5}),26);
+        const auto gesture=[&](Qt::KeyboardModifiers modifiers){canvas->setTool("eraser");canvas->setEraserRadius(1);QTest::mouseClick(window,Qt::LeftButton,modifiers,screen({105,148.5}));canvas->setTool("hand");};
+        for(int pass=0;pass<3;++pass){gesture(Qt::NoModifier);QCOMPARE(sample({105,148.5}),0);QCOMPARE(sample({105,151}),26);QCOMPARE(sample({112,148.5}),26);}
+        QCOMPARE(controller.page()->strokes.size(),std::size_t(1));QCOMPARE(controller.page()->strokes[0].id,marker.id);QCOMPARE(controller.page()->strokes[0].samples.size(),marker.samples.size());QVERIFY(controller.page()->erasedInk.empty());
+        gesture(Qt::ShiftModifier);QCOMPARE(sample({105,148.5}),26);QCOMPARE(sample({105,151}),26);
+        controller.undo();QCOMPARE(sample({105,148.5}),0);controller.redo();QCOMPARE(sample({105,148.5}),26);
+        gesture(Qt::ControlModifier);QCOMPARE(sample({105,148.5}),0);
+        const auto filename=directory.filePath("masked-marker.board");controller.saveAs(QUrl::fromLocalFile(filename));QTRY_VERIFY(!controller.busy());
+        const auto loaded=ProjectStore::load(filename);QVERIFY2(bool(loaded),qPrintable(loaded.error));
+        const auto& saved=loaded.project.pages[0].strokes[0];QVERIFY(saved.marker);QCOMPARE(saved.erasedRegions.size(),controller.page()->strokes[0].erasedRegions.size());QVERIFY(std::any_of(saved.erasedRegions.begin(),saved.erasedRegions.end(),[](const auto& region){return region.restore;}));
+        const auto& page=loaded.project.pages[0];QImage image(840,1188,QImage::Format_ARGB32_Premultiplied);image.fill(Qt::transparent);QPainter painter(&image);painter.scale(4,4);QVERIFY(paintPage(painter,page,4).isEmpty());painter.end();
+        QCOMPARE(image.pixelColor(420,594).red(),0);QCOMPARE(image.pixelColor(420,604).red(),26);
+        auto moved=std::get<StrokeObject>(transformed(CanvasObject(saved),{0,0},{5,0},1,1,0));QCOMPARE(moved.erasedRegions.back().from.x,saved.erasedRegions.back().from.x+5);
+        QVERIFY(controller.shutdown());
+    }
+    void nativeShapeMaskSceneGraph(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());QQmlApplicationEngine engine;
+        QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
+        auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));controller.newDefault();QTRY_VERIFY(!controller.busy());
+        auto background=controller.background();background["color"]="#000000";background["gridType"]=int(GridType::None);controller.setBackground(background);
+        auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);QVERIFY(canvas->setZoom(3));
+        ShapeObject shape;shape.id=newId();shape.kind=ShapeKind::Circle;shape.center={105,148.5};shape.radiusX=shape.radiusY=20;shape.fillOpacity=.25;shape.style.rgba=0xffffffff;
+        // A distant cut selects the texture path without touching this circle.
+        // Qt's software backend does not render the app's custom triangle nodes.
+        shape.erasedRegions.push_back({{1,1},{1,1},.5});controller.addShape(shape);
+        auto screen=[&](QPointF p){return canvas->mapToScene(canvas->screenPoint(p)).toPoint();};
+        const auto sample=[&](QPointF p){QTest::qWait(50);const auto image=window->grabWindow();if(image.isNull())return -1;const auto point=screen(p);return image.pixelColor(int(point.x()*image.width()/double(window->width())),int(point.y()*image.height()/double(window->height()))).red();};
+        canvas->setTool("hand");const auto original=sample({105,148.5});QVERIFY(original>=60&&original<=66);
+        const auto gesture=[&](Qt::KeyboardModifiers modifier){canvas->setTool("eraser");canvas->setEraserRadius(3);QTest::mouseClick(window,Qt::LeftButton,modifier,screen({105,148.5}));canvas->setTool("hand");};
+        gesture(Qt::ControlModifier);QCOMPARE(sample({105,148.5}),0);QVERIFY(std::abs(sample({115,148.5})-original)<=2);
+        gesture(Qt::ShiftModifier);QVERIFY(std::abs(sample({105,148.5})-original)<=2);
+        gesture(Qt::ControlModifier);QCOMPARE(sample({105,148.5}),0);
+        controller.undo();QVERIFY(std::abs(sample({105,148.5})-original)<=2);
+        controller.redo();QCOMPARE(sample({105,148.5}),0);
+        QVERIFY(canvas->setZoom(4));QCOMPARE(sample({105,148.5}),0);gesture(Qt::ShiftModifier);QVERIFY(std::abs(sample({105,148.5})-original)<=2);
+        QVERIFY(warnings.isEmpty());QVERIFY(controller.shutdown());
+    }
+    void tiledShapeErasureIsBoundedAndReversible(){
+        ShapeObject shape;shape.id=newId();shape.kind=ShapeKind::Circle;shape.center={60,60};shape.radiusX=shape.radiusY=20;
+        ShapeRasterCache raster;const QRectF visible(0,0,120,120);raster.update(shape,16,visible);
+        const auto alphaAt=[&](Point point){for(const auto& [key,tile]:raster.tiles())if(tile.worldRect.contains(QPointF(point.x,point.y)))return tile.image.pixelColor(int((point.x-tile.worldRect.left())*16)+1,int((point.y-tile.worldRect.top())*16)+1).alpha();return -1;};
+        const int opacity=alphaAt({60,60});QVERIFY(opacity>0);
+        shape.erasedRegions.push_back({{60,60},{60,60},2});raster.update(shape,16,visible);QCOMPARE(alphaAt({60,60}),0);QCOMPARE(alphaAt({64,60}),opacity);
+        shape.erasedRegions.push_back({{60,60},{60,60},1,true});raster.update(shape,16,visible);QCOMPARE(alphaAt({60,60}),opacity);QCOMPARE(alphaAt({61.5,60}),0);
+        shape.erasedRegions.push_back({{60,60},{60,60},.5});raster.update(shape,16,visible);QCOMPARE(alphaAt({60,60}),0);
+        shape.erasedRegions.pop_back();raster.update(shape,16,visible);QCOMPARE(alphaAt({60,60}),opacity);
+        raster.update(shape,16,visible);QCOMPARE(raster.updatedTiles(),std::size_t(0));
+        const auto tileCount=raster.tiles().size();std::size_t maxUpdated=0;QElapsedTimer timer;timer.start();
+        for(int i=0;i<600;++i){const double angle=(i%100)*.062;const Point p{60+20*std::sin(angle),60-20*std::cos(angle)};
+            shape.erasedRegions.push_back({p,p,3,(i/100)%2!=0});raster.update(shape,16,visible);maxUpdated=std::max(maxUpdated,raster.updatedTiles());
+            QCOMPARE(raster.tiles().size(),tileCount);QVERIFY(raster.updatedTiles()<=4);
+        }
+        qInfo()<<"600 native mask updates:"<<timer.elapsed()<<"ms; maximum touched tiles:"<<maxUpdated<<"; allocated tiles:"<<tileCount;
+        // Reloading a long operation history has the same final image. No mesh
+        // generated during the brush gesture is needed to save or display it.
+        ShapeRasterCache reloaded;reloaded.update(shape,16,visible);
+        for(const auto& [key,tile]:raster.tiles()){
+            const auto& saved=reloaded.tiles().at(key);
+            QCOMPARE(tile.image,saved.image);
+        }
+    }
+    void tiledEraserLongGesturesStayIncremental(){
+        ShapeObject shape;shape.id=newId();shape.kind=ShapeKind::Rectangle;
+        shape.vertices={{0,0},{120,0},{120,30},{0,30}};
+        ShapeRasterCache raster;const QRectF visible(0,0,120,30);
+        raster.update(shape,16,visible);const auto allocated=raster.tiles().size();
+        for(int gesture=0;gesture<3;++gesture){
+            shape.erasedRegions.push_back({{5,15},{5,15},2,gesture==1});
+            raster.update(shape,16,visible);
+            for(int step=1;step<=200;++step){
+                shape.erasedRegions.back().to={5+step*.5,15};
+                raster.update(shape,16,visible);
+                QVERIFY(raster.updatedTiles()<=4);QCOMPARE(raster.tiles().size(),allocated);
+            }
+            ShapeRasterCache reloaded;reloaded.update(shape,16,visible);
+            for(const auto& [key,tile]:raster.tiles())QCOMPARE(tile.image,reloaded.tiles().at(key).image);
+            // Repeated identical passes must not darken edges or upload textures.
+            shape.erasedRegions.push_back(shape.erasedRegions.back());
+            raster.update(shape,16,visible);QCOMPARE(raster.updatedTiles(),std::size_t(0));
+        }
+    }
+    void shapeEraseRestorePreviewCycles(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();QTRY_VERIFY(!controller.busy());
+        ShapeObject circle;circle.id=newId();circle.kind=ShapeKind::Circle;circle.center={60,60};circle.radiusX=circle.radiusY=12;controller.addShape(circle);
+        InspectableCanvas canvas;canvas.setWidth(800);canvas.setHeight(600);canvas.setController(&controller);canvas.fitPage();canvas.setTool("eraser");canvas.setEraserRadius(3);
+        std::unique_ptr<QSGNode> scene(canvas.updatePaintNode(nullptr,nullptr));
+        const auto visibleAt=[&](Point p){
+            auto* shape=scene->firstChild()->nextSibling()->lastChild();
+            auto* fill=static_cast<QSGGeometryNode*>(shape->firstChild());const auto* vertices=fill->geometry()->vertexDataAsPoint2D();
+            const auto cross=[](Point a,Point b){return a.x*b.y-a.y*b.x;};
+            for(int i=0;i+2<fill->geometry()->vertexCount();i+=3){Point a{vertices[i].x,vertices[i].y},b{vertices[i+1].x,vertices[i+1].y},c{vertices[i+2].x,vertices[i+2].y};
+                auto x=cross(b-a,p-a),y=cross(c-b,p-b),z=cross(a-c,p-c);if((x>=-1e-5&&y>=-1e-5&&z>=-1e-5)||(x<=1e-5&&y<=1e-5&&z<=1e-5))return true;}
+            return false;
+        };
+        const auto gesture=[&](Qt::KeyboardModifiers modifiers){
+            const auto point=canvas.screenPoint({60,48});QMouseEvent press(QEvent::MouseButtonPress,point,point,Qt::LeftButton,Qt::LeftButton,modifiers);canvas.mousePressEvent(&press);
+            scene.reset(canvas.updatePaintNode(scene.release(),nullptr));
+            QMouseEvent release(QEvent::MouseButtonRelease,point,point,Qt::LeftButton,Qt::NoButton,modifiers);canvas.mouseReleaseEvent(&release);
+            scene.reset(canvas.updatePaintNode(scene.release(),nullptr));
+        };
+        for(int i=0;i<5;++i){
+            gesture(Qt::ControlModifier);QVERIFY(!visibleAt({60,49}));QVERIFY(visibleAt({60,60}));
+            gesture(Qt::ShiftModifier);QVERIFY(visibleAt({60,49}));
+            gesture(Qt::ShiftModifier);QVERIFY(visibleAt({60,49}));
+            gesture(Qt::ControlModifier);QVERIFY(!visibleAt({60,49}));
+        }
+        controller.undo();scene.reset(canvas.updatePaintNode(scene.release(),nullptr));QVERIFY(visibleAt({60,49}));
+        controller.redo();scene.reset(canvas.updatePaintNode(scene.release(),nullptr));QVERIFY(!visibleAt({60,49}));
+        gesture(Qt::ShiftModifier);QVERIFY(visibleAt({60,49}));QVERIFY(controller.shutdown());
+    }
+    void shiftRestoresErasedInkAndShapes(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());QQmlApplicationEngine engine;
+        QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
+        auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));controller.newDefault();QTRY_VERIFY(!controller.busy());
+        auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);canvas->setTool("eraser");canvas->setEraserRadius(3);
+        auto screen=[&](QPointF point){return canvas->mapToScene(canvas->screenPoint(point)).toPoint();};
+        ShapeObject shape;shape.id=newId();shape.kind=ShapeKind::Rectangle;shape.vertices={{30,30},{70,30},{70,70},{30,70}};controller.addShape(shape);
+        QTest::mousePress(window,Qt::LeftButton,Qt::ControlModifier,screen({50,40}));QTest::mouseRelease(window,Qt::LeftButton,Qt::ControlModifier,screen({50,60}));
+        QVERIFY(!hitTest(controller.page()->shapes.front(),{50,50},0));
+        canvas->setEraserRadius(1);QTest::mouseClick(window,Qt::LeftButton,Qt::ShiftModifier,screen({50,50}));
+        QVERIFY(hitTest(controller.page()->shapes.front(),{50,50},0));QVERIFY(!hitTest(controller.page()->shapes.front(),{50,55},0));
+        controller.undo();QVERIFY(!hitTest(controller.page()->shapes.front(),{50,50},0));controller.redo();QVERIFY(hitTest(controller.page()->shapes.front(),{50,50},0));
+        StrokeObject stroke;stroke.id=newId();stroke.samples={{{20,80}},{{80,80}}};controller.addStroke(stroke);
+        canvas->setEraserRadius(3);QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,screen({50,80}));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,screen({60,80}));
+        QVERIFY(!controller.page()->erasedInk.empty());
+        auto inkAt=[&](Point p){for(const auto& ink:controller.page()->strokes)if(hitTest(ink,p,.01))return true;return false;};
+        QVERIFY(!inkAt({50,80}));QVERIFY(!inkAt({60,80}));
+        canvas->setEraserRadius(1);QTest::mouseClick(window,Qt::LeftButton,Qt::ShiftModifier,screen({50,80}));
+        QVERIFY(inkAt({50,80}));QVERIFY(!inkAt({60,80}));QVERIFY(inkAt({30,80}));
+        controller.undo();QVERIFY(!inkAt({50,80}));controller.redo();QVERIFY(inkAt({50,80}));
+        const auto count=controller.page()->strokes.size();QTest::mouseClick(window,Qt::LeftButton,Qt::ShiftModifier,screen({50,80}));QCOMPARE(controller.page()->strokes.size(),count);
+        const auto project=directory.filePath("restore.board");controller.saveAs(QUrl::fromLocalFile(project));QTRY_VERIFY(!controller.busy());controller.openPath(project);QTRY_VERIFY(!controller.loading());
+        QVERIFY(hitTest(controller.page()->shapes.front(),{50,50},0));QVERIFY(!hitTest(controller.page()->shapes.front(),{50,55},0));
+        QTest::mouseClick(window,Qt::LeftButton,Qt::ShiftModifier,screen({60,80}));QVERIFY(inkAt({60,80}));
+        QVERIFY(warnings.isEmpty());controller.shutdown();
+    }
+    void eraserSizeKeyboardShortcuts(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());QQmlApplicationEngine engine;
+        QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
+        auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));controller.newDefault();QTRY_VERIFY(!controller.busy());
+        auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);canvas->setTool("eraser");canvas->forceActiveFocus();canvas->setEraserRadius(3);
+        QTest::keyClick(window,Qt::Key_Plus);QCOMPARE(canvas->eraserRadius(),3*1.05);
+        QTest::keyClick(window,Qt::Key_Minus);QVERIFY(std::abs(canvas->eraserRadius()-3)<1e-10);
+        QTest::keyClick(window,Qt::Key_BracketRight);QCOMPARE(canvas->eraserRadius(),3*1.05);
+        QTest::keyClick(window,Qt::Key_BracketLeft);QVERIFY(std::abs(canvas->eraserRadius()-3)<1e-10);
+        QTest::keyClick(window,Qt::Key_Plus,Qt::KeypadModifier);QVERIFY(canvas->eraserRadius()>3);
+        canvas->setEraserRadius(3);
+        for(int i=0;i<20;++i){QKeyEvent repeat(QEvent::KeyPress,Qt::Key_BracketRight,Qt::NoModifier,QStringLiteral("]"),true);QCoreApplication::sendEvent(window,&repeat);}
+        QVERIFY(std::abs(canvas->eraserRadius()-3*std::pow(1.05,20))<1e-10);
+        for(int i=0;i<100;++i)QTest::keyClick(window,Qt::Key_Plus);QCOMPARE(canvas->eraserRadius(),12.);
+        for(int i=0;i<100;++i)QTest::keyClick(window,Qt::Key_Minus);QCOMPARE(canvas->eraserRadius(),.5);
+        canvas->setEraserRadius(std::numeric_limits<double>::quiet_NaN());QCOMPARE(canvas->eraserRadius(),.5);
+        canvas->setTool("pen");QTest::keyClick(window,Qt::Key_BracketRight);QCOMPARE(canvas->eraserRadius(),.5);
+        QVERIFY(warnings.isEmpty());controller.shutdown();
+    }
+    void boundedInkRegionFill(){
+        Page page;page.size={100,100};
+        auto ink=[&](std::vector<Point> points){StrokeObject stroke;stroke.id=newId();for(auto p:points)stroke.samples.push_back({p});page.strokes.push_back(stroke);};
+        ink({{20,21},{20,60},{60,60},{60,20},{21,20}});
+        auto result=fillInkRegion(page,{40,40},Qt::blue);QVERIFY2(result.error.isEmpty(),qPrintable(result.error));
+        QCOMPARE(result.image.pixelColor(result.image.width()/2,result.image.height()/2).alpha(),26);
+        const auto stronger=fillInkRegion(page,{40,40},Qt::blue,2.,.35);QVERIFY(stronger.error.isEmpty());
+        QCOMPARE(stronger.image.pixelColor(stronger.image.width()/2,stronger.image.height()/2).alpha(),89);
+        QVERIFY(result.object.corners.front().x>=19&&result.object.corners[2].x<=61);
+        QVERIFY(!fillInkRegion(page,{80,80},Qt::blue).error.isEmpty());
+        QVERIFY(!fillInkRegion(Page{}, {40,40},Qt::blue).error.isEmpty());
+        page.strokes.clear();ink({{20,20},{20,60},{60,60},{60,20}});
+        QVERIFY(!fillInkRegion(page,{40,40},Qt::blue).error.isEmpty()); // large gap
+        page.strokes.clear();ink({{20,20},{80,20}});ink({{20,20},{20,80}});
+        StrokeObject arc;arc.id=newId();for(int i=0;i<=90;++i){const double a=std::numbers::pi*i/180.;arc.samples.push_back({{20+30*std::cos(a),20+30*std::sin(a)}});}page.strokes.push_back(arc);
+        result=fillInkRegion(page,{30,30},Qt::red);QVERIFY2(result.error.isEmpty(),qPrintable(result.error));
+        QVERIFY(result.object.corners[2].x<=51&&result.object.corners[2].y<=51);
+        QVERIFY(!fillInkRegion(page,{65,65},Qt::red).error.isEmpty());
+        // Inner contours remain holes; the grid never contributes a barrier.
+        page.strokes.clear();ink({{10,10},{90,10},{90,90},{10,90},{10,10}});ink({{40,40},{60,40},{60,60},{40,60},{40,40}});
+        result=fillInkRegion(page,{20,20},Qt::green);QVERIFY(result.error.isEmpty());
+        const auto origin=result.object.corners[0];const double scale=result.image.width()/(result.object.corners[1].x-origin.x);
+        QCOMPARE(result.image.pixelColor(int((50-origin.x)*scale),int((50-origin.y)*scale)).alpha(),0);
+        page.strokes.clear();page.backgroundStyle.gridType=GridType::Square;
+        QVERIFY(!fillInkRegion(page,{20,20},Qt::green).error.isEmpty());
+    }
+    void markerDrawingAndCtrlFill(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
+        auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));controller.newDefault();QTRY_VERIFY(!controller.busy());
+        auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);canvas->setTool("marker");QCOMPARE(canvas->tool(),QString("marker"));canvas->setPenColor(Qt::red);
+        auto screen=[&](QPointF p){return canvas->mapToScene(canvas->screenPoint(p)).toPoint();};
+        QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,screen({30,30}));QTest::mouseMove(window,screen({60,30}));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,screen({60,30}));
+        QCOMPARE(controller.page()->strokes.size(),std::size_t(1));QCOMPARE(controller.page()->strokes[0].style.rgba&255,std::uint32_t(26));QCOMPARE(controller.page()->strokes[0].style.maxWidthMm,4.);
+        QCOMPARE(canvas->markerOpacity(),.10);QVERIFY(controller.page()->strokes[0].marker);
+        canvas->setMarkerOpacity(.35);
+        QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,screen({30,35}));QTest::mouseMove(window,screen({60,35}));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,screen({60,35}));
+        QCOMPARE(controller.page()->strokes.back().style.rgba&255,std::uint32_t(89));
+        StrokeObject boundary;boundary.id=newId();for(auto p:std::vector<Point>{{40,51},{40,80},{70,80},{70,50},{41,50}})boundary.samples.push_back({p});controller.addStroke(boundary);
+        QTest::mouseClick(window,Qt::LeftButton,Qt::ControlModifier,screen({55,65}));QTRY_VERIFY(!controller.documentBusy());QCOMPARE(controller.page()->images.size(),std::size_t(1));
+        const auto fillBitmap=controller.image(controller.page()->images[0].id);QCOMPARE(fillBitmap.pixelColor(fillBitmap.width()/2,fillBitmap.height()/2).alpha(),89);
+        controller.undo();QVERIFY(controller.page()->images.empty());controller.redo();QCOMPARE(controller.page()->images.size(),std::size_t(1));
+        QTest::mouseClick(window,Qt::LeftButton,Qt::ControlModifier,screen({90,65}));QTRY_VERIFY(!controller.documentBusy());QCOMPARE(controller.page()->images.size(),std::size_t(1));
+        canvas->setTool("pen");const Point sectorCenter{120,100};
+        const auto first=screen({140,100});QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,first);
+        for(int i=1;i<=90;++i){const double a=1.4*i/90.;QTest::mouseMove(window,screen({sectorCenter.x+20*std::cos(a),sectorCenter.y+20*std::sin(a)}));}
+        QTRY_VERIFY_WITH_TIMEOUT(canvas->interactionHint().contains("reconhecido"),2000);
+        QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,screen({sectorCenter.x+20*std::cos(1.4),sectorCenter.y+20*std::sin(1.4)}));
+        QCOMPARE(controller.page()->shapes.size(),std::size_t(1));
+        const auto straightened=controller.page()->shapes.back();QCOMPARE(straightened.kind,ShapeKind::Line);QCOMPARE(straightened.vertices.size(),std::size_t(2));
+        QVERIFY(length(straightened.vertices.front()-Point{140,100})<.5);
+        QVERIFY(length(straightened.vertices.back()-Point{sectorCenter.x+20*std::cos(1.4),sectorCenter.y+20*std::sin(1.4)})<.5);
+        controller.undo();QVERIFY(controller.page()->shapes.empty());QVERIFY(controller.page()->strokes.back().samples.size()>20);
+        controller.redo();QCOMPARE(controller.page()->shapes.back().kind,ShapeKind::Line);
+        const Point corner{120,100},endA{150,100},endB{120+30*std::cos(1.4),100+30*std::sin(1.4)};
+        for(const auto end:{endA,endB}){ShapeObject edge;edge.id=newId();edge.kind=ShapeKind::Line;edge.vertices={corner,end};controller.addShape(edge);}
+        const Point shifted{121,99.3};
+        QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,screen({shifted.x+20,shifted.y}));
+        for(int i=1;i<=90;++i){const double a=1.4*i/90.;QTest::mouseMove(window,screen({shifted.x+20*std::cos(a),shifted.y+20*std::sin(a)}));}
+        QTRY_VERIFY_WITH_TIMEOUT(canvas->interactionHint().contains("reconhecido"),2000);
+        QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,screen({shifted.x+20*std::cos(1.4),shifted.y+20*std::sin(1.4)}));
+        const auto& snapped=controller.page()->shapes.back();QCOMPARE(snapped.kind,ShapeKind::CircularSector);
+        QVERIFY(length(snapped.center-corner)<1e-8);QVERIFY(distanceToSegment(snapped.vertices[1],corner,endA)<1e-8);QVERIFY(distanceToSegment(snapped.vertices.back(),corner,endB)<1e-8);QCOMPARE(snapped.fillOpacity,.10);
+        const Point squareCorner{160,140};
+        for(const auto end:{Point{180,140},Point{160,160}}){ShapeObject edge;edge.id=newId();edge.kind=ShapeKind::Line;edge.vertices={squareCorner,end};controller.addShape(edge);}
+        QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,screen({160,144}));
+        for(int i=1;i<=20;++i)QTest::mouseMove(window,screen({160+i*.2,144}));
+        for(int i=1;i<=20;++i)QTest::mouseMove(window,screen({164,144-i*.2}));
+        QTRY_VERIFY_WITH_TIMEOUT(canvas->interactionHint().contains("reconhecido"),2000);
+        QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,screen({164,140}));
+        QCOMPARE(controller.page()->shapes.back().kind,ShapeKind::RightAngle);QVERIFY(length(controller.page()->shapes.back().vertices[0]-squareCorner)<1e-8);
+        const auto filename=directory.filePath("marker.board");controller.saveAs(QUrl::fromLocalFile(filename));QTRY_VERIFY(!controller.busy());
+        const auto saved=ProjectStore::load(filename);QVERIFY(saved);QCOMPARE(saved.project.pages[0].images.size(),std::size_t(1));QVERIFY(saved.project.pages[0].images[0].inkFill);QCOMPARE(saved.project.pages[0].strokes[0].style.rgba&255,std::uint32_t(26));
+        QCOMPARE(saved.project.pages[0].shapes.back().kind,ShapeKind::RightAngle);QVERIFY(length(saved.project.pages[0].shapes.back().vertices[0]-squareCorner)<1e-8);
+        QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
+    }
+    void partialShapeEraserAndTextResolution(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());QQmlApplicationEngine engine;
+        QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
+        auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));controller.newDefault();QTRY_VERIFY(!controller.busy());
+        auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);canvas->setTool("eraser");canvas->setEraserRadius(2);
+        ShapeObject shape;shape.id=newId();shape.kind=ShapeKind::Rectangle;shape.vertices={{30,30},{70,30},{70,70},{30,70}};controller.addShape(shape);
+        auto screen=[&](QPointF p){return canvas->mapToScene(canvas->screenPoint(p)).toPoint();};
+        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,screen({50,30}));QVERIFY(controller.page()->shapes[0].erasedRegions.empty());
+        QTest::mouseClick(window,Qt::LeftButton,Qt::ControlModifier,screen({50,30}));
+        QCOMPARE(controller.page()->shapes.size(),std::size_t(1));QVERIFY(!controller.page()->shapes[0].erasedRegions.empty());QVERIFY(!canvas->eraserShapes());
+        QVERIFY(!hitTest(controller.page()->shapes[0],{50,30},0));QVERIFY(hitTest(controller.page()->shapes[0],{35,30},0));
+        controller.undo();QVERIFY(controller.page()->shapes[0].erasedRegions.empty());controller.redo();QVERIFY(!controller.page()->shapes[0].erasedRegions.empty());
+        canvas->setEraserShapes(true);QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,screen({50,40}));QTest::mouseMove(window,screen({50,60}));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,screen({50,60}));
+        QVERIFY(!hitTest(controller.page()->shapes[0],{50,50},0));QVERIFY(hitTest(controller.page()->shapes[0],{35,50},0));
+        // Small moves remain inside the first erased disk while its rim reaches
+        // new ink. They must erase continuously, not wait for the center to exit.
+        canvas->setEraserShapes(false);QTest::mousePress(window,Qt::LeftButton,Qt::ControlModifier,screen({35,50}));
+        for(int i=1;i<=12;++i){const auto pos=screen({35+i*.125,50});QMouseEvent move(QEvent::MouseMove,pos,pos,window->mapToGlobal(pos),Qt::NoButton,Qt::LeftButton,Qt::ControlModifier);QCoreApplication::sendEvent(window,&move);}
+        QTest::mouseRelease(window,Qt::LeftButton,Qt::ControlModifier,screen({36.5,50}));QVERIFY(!canvas->eraserShapes());
+        QVERIFY(!hitTest(controller.page()->shapes[0],{38,50},0));QVERIFY(hitTest(controller.page()->shapes[0],{39,50},0));
+        Page rendered;rendered.id=newId();rendered.size=PageSize{100,100};rendered.background=0x000000ff;
+        shape.style.rgba=0xffffffff;rendered.shapes={shape};
+        const auto render=[&]{QImage image(1000,1000,QImage::Format_ARGB32_Premultiplied);image.fill(Qt::transparent);QPainter painter(&image);const auto error=paintPage(painter,rendered,10);painter.end();return image;};
+        const auto before=render();rendered.shapes[0].erasedRegions={{{50,50},{50,50},2}};const auto after=render();
+        QCOMPARE(after.pixelColor(350,500),before.pixelColor(350,500));QCOMPARE(after.pixelColor(500,500).alpha(),0);
+        controller.upsertText({},QPointF(90,100),{{"source","Teste"},{"fontSizePt",18},{"fontFamily","Lobster Two"},{"color","#ffffff"}});QTRY_VERIFY(!controller.textBusy());
+        QCOMPARE(controller.page()->texts.size(),std::size_t(1));const auto text=controller.page()->texts[0];const auto natural=textNaturalSize(text);
+        controller.refreshTextTextures(3);QTRY_VERIFY(controller.image(text.id).width()<=std::ceil(natural.width()*8));
+        controller.refreshTextTextures(16);controller.refreshTextTextures(30);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.image(text.id).width()>=std::floor(natural.width()*64),4000);
+        const auto filename=directory.filePath("erased.board");controller.saveAs(QUrl::fromLocalFile(filename));QTRY_VERIFY(!controller.busy());
+        const auto saved=ProjectStore::load(filename);QVERIFY(saved);QVERIFY(!saved.project.pages[0].shapes[0].erasedRegions.empty());QVERIFY(!hitTest(saved.project.pages[0].shapes[0],{50,50},0));
+        QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
+    }
+    void projectNamesAndLibrarySearch(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());
+        controller.newProject("Área de matemática","A4",210,297,false,"Sem grade");
+        QTRY_VERIFY(!controller.busy());controller.home();
+        const auto entry=controller.recentProjects().first().toMap();const auto id=entry["id"].toString(),path=entry["path"].toString();
+        const auto folder=controller.saveFolder({},"Aulas","#268fb5");QVERIFY(controller.moveProjectToFolder(id,folder));
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());
+        auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto click=[&](QQuickItem* item){QVERIFY(item);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,item->mapToScene({item->width()/2,item->height()/2}).toPoint());};
+        auto* search=findVisualItem(window->contentItem(),"boardSearchField");QVERIFY(search);search->setProperty("text","AREA");
+        QTRY_VERIFY(findVisualItem(window->contentItem(),"projectCard_"+id));QCOMPARE(controller.searchProjects("area",{},"all").size(),1);
+        search->setProperty("text","inexistente");QTRY_VERIFY(!findVisualItem(window->contentItem(),"projectCard_"+id));search->setProperty("text","area");
+        QTRY_VERIFY(findVisualItem(window->contentItem(),"editProjectButton_"+id));click(findVisualItem(window->contentItem(),"editProjectButton_"+id));
+        auto* dialog=window->findChild<QObject*>("editProjectDialog");QVERIFY(dialog);QTRY_VERIFY(dialog->property("opened").toBool());
+        auto* field=findVisualItem(window->contentItem(),"editProjectNameField");QVERIFY(field);field->setProperty("text","Geometria avançada");click(findVisualItem(window->contentItem(),"saveProjectNameButton"));QTRY_VERIFY(!controller.busy());
+        QCOMPARE(controller.recentProjects().first().toMap()["name"].toString(),QString("Geometria avançada"));QCOMPARE(controller.recentProjects().first().toMap()["folderId"].toString(),folder);
+        QCOMPARE(QString::fromStdString(ProjectStore::load(path).project.name),QString("Geometria avançada"));
+        QTRY_VERIFY(!dialog->property("visible").toBool());search->setProperty("text","geometria");QTRY_VERIFY(findVisualItem(window->contentItem(),"projectCard_"+id));QTest::qWait(100);click(findVisualItem(window->contentItem(),"projectCard_"+id));QTRY_VERIFY(controller.active());
+        click(findVisualItem(window->contentItem(),"projectTitleArea"));auto* title=findVisualItem(window->contentItem(),"projectTitleInput");QVERIFY(title);QTRY_VERIFY(title->hasActiveFocus());title->setProperty("text","Geometria da turma");QTest::keyClick(window,Qt::Key_Return);QCOMPARE(controller.projectName(),QString("Geometria da turma"));
+        click(findVisualItem(window->contentItem(),"projectTitleArea"));title->setProperty("text","Geometria final");
+        auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);canvas->setTool("hand");click(canvas);QTRY_COMPARE(controller.projectName(),QString("Geometria final"));
+        click(findVisualItem(window->contentItem(),"editorBackButton"));QTRY_VERIFY(!controller.active());QCOMPARE(QString::fromStdString(ProjectStore::load(path).project.name),QString("Geometria final"));
+        QVERIFY(!controller.renameProject(id," "));QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
+    }
+    void homeFoldersAndDrag(){
+        QTemporaryDir dir;AppController controller(nullptr,dir.path());controller.setTheme("Dark");controller.newDefault();controller.home();QTRY_VERIFY(!controller.busy());QTRY_COMPARE(controller.recentProjects().size(),1);const auto projectId=controller.recentProjects()[0].toMap()["id"].toString();
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto* newFolder=findVisualItem(window->contentItem(),"newFolderButton");QVERIFY(newFolder);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,newFolder->mapToScene({newFolder->width()/2,newFolder->height()/2}).toPoint());auto* dialog=window->findChild<QObject*>("folderDialog");QVERIFY(dialog);QTRY_VERIFY(dialog->property("opened").toBool());auto* name=window->findChild<QObject*>("folderNameField");QVERIFY(name);name->setProperty("text","Geometria");auto* save=findVisualItem(window->contentItem(),"saveFolderButton");QVERIFY(save);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,save->mapToScene({save->width()/2,save->height()/2}).toPoint());QTRY_COMPARE(controller.folders().size(),1);QTRY_VERIFY(!dialog->property("visible").toBool());const auto folderId=controller.folders()[0].toMap()["id"].toString();
+        auto* folder=findVisualItem(window->contentItem(),"folderCard_"+folderId);QVERIFY(folder);auto* project=findVisualItem(window->contentItem(),"projectCard_"+projectId);QVERIFY(project);const auto from=project->mapToScene({project->width()/2,project->height()/3}).toPoint(),to=folder->mapToScene({folder->width()/2,folder->height()/2}).toPoint();QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,from);for(int i=1;i<=12;++i)QTest::mouseMove(window,from+(to-from)*i/12,20);QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,to);QTRY_COMPARE(controller.recentProjects()[0].toMap()["folderId"].toString(),folderId);QVERIFY(!controller.active());
+        auto* edit=findVisualItem(window->contentItem(),"editFolder_"+folderId);QVERIFY(edit);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,edit->mapToScene({edit->width()/2,edit->height()/2}).toPoint());QTRY_VERIFY(dialog->property("opened").toBool());name->setProperty("text","Aulas");auto* content=dialog->property("contentItem").value<QQuickItem*>();QVERIFY(content);auto* purple=findVisualItem(content,"paletteColor_3");QVERIFY(purple);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,purple->mapToScene({purple->width()/2,purple->height()/2}).toPoint());save=findVisualItem(window->contentItem(),"saveFolderButton");QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,save->mapToScene({save->width()/2,save->height()/2}).toPoint());QTRY_VERIFY(!dialog->property("visible").toBool());QCOMPARE(controller.folders()[0].toMap()["name"].toString(),QString("Aulas"));QCOMPARE(controller.folders()[0].toMap()["color"].toString(),QString("#9765c5"));
+        folder=findVisualItem(window->contentItem(),"folderCard_"+folderId);QVERIFY(folder);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,folder->mapToScene({folder->width()/3,folder->height()/2}).toPoint());project=findVisualItem(window->contentItem(),"projectCard_"+projectId);QTRY_VERIFY(project);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,project->mapToScene({project->width()/2,project->height()/2}).toPoint());QTRY_VERIFY(controller.active());auto* editorBack=findVisualItem(window->contentItem(),"editorBackButton");QVERIFY(editorBack);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,editorBack->mapToScene({editorBack->width()/2,editorBack->height()/2}).toPoint());QTRY_VERIFY(!controller.active());QTRY_VERIFY((project=findVisualItem(window->contentItem(),"projectCard_"+projectId)));QVERIFY(findVisualItem(window->contentItem(),"newProjectInFolderButton")->isVisible());QDir().mkpath("screenshots");QVERIFY(window->grabWindow().save("screenshots/home-folders-dark.png"));controller.setTheme("Light");QTest::qWait(100);QVERIFY(window->grabWindow().save("screenshots/home-folders-light.png"));window->resize(520,640);QTest::qWait(100);QVERIFY(window->grabWindow().save("screenshots/home-folders-small.png"));
+        project=findVisualItem(window->contentItem(),"projectCard_"+projectId);auto* unfiled=findVisualItem(window->contentItem(),"backToProjectsButton");QVERIFY(project&&unfiled);const auto moveFrom=project->mapToScene({project->width()/2,project->height()/3}).toPoint(),moveTo=unfiled->mapToScene({unfiled->width()/2,unfiled->height()/2}).toPoint();QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,moveFrom);for(int i=1;i<=12;++i)QTest::mouseMove(window,moveFrom+(moveTo-moveFrom)*i/12,20);QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,moveTo);QTRY_VERIFY(controller.recentProjects()[0].toMap()["folderId"].toString().isEmpty());QCOMPARE(controller.folders()[0].toMap()["count"].toInt(),0);QCOMPARE(warnings.size(),0);QVERIFY(controller.shutdown());
+    }
+    void selectedCompassDrawsAndRulerReleasesSnap(){
+        QTemporaryDir dir;AppController controller(nullptr,dir.path());controller.newDefault();controller.setRecognitionEnabled(false);
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());
+        auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);QTRY_VERIFY(!controller.busy());
+        canvas->setTool("compass");canvas->setCompassRadius(25);canvas->setTool("select");const auto m=canvas->compassGeometry();
+        const auto circlePoint=[&](double angle){return canvas->mapToScene({m["cx"].toDouble()+m["radius"].toDouble()*std::cos(angle),m["cy"].toDouble()+m["radius"].toDouble()*std::sin(angle)}).toPoint();};
+        QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,circlePoint(0));QVERIFY(canvas->drawing());for(int i=1;i<=180;++i)QTest::mouseMove(window,circlePoint(i*std::numbers::pi/90));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,circlePoint(2*std::numbers::pi));QCOMPARE(controller.page()->shapes.size(),std::size_t(1));QCOMPARE(controller.page()->shapes[0].radiusX,25.);QCOMPARE(canvas->tool(),QString("select"));controller.undo();QVERIFY(controller.page()->shapes.empty());controller.redo();
+        canvas->setCompassVisible(false);canvas->setTool("ruler");canvas->setRulerAngle(0);const auto r=canvas->rulerGeometry();const double scale=r["scale"].toDouble();
+        const auto edgePoint=[&](double x,double y){return canvas->mapToScene({r["x"].toDouble()+x*scale,r["y"].toDouble()+y*scale}).toPoint();};
+        canvas->setTool("pen");QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,edgePoint(20,-1));QTest::mouseMove(window,edgePoint(40,-1));QTest::mouseMove(window,edgePoint(60,-15));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,edgePoint(70,-15));QCOMPARE(controller.page()->strokes.size(),std::size_t(1));const auto& samples=controller.page()->strokes[0].samples;QVERIFY(samples.size()>=3);const double initialY=samples.front().position.y;QVERIFY(std::abs(samples[1].position.y-initialY)<1e-8);QVERIFY(samples.back().position.y<initialY-10);QCOMPARE(warnings.size(),0);QVERIFY(controller.shutdown());
+    }
+    void rulerBlocksInkInsideBody(){
+        QTemporaryDir dir;AppController controller(nullptr,dir.path());controller.newDefault();controller.setRecognitionEnabled(false);
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());
+        auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);canvas->setRulerVisible(true);canvas->setTool("pen");
+        for(double angle:{0.,25.})for(bool snap:{false,true}){
+            canvas->setRulerAngle(angle);canvas->setRulerSnap(snap);const auto map=canvas->rulerGeometry();const double scale=map["scale"].toDouble(),a=angle*std::numbers::pi/180;
+            const auto point=[&](double x,double y){return canvas->mapToScene({map["x"].toDouble()+scale*(x*std::cos(a)-y*std::sin(a)),map["y"].toDouble()+scale*(x*std::sin(a)+y*std::cos(a))}).toPoint();};
+            const auto start=point(20,-1),along=point(40,-1),inside=point(40,6);
+            const auto count=controller.page()->strokes.size();QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,start);QTest::mouseMove(window,along);QTest::mouseMove(window,inside);QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,inside);
+            QCOMPARE(controller.page()->strokes.size(),count+1);QVERIFY(!canvas->drawing());
+            const auto& stroke=controller.page()->strokes.back();const auto last=stroke.samples.back().position;
+            const auto screenPoint=point(40,0);const auto center=canvas->viewportCenter();const double worldY=center.y()+(screenPoint.y()-canvas->y()-canvas->height()/2)/scale;
+            QVERIFY(std::abs(last.y-worldY)<1.);
+            controller.undo();QCOMPARE(controller.page()->strokes.size(),count);
+        }
+        QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
+    }
+    void rulerSnapAndCompassGestures(){
+        QTemporaryDir dir;AppController controller(nullptr,dir.path());controller.setTheme("Dark");controller.newDefault();controller.setRecognitionEnabled(false);
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());
+        auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);QTRY_VERIFY(!controller.busy());
+        canvas->setTool("ruler");QVERIFY(canvas->rulerVisible());auto ruler=canvas->rulerGeometry();
+        const auto rulerPoint=[&](double x,double y){const auto m=canvas->rulerGeometry();const double a=m["angle"].toDouble()*std::numbers::pi/180,s=m["scale"].toDouble();return canvas->mapToScene({m["x"].toDouble()+s*(x*std::cos(a)-y*std::sin(a)),m["y"].toDouble()+s*(x*std::sin(a)+y*std::cos(a))}).toPoint();};
+        auto center=rulerPoint(canvas->rulerLength()/2,6);QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,center);QTest::mouseMove(window,center+QPoint(25,-15));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,center+QPoint(25,-15));QVERIFY(std::abs(canvas->rulerGeometry()["x"].toDouble()-ruler["x"].toDouble()-25)<1);
+        const auto beforeCancel=canvas->rulerGeometry();center=rulerPoint(canvas->rulerLength()/2,6);QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,center);QTest::mouseMove(window,center+QPoint(20,0));QTest::keyClick(window,Qt::Key_Escape);QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,center+QPoint(20,0));QCOMPARE(canvas->rulerGeometry()["x"],beforeCancel["x"]);
+        const auto resizeStart=rulerPoint(canvas->rulerLength(),6),resizeEnd=rulerPoint(150,6);QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,resizeStart);QTest::mouseMove(window,resizeEnd);QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,resizeEnd);QVERIFY(std::abs(canvas->rulerLength()-150)<1);
+        const auto rotateStart=rulerPoint(0,6),rotateEnd=rulerPoint(canvas->rulerLength()/2,6-canvas->rulerLength()/2);QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,rotateStart);QTest::mouseMove(window,rotateEnd);QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,rotateEnd);QVERIFY(std::abs(std::cos(canvas->rulerAngle()*std::numbers::pi/180))<.03);
+        canvas->setRulerAngle(25);canvas->setTool("pen");
+        QPointingDevice pen("Geometry test pen",456,QInputDevice::DeviceType::Stylus,QPointingDevice::PointerType::Pen,QInputDevice::Capability::Position|QInputDevice::Capability::Pressure,1,1);
+        const auto send=[&](QEvent::Type type,QPoint pos,double pressure){QTabletEvent event(type,&pen,pos,window->mapToGlobal(pos),pressure,0,0,0,0,0,Qt::NoModifier,type==QEvent::TabletMove?Qt::NoButton:Qt::LeftButton,type==QEvent::TabletRelease?Qt::NoButton:Qt::LeftButton);QCoreApplication::sendEvent(window,&event);};
+        send(QEvent::TabletPress,rulerPoint(20,-1),.2);for(int i=1;i<=20;++i)send(QEvent::TabletMove,rulerPoint(20+i*3,-1+(i%3)*.2),.2+i*.035);send(QEvent::TabletRelease,rulerPoint(80,-1),0);
+        QCOMPARE(controller.page()->strokes.size(),std::size_t(1));const auto stroke=controller.page()->strokes.front();const auto a=stroke.samples.front().position,b=stroke.samples.back().position;
+        for(const auto& sample:stroke.samples)QVERIFY(length(sample.position-projectPointOntoLine(sample.position,a,b))<1e-8);QVERIFY(stroke.samples.back().pressure>stroke.samples.front().pressure+.4);
+        controller.undo();QVERIFY(controller.page()->strokes.empty());controller.redo();QCOMPARE(controller.page()->strokes[0].samples.size(),stroke.samples.size());
+        canvas->zoomBy(1.5);canvas->setRulerSnap(false);auto start=rulerPoint(25,-2),end=rulerPoint(65,-3);QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,start);QTest::mouseMove(window,end);QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,end);QCOMPARE(controller.page()->strokes.size(),std::size_t(2));
+        canvas->setRulerVisible(false);canvas->setTool("compass");canvas->setCompassRadius(25);auto compass=canvas->compassGeometry();
+        const auto compassCenter=canvas->mapToScene({compass["cx"].toDouble(),compass["cy"].toDouble()}).toPoint();QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,compassCenter);QTest::mouseMove(window,compassCenter+QPoint(15,8));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,compassCenter+QPoint(15,8));QVERIFY(std::abs(canvas->compassGeometry()["cx"].toDouble()-compass["cx"].toDouble()-15)<1);
+        compass=canvas->compassGeometry();const auto opening=canvas->mapToScene({compass["ox"].toDouble(),compass["oy"].toDouble()}).toPoint();const auto openingEnd=opening+QPoint(qRound(compass["radius"].toDouble()*.4),0);QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,opening);QTest::mouseMove(window,opening);QVERIFY(std::abs(canvas->compassRadius()-25)<.1);QTest::mouseMove(window,openingEnd);QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,openingEnd);QVERIFY(std::abs(canvas->compassRadius()-35)<1);QCOMPARE(canvas->compassGeometry()["cx"],compass["cx"]);canvas->setCompassRadius(25);
+        compass=canvas->compassGeometry();const auto grip=canvas->mapToScene({compass["ox"].toDouble(),compass["oy"].toDouble()}).toPoint()+QPoint(3,-2);QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,grip);QTest::mouseMove(window,grip+QPoint(14,21));const auto opened=canvas->compassGeometry();QVERIFY(std::abs(opened["px"].toDouble()-compass["px"].toDouble()-14)<1);QVERIFY(std::abs(opened["py"].toDouble()-compass["py"].toDouble()-21)<1);QCOMPARE(opened["cx"],compass["cx"]);QTest::keyClick(window,Qt::Key_Escape);QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,grip+QPoint(14,21));QCOMPARE(canvas->compassGeometry()["px"],compass["px"]);
+        const auto hinge=canvas->mapToScene({compass["hx"].toDouble(),compass["hy"].toDouble()}).toPoint();QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,hinge);QTest::mouseMove(window,hinge+QPoint(-12,8));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,hinge+QPoint(-12,8));QVERIFY(std::abs(canvas->compassGeometry()["cx"].toDouble()-compass["cx"].toDouble()+12)<1);QCOMPARE(canvas->compassRadius(),25.);
+        compass=canvas->compassGeometry();auto* touch=QTest::createTouchDevice(QInputDevice::DeviceType::TouchScreen);const auto touchStart=canvas->mapToScene({compass["cx"].toDouble(),compass["cy"].toDouble()}).toPoint();QTest::touchEvent(window,touch).press(0,touchStart,window);QTest::touchEvent(window,touch).move(0,touchStart+QPoint(12,6),window);QTest::touchEvent(window,touch).release(0,touchStart+QPoint(12,6),window);QVERIFY(std::abs(canvas->compassGeometry()["cx"].toDouble()-compass["cx"].toDouble()-12)<1);QCOMPARE(controller.page()->strokes.size(),std::size_t(2));
+        const auto compassPoint=[&](double angle){const auto m=canvas->compassGeometry();return canvas->mapToScene({m["cx"].toDouble()+m["radius"].toDouble()*std::cos(angle),m["cy"].toDouble()+m["radius"].toDouble()*std::sin(angle)}).toPoint();};
+        send(QEvent::TabletPress,compassPoint(0),.6);for(int i=1;i<=180;++i)send(QEvent::TabletMove,compassPoint(i*2*std::numbers::pi/180),.6);send(QEvent::TabletRelease,compassPoint(2*std::numbers::pi),0);
+        QCOMPARE(controller.page()->shapes.size(),std::size_t(1));QCOMPARE(controller.page()->shapes[0].kind,ShapeKind::Circle);QCOMPARE(controller.page()->shapes[0].radiusX,25.);QCOMPARE(controller.page()->shapes[0].radiusY,25.);QVERIFY(!canvas->drawing());
+        controller.undo();QVERIFY(controller.page()->shapes.empty());controller.redo();
+        QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,compassPoint(0));for(int i=1;i<=45;++i)QTest::mouseMove(window,compassPoint(i*std::numbers::pi/90));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,compassPoint(std::numbers::pi/2));QCOMPARE(controller.page()->strokes.size(),std::size_t(3));
+        const auto arc=controller.page()->strokes.back();QVERIFY(arc.samples.size()>30);for(const auto& sample:arc.samples)QVERIFY(std::abs(length(sample.position-controller.page()->shapes[0].center)-25)<1e-8);
+        const auto m=canvas->compassGeometry();QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,canvas->mapToScene({m["px"].toDouble(),m["py"].toDouble()}).toPoint());QTest::mouseMove(window,compassPoint(2));QTest::keyClick(window,Qt::Key_Escape);QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,compassPoint(2));QCOMPARE(controller.page()->strokes.size(),std::size_t(3));QVERIFY(!canvas->drawing());
+        QDir().mkpath("screenshots");QVERIFY(window->grabWindow().save("screenshots/milestone5-compass-dark.png"));canvas->setTool("ruler");canvas->centerGeometryTools();QVERIFY(window->grabWindow().save("screenshots/milestone5-guides-dark.png"));
+        canvas->zoomBy(2);canvas->setTool("compass");const auto blueGeometry=canvas->compassGeometry();
+        const auto bluePoint=canvas->mapToScene({blueGeometry["hx"].toDouble()*.13+blueGeometry["px"].toDouble()*.87,blueGeometry["hy"].toDouble()*.13+blueGeometry["py"].toDouble()*.87}).toPoint();
+        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,bluePoint);QCOMPARE(canvas->compassGeometry()["cx"],blueGeometry["cx"]);QCOMPARE(canvas->compassGeometry()["cy"],blueGeometry["cy"]);QCOMPARE(canvas->compassRadius(),25.);
+        canvas->setTool("select");QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,bluePoint);QTest::mouseMove(window,bluePoint+QPoint(15,6));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,bluePoint+QPoint(15,6));QCOMPARE(canvas->selectedGuide(),QString("compass"));QCOMPARE(canvas->tool(),QString("select"));QCOMPARE(canvas->compassGeometry()["cx"],blueGeometry["cx"]);QVERIFY(canvas->compassRadius()!=25.);
+        QTest::keyClick(window,Qt::Key_Delete);QVERIFY(!canvas->compassVisible());QVERIFY(canvas->rulerVisible());QCOMPARE(controller.page()->shapes.size(),std::size_t(1));
+        const auto rulerCenter=rulerPoint(canvas->rulerLength()/2,6);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,rulerCenter);QCOMPARE(canvas->selectedGuide(),QString("ruler"));QTest::keyClick(window,Qt::Key_Delete);QVERIFY(!canvas->rulerVisible());QVERIFY(canvas->selectedGuide().isEmpty());QCOMPARE(controller.page()->strokes.size(),std::size_t(3));
+        const auto path=dir.filePath("geometry.board");controller.saveAs(QUrl::fromLocalFile(path));QTRY_VERIFY(!controller.busy());controller.openPath(path);QTRY_VERIFY(!controller.loading());QCOMPARE(controller.page()->strokes.size(),std::size_t(3));QCOMPARE(controller.page()->shapes.size(),std::size_t(1));QVERIFY(!canvas->rulerVisible());QVERIFY(!canvas->compassVisible());
+        window->resize(520,640);QTest::qWait(100);QVERIFY(window->grabWindow().save("screenshots/milestone5-small.png"));QCOMPARE(warnings.size(),0);QVERIFY(controller.shutdown());
+    }
+    void constructionsAndGeometryOptions(){
+        QTemporaryDir dir;AppController controller(nullptr,dir.path());controller.newDefault();QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());
+        auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);QTRY_VERIFY(!controller.busy());
+        const auto worldPoint=[&](Point p){const auto c=canvas->viewportCenter();const double scale=canvas->zoom()*96/25.4;return canvas->mapToScene({canvas->width()/2+(p.x-c.x())*scale,canvas->height()/2+(p.y-c.y())*scale}).toPoint();};
+        ShapeObject line;line.id=newId();line.kind=ShapeKind::Line;line.vertices={{70,100},{140,100}};controller.addShape(line);canvas->setTool("select");QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,worldPoint({100,100}));QCOMPARE(canvas->selectedCount(),1);QVERIFY(canvas->constructFromSelection("bisector"));QCOMPARE(controller.page()->shapes.size(),std::size_t(2));controller.undo();QCOMPARE(controller.page()->shapes.size(),std::size_t(1));controller.redo();
+        ShapeObject triangle;triangle.id=newId();triangle.kind=ShapeKind::Triangle;triangle.vertices={{70,150},{140,150},{105,210}};controller.addShape(triangle);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,worldPoint({105,165}));QVERIFY(canvas->constructFromSelection("circumcircle"));QCOMPARE(controller.page()->shapes.size(),std::size_t(4));const auto circle=controller.page()->shapes.back();for(auto vertex:triangle.vertices)QVERIFY(std::abs(length(vertex-circle.center)-circle.radiusX)<1e-8);
+        canvas->setTool("ruler");auto* options=window->findChild<QObject*>("geometryOptions");QVERIFY(options);QVERIFY(QMetaObject::invokeMethod(options,"open"));QTRY_VERIFY(options->property("opened").toBool());QDir().mkpath("screenshots");QVERIFY(window->grabWindow().save("screenshots/milestone5-ruler-options-light.png"));QVERIFY(QMetaObject::invokeMethod(options,"close"));QTRY_VERIFY(!options->property("visible").toBool());
+        canvas->setRulerVisible(false);canvas->setTool("compass");QVERIFY(QMetaObject::invokeMethod(options,"open"));QTRY_VERIFY(options->property("opened").toBool());QVERIFY(window->grabWindow().save("screenshots/milestone5-compass-options-light.png"));QVERIFY(QMetaObject::invokeMethod(options,"close"));QTRY_VERIFY(!options->property("visible").toBool());
+        canvas->drawCompassCircle();QCOMPARE(controller.page()->shapes.size(),std::size_t(5));
+        window->resize(520,640);canvas->setTool("ruler");QVERIFY(QMetaObject::invokeMethod(options,"open"));QTRY_VERIFY(options->property("opened").toBool());
+        QVERIFY(options->property("height").toDouble()<window->height());QVERIFY(options->property("y").toDouble()>=0);QVERIFY(options->property("y").toDouble()+options->property("height").toDouble()<=window->height());
+        QVERIFY(window->grabWindow().save("screenshots/milestone5-ruler-options-small.png"));QVERIFY(QMetaObject::invokeMethod(options,"close"));QTRY_VERIFY(!options->property("visible").toBool());QCOMPARE(warnings.size(),0);QVERIFY(controller.shutdown());
+    }
     void quickPageNavigation(){
         QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.setTheme("Dark");controller.newDefault();controller.addPage();controller.selectPage(0);
         QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());
@@ -49,9 +543,136 @@ private slots:
         auto click=[&](const QString& name){auto* button=findVisualItem(window->contentItem(),name);if(!button)return false;QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,button->mapToScene(QPointF(button->width()/2,button->height()/2)).toPoint());return true;};
         QVERIFY(click("nextPageButton"));QCOMPARE(controller.currentPage(),1);QVERIFY(controller.page()->strokes.empty());QVERIFY(click("previousPageButton"));QCOMPARE(controller.currentPage(),0);
         QVERIFY(!findVisualItem(window->contentItem(),"previousPageButton")->isEnabled());QVERIFY(click("pageCounterButton"));auto* panel=window->findChild<QObject*>("pagesPanel");QVERIFY(panel);QTRY_VERIFY(panel->property("opened").toBool());QVERIFY(QMetaObject::invokeMethod(panel,"close"));QTRY_VERIFY(!panel->property("visible").toBool());
-        window->resize(520,640);QTest::qWait(200);auto* exportButton=findVisualItem(window->contentItem(),"exportPdfButton");QVERIFY(exportButton);QVERIFY(exportButton->mapToScene(QPointF(exportButton->width(),0)).x()<=window->width());
+        auto* newPage=findVisualItem(window->contentItem(),"newPageButton");QVERIFY(newPage);
+        QSignalSpy enabledChanges(newPage,&QQuickItem::enabledChanged);
+        controller.save();QVERIFY(!controller.documentBusy());QVERIFY(newPage->isEnabled());
+        QVERIFY(click("newPageButton"));QCOMPARE(controller.pageCount(),3);QCOMPARE(controller.currentPage(),2);
+        QTRY_VERIFY(!controller.busy());QTest::qWait(1500);QTRY_VERIFY(!controller.busy());
+        QVERIFY(newPage->isEnabled());QCOMPARE(enabledChanges.count(),0);
+        window->resize(520,640);QTest::qWait(200);QVERIFY(click("fileMenuButton"));auto* fileOptions=window->findChild<QObject*>("fileOptions");QVERIFY(fileOptions);QTRY_VERIFY(fileOptions->property("opened").toBool());
+        auto* exportButton=findVisualItem(window->contentItem(),"exportPdfButton");QVERIFY(exportButton);QVERIFY(exportButton->isVisible());QVERIFY(exportButton->mapToScene(QPointF(exportButton->width(),0)).x()<=window->width());
+        QVERIFY(window->grabWindow().save("screenshots/editor-file-actions-small.png"));
+        QVERIFY(QMetaObject::invokeMethod(fileOptions,"close"));QTRY_VERIFY(!fileOptions->property("visible").toBool());
         QVERIFY(next->mapToScene(QPointF(0,next->height())).y()<=canvas->y());
         QDir().mkpath("screenshots");QVERIFY(window->grabWindow().save("screenshots/quick-pages-dark-small.png"));QCOMPARE(warnings.size(),0);QVERIFY(controller.shutdown());
+    }
+    void infiniteCanvasDrawsOutsidePhysicalPage(){
+        QTemporaryDir dir;AppController controller(nullptr,dir.path());controller.newProject("Infinite","Infinito",0,0,false,"Sem grade","#ffffff");QTRY_VERIFY(!controller.busy());QVERIFY(controller.pageInfinite());
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);QVERIFY(canvas->setZoom(.5));
+        const auto screen=[&](Point p){return canvas->mapToScene(canvas->screenPoint({p.x,p.y})).toPoint();};
+        const auto draw=[&](Point a,Point b){QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,screen(a));QTest::mouseMove(window,screen(b));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,screen(b));};
+        draw({-80,80},{-60,90});QCOMPARE(controller.page()->strokes.size(),std::size_t(1));QVERIFY(controller.page()->strokes[0].samples[0].position.x<0);
+        draw({400,200},{420,210});QCOMPARE(controller.page()->strokes.size(),std::size_t(2));
+        canvas->setTool("hand");QTest::qWait(80);const auto shot=window->grabWindow();const auto outside=screen({-100,100});QCOMPARE(shot.pixelColor(outside),QColor(Qt::white));
+        auto* panel=window->findChild<QObject*>("backgroundOptions");QVERIFY(panel);QVERIFY(QMetaObject::invokeMethod(panel,"open"));QTRY_VERIFY(panel->property("opened").toBool());
+        QCOMPARE(findVisualItem(window->contentItem(),"currentPageSizeSelector")->property("currentIndex").toInt(),3);
+        QVERIFY(QMetaObject::invokeMethod(panel,"close"));QVERIFY(controller.setPageSize("A4",0,0,false));QVERIFY(!controller.pageInfinite());controller.undo();QVERIFY(controller.pageInfinite());controller.redo();QVERIFY(!controller.pageInfinite());controller.undo();
+        controller.duplicatePage();QVERIFY(controller.pageInfinite());controller.addPage();QVERIFY(controller.pageInfinite());
+        const auto path=dir.filePath("infinite.board");controller.saveAs(QUrl::fromLocalFile(path));QTRY_VERIFY(!controller.dirty());const auto loaded=ProjectStore::load(path);QVERIFY2(loaded,qPrintable(loaded.error));for(const auto& page:loaded.project.pages)QVERIFY(page.size.infinite);
+        Page fillPage;fillPage.size.infinite=true;ShapeObject box;box.id=newId();box.kind=ShapeKind::Polygon;box.vertices={{-100,-100},{-80,-100},{-80,-80},{-100,-80}};box.style.rgba=0x000000ff;fillPage.shapes={box};const auto fill=fillInkRegion(fillPage,{-90,-90},Qt::red);QVERIFY2(fill.error.isEmpty(),qPrintable(fill.error));QVERIFY(fill.object.corners.front().x<0);QVERIFY(fill.object.corners.front().y<0);
+        QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
+    }
+    void duplicatePageWithRecoverableInkSavesAndCloses(){
+        QTemporaryDir dir;AppController controller(nullptr,dir.path());controller.newDefault();
+        StrokeObject stroke;stroke.id=newId();stroke.samples={{{10,10},1},{{20,20},1}};controller.addStroke(stroke);
+        controller.eraseObjects({{CanvasObject(stroke),std::nullopt}},{stroke});QCOMPARE(controller.page()->erasedInk.size(),std::size_t(1));
+        controller.duplicatePage();QCOMPARE(controller.pageCount(),2);QVERIFY(controller.page()->erasedInk[0].id!=stroke.id);
+        StrokeObject active;active.id=newId();active.samples={{{30,30},1},{{40,40},1}};controller.addStroke(active);controller.duplicatePage();
+        const auto path=dir.filePath("duplicate.board");controller.saveAs(QUrl::fromLocalFile(path));QTRY_VERIFY(!controller.busy());QVERIFY2(!controller.dirty(),qPrintable(controller.status()));
+        const auto loaded=ProjectStore::load(path);QVERIFY2(loaded,qPrintable(loaded.error));QCOMPARE(loaded.project.pages.size(),std::size_t(3));
+        for(const auto& page:loaded.project.pages)QCOMPARE(page.erasedInk.size(),std::size_t(1));
+        controller.home();QVERIFY(!controller.active());QVERIFY(controller.shutdown());
+    }
+    void currentPageSizeAndFullScreen(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();controller.addPage();
+        StrokeObject stroke;stroke.id=newId();stroke.samples={{{20,30},1},{{40,50},1}};controller.addStroke(stroke);
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());
+        auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto* fullScreen=findVisualItem(window->contentItem(),"fullScreenButton");QVERIFY(fullScreen);
+        auto* fileButton=findVisualItem(window->contentItem(),"fileMenuButton");QVERIFY(fileButton);
+        const auto centerY=[](QQuickItem* item){return item->mapToScene({item->width()/2,item->height()/2}).y();};
+        QCOMPARE(centerY(fullScreen),36.);QCOMPARE(centerY(fileButton),centerY(fullScreen));
+        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,fullScreen->mapToScene({fullScreen->width()/2,fullScreen->height()/2}).toPoint());QTRY_COMPARE(window->visibility(),QWindow::FullScreen);
+        QTRY_COMPARE(centerY(fullScreen),30.);QCOMPARE(centerY(fileButton),centerY(fullScreen));
+        QTest::keyClick(window,Qt::Key_F11);QTRY_VERIFY(window->visibility()!=QWindow::FullScreen);
+        QTRY_COMPARE(centerY(fullScreen),36.);
+        auto* panel=window->findChild<QObject*>("backgroundOptions");QVERIFY(panel);QVERIFY(QMetaObject::invokeMethod(panel,"open"));QTRY_VERIFY(panel->property("opened").toBool());
+        QCOMPARE(findVisualItem(window->contentItem(),"currentPageWidthField")->property("text").toString(),QString("210.00"));
+        auto* orientation=findVisualItem(window->contentItem(),"currentPageOrientation");QVERIFY(orientation);QVERIFY(QMetaObject::invokeMethod(orientation,"selected",Q_ARG(int,1)));QCOMPARE(controller.pageWidth(),297.);QCOMPARE(controller.pageHeight(),210.);
+        auto* preset=findVisualItem(window->contentItem(),"currentPageSizeSelector");QVERIFY(preset);preset->setProperty("currentIndex",1);
+        QVERIFY(QMetaObject::invokeMethod(panel,"applyPageSize",Q_ARG(QVariant,true)));QCOMPARE(controller.pageWidth(),279.4);QCOMPARE(controller.pageHeight(),215.9);
+        preset->setProperty("currentIndex",2);auto* width=findVisualItem(window->contentItem(),"currentPageWidthField");auto* height=findVisualItem(window->contentItem(),"currentPageHeightField");QVERIFY(width);QVERIFY(height);width->setProperty("text","300");height->setProperty("text","400");
+        QVERIFY(QMetaObject::invokeMethod(panel,"applyPageSize",Q_ARG(QVariant,false)));QCOMPARE(controller.pageWidth(),300.);QCOMPARE(controller.pageHeight(),400.);
+        QVERIFY(!controller.setPageSize("Personalizado",0,400,false));QCOMPARE(controller.pageWidth(),300.);
+        QSignalSpy pageChanges(&controller,&AppController::pagesChanged);controller.undo();QCOMPARE(controller.pageWidth(),279.4);QCOMPARE(pageChanges.count(),1);controller.redo();QCOMPARE(controller.pageWidth(),300.);
+        QCOMPARE(controller.page()->strokes.size(),std::size_t(1));QCOMPARE(controller.page()->strokes[0].samples[0].position.x,20.);QCOMPARE(controller.page()->strokes[0].samples[0].position.y,30.);
+        QVERIFY(QMetaObject::invokeMethod(panel,"close"));QTRY_VERIFY(!panel->property("visible").toBool());controller.selectPage(0);QCOMPARE(controller.pageWidth(),210.);QCOMPARE(controller.pageHeight(),297.);controller.selectPage(1);
+        const auto path=directory.filePath("resized.board");controller.saveAs(QUrl::fromLocalFile(path));QTRY_VERIFY(!controller.dirty());const auto loaded=ProjectStore::load(path);QVERIFY(loaded);QCOMPARE(loaded.project.pages[1].size.widthMm,300.);QCOMPARE(loaded.project.pages[1].size.heightMm,400.);
+        window->resize(520,640);QTest::qWait(100);QVERIFY(fullScreen->mapToScene({fullScreen->width(),0}).x()<=window->width());QVERIFY(QMetaObject::invokeMethod(panel,"open"));QTRY_VERIFY(panel->property("opened").toBool());QVERIFY(panel->property("y").toDouble()+panel->property("height").toDouble()<=window->height());
+        QDir().mkpath("screenshots");QVERIFY(window->grabWindow().save("screenshots/current-page-settings-small.png"));QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
+    }
+    void panelButtonsToggleWithoutReopening(){
+        QTemporaryDir dir;AppController controller(nullptr,dir.path());controller.newDefault();QTRY_VERIFY(!controller.busy());
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);
+        struct PanelCase{const char* button;const char* panel;const char* tool;};
+        for(const auto& value:std::vector<PanelCase>{{"backgroundOptionsButton","backgroundOptions","pen"},{"fileMenuButton","fileOptions","pen"},{"openPagesButton","pagesPanel","pen"},{"pageCounterButton","pagesPanel","pen"},{"penToolButton","penOptions","pen"},{"markerToolButton","penOptions","marker"},{"eraserToolButton","eraserOptions","eraser"},{"shapesToolButton","shapeOptions","pen"},{"rulerToolButton","geometryOptions","ruler"},{"compassToolButton","geometryOptions","compass"}}){
+            canvas->setTool(value.tool);auto* button=findVisualItem(window->contentItem(),value.button);auto* panel=window->findChild<QObject*>(value.panel);QVERIFY(button);QVERIFY(panel);
+            const auto click=[&](){QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,button->mapToScene({button->width()/2,button->height()/2}).toPoint());};
+            click();QTRY_VERIFY2(panel->property("opened").toBool(),value.button);
+            click();QTRY_VERIFY2(!panel->property("visible").toBool(),value.button);
+            click();QTRY_VERIFY2(panel->property("opened").toBool(),value.button);
+            QTest::keyClick(window,Qt::Key_Escape);QTRY_VERIFY2(!panel->property("visible").toBool(),value.button);
+        }
+        auto* button=findVisualItem(window->contentItem(),"backgroundOptionsButton");auto* panel=window->findChild<QObject*>("backgroundOptions");
+        const auto click=[&](){QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,button->mapToScene({button->width()/2,button->height()/2}).toPoint());};
+        click();QTRY_VERIFY(panel->property("opened").toBool());QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,canvas->mapToScene({180,160}).toPoint());QTRY_VERIFY(!panel->property("visible").toBool());
+        click();QTRY_VERIFY(panel->property("opened").toBool());click();QTRY_VERIFY(!panel->property("visible").toBool());
+        QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
+    }
+    void ctrlWheelZoomWithOptionsOpen(){
+        QTemporaryDir dir;AppController controller(nullptr,dir.path());controller.newDefault();QTRY_VERIFY(!controller.busy());
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
+        auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(window);QVERIFY(QTest::qWaitForWindowExposed(window));auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);QVERIFY(canvas->setZoom(1));
+        auto* panel=window->findChild<QObject*>("backgroundOptions");QVERIFY(panel);QVERIFY(QMetaObject::invokeMethod(panel,"open"));QTRY_VERIFY(panel->property("opened").toBool());QVERIFY(!canvas->isEnabled());
+        auto* field=findVisualItem(window->contentItem(),"currentPageSizeSelector");QVERIFY(field);const auto overPopup=field->mapToScene({field->width()/2,field->height()/2});
+        const auto wheel=[&](QPointF position,Qt::KeyboardModifiers modifiers,int angle=120,QPoint pixels={}){QWheelEvent event(position,window->mapToGlobal(position.toPoint()),pixels,QPoint(0,angle),Qt::NoButton,modifiers,Qt::NoScrollPhase,false);QCoreApplication::sendEvent(window,&event);};
+        wheel(overPopup,Qt::ControlModifier);QCOMPARE(canvas->zoom(),1.05);QVERIFY(panel->property("opened").toBool());
+        wheel(canvas->mapToScene({200,160}),Qt::ControlModifier,-120);QCOMPARE(canvas->zoom(),1.);QVERIFY(panel->property("opened").toBool());
+        wheel(overPopup,Qt::NoModifier,-120);QCOMPARE(canvas->zoom(),1.);
+        wheel(overPopup,Qt::ControlModifier,0,{0,40});QCOMPARE(canvas->zoom(),1.05);
+        canvas->setProperty("wheelZoomEnabled",false);wheel(overPopup,Qt::ControlModifier);QCOMPARE(canvas->zoom(),1.05);
+        QVERIFY(QMetaObject::invokeMethod(panel,"close"));QTRY_VERIFY(!panel->property("visible").toBool());
+        canvas->setProperty("wheelZoomEnabled",true);wheel(canvas->mapToScene({200,160}),Qt::ControlModifier,-120);QCOMPARE(canvas->zoom(),1.);
+        QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
+    }
+    void controlledWheelAndEditableZoom(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());
+        auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);canvas->setTool("hand");QVERIFY(canvas->setZoom(1));
+        const QPointF pointer(canvas->width()/2+80,canvas->height()/2+35);const auto wheelPosition=canvas->mapToScene(pointer);
+        const auto anchoredWorld=[&](){return canvas->viewportCenter()+QPointF(80,35)/(canvas->zoom()*96/25.4);};const auto before=anchoredWorld();
+        QWheelEvent up(wheelPosition,window->mapToGlobal(wheelPosition.toPoint()),{},QPoint(0,120),Qt::NoButton,Qt::NoModifier,Qt::NoScrollPhase,false);QCoreApplication::sendEvent(window,&up);QCOMPARE(canvas->zoom(),1.05);QVERIFY(QLineF(before,anchoredWorld()).length()<1e-8);
+        QWheelEvent down(wheelPosition,window->mapToGlobal(wheelPosition.toPoint()),{},QPoint(0,-120),Qt::NoButton,Qt::NoModifier,Qt::NoScrollPhase,false);QCoreApplication::sendEvent(window,&down);QCOMPARE(canvas->zoom(),1.);
+        auto* value=findVisualItem(window->contentItem(),"zoomValueArea");QVERIFY(value);auto* input=findVisualItem(window->contentItem(),"zoomValueInput");QVERIFY(input);
+        const auto edit=[&](const QString& text){QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,value->mapToScene({value->width()/2,value->height()/2}).toPoint());input->setProperty("text",text);};
+        edit("125.5");QTest::keyClick(window,Qt::Key_Return);QCOMPARE(canvas->zoom(),1.255);QVERIFY(!input->isVisible());
+        const auto center=canvas->viewportCenter();edit("250");QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,canvas->mapToScene({200,160}).toPoint());QCOMPARE(canvas->zoom(),2.5);QVERIFY(QLineF(center,canvas->viewportCenter()).length()<1e-8);
+        edit("500");QTest::keyClick(window,Qt::Key_Escape);QCOMPARE(canvas->zoom(),2.5);
+        edit("900");QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,canvas->mapToScene({200,160}).toPoint());QCOMPARE(canvas->zoom(),2.5);QVERIFY(!canvas->setZoom(0));QVERIFY(!canvas->setZoom(NAN));QVERIFY(!canvas->setZoom(9));
+        QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
+    }
+    void fullScreenAcrossNavigation(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());
+        auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));window->showMaximized();QTRY_COMPARE(window->visibility(),QWindow::Maximized);
+        auto click=[&](const QString& name){QTest::qWait(50);auto* button=findVisualItem(window->contentItem(),name);if(!button)return false;QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,button->mapToScene({button->width()/2,button->height()/2}).toPoint());return true;};
+        QVERIFY(click("fullScreenButton"));QTRY_COMPARE(window->visibility(),QWindow::FullScreen);
+        controller.home();QTRY_VERIFY(!controller.active());auto* homeButton=findVisualItem(window->contentItem(),"homeFullScreenButton");QVERIFY(homeButton);QVERIFY(homeButton->property("selected").toBool());
+        QVERIFY(click("homeFullScreenButton"));QTRY_COMPARE(window->visibility(),QWindow::Maximized);
+        QVERIFY(click("homeFullScreenButton"));QTRY_COMPARE(window->visibility(),QWindow::FullScreen);QTest::keyClick(window,Qt::Key_F11);QTRY_COMPARE(window->visibility(),QWindow::Maximized);
+        window->showNormal();window->resize(520,640);QTest::qWait(100);QVERIFY(homeButton->mapToScene({homeButton->width(),0}).x()<=window->width());QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
     }
     void multipleImagesOnSelectedPage(){
         QTemporaryDir directory;AppController controller(nullptr,directory.filePath("data"));controller.newDefault();controller.addPage();
@@ -154,25 +775,144 @@ private slots:
         auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);const auto origin=canvas->mapToScene(QPointF(420,240)).toPoint();
         QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,origin);for(int i=1;i<=30;++i)QTest::mouseMove(window,origin+QPoint(i*4,0));
         for(const auto& point:std::array<QPoint,4>{QPoint(118,6),QPoint(123,-4),QPoint(119,5),QPoint(121,2)})QTest::mouseMove(window,origin+point);
-        QTRY_VERIFY_WITH_TIMEOUT(canvas->interactionHint().contains("reconhecido"),2000);QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,origin+QPoint(121,2));QCOMPARE(controller.page()->shapes[0].kind,ShapeKind::Line);
-        controller.undo();controller.undo();QVERIFY(controller.page()->shapes.empty());
+        QTRY_VERIFY_WITH_TIMEOUT(canvas->interactionHint().contains("reconhecido"),2000);
+        QTest::mouseMove(window,origin+QPoint(150,40));
+        QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,origin+QPoint(150,40));QCOMPARE(controller.page()->shapes[0].kind,ShapeKind::Line);
+        const auto fixedOrigin=controller.page()->shapes[0].vertices[0];
+        controller.undo();QCOMPARE(controller.page()->strokes.size(),std::size_t(1));
+        QVERIFY(length(fixedOrigin-controller.page()->strokes[0].samples.front().position)<1e-8);
+        controller.undo();QVERIFY(controller.page()->shapes.empty());
         for(const auto& vertices:std::vector<std::vector<Point>>{{{30,30},{90,30}},{{90.5,30.8},{90,80}},{{90,80},{30,80}},{{30,79.5},{30.8,30.5}}}){ShapeObject line;line.id=newId();line.kind=ShapeKind::Line;line.vertices=vertices;controller.addShape(line);}
         QTRY_COMPARE(controller.page()->shapes.size(),std::size_t(1));QCOMPARE(controller.page()->shapes[0].kind,ShapeKind::Polygon);QVERIFY(controller.page()->shapes[0].fillOpacity>0);
         controller.undo();QCOMPARE(controller.page()->shapes.size(),std::size_t(4));for(const auto& shape:controller.page()->shapes)QCOMPARE(shape.kind,ShapeKind::Line);controller.redo();QCOMPARE(controller.page()->shapes.size(),std::size_t(1));QVERIFY(controller.shutdown());
+    }
+    void folderTrashMovesAndRestoresWholeTree(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());
+        const auto folder=controller.saveFolder({},"Pasta","#268fb5");const auto child=controller.saveFolder({},"Subpasta","#3ca889",folder);
+        QStringList paths;
+        for(const auto& target:QStringList{folder,child}){controller.newDefault();QTRY_VERIFY(!controller.dirty());controller.home();QTRY_VERIFY(!controller.active());const auto project=controller.recentProjects().first().toMap();paths.append(project["path"].toString());QVERIFY(controller.moveProjectToFolder(project["id"].toString(),target));}
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto* dialog=window->findChild<QObject*>("deleteFolderDialog");QVERIFY(dialog);QVariant entry;for(const auto& f:controller.folders())if(f.toMap()["id"]==folder)entry=f;
+        QVERIFY(QMetaObject::invokeMethod(dialog,"ask",Q_ARG(QVariant,entry)));QTRY_VERIFY(dialog->property("opened").toBool());
+        auto* button=findVisualItem(window->contentItem(),"confirmFolderDeletion");QVERIFY(button);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,button->mapToScene({button->width()/2,button->height()/2}).toPoint());QTRY_VERIFY(!controller.busy());
+        QVERIFY(controller.folders().isEmpty());QVERIFY(controller.recentProjects().isEmpty());QCOMPARE(controller.trashedProjects().size(),1);QVERIFY(controller.trashedProjects().first().toMap()["isFolder"].toBool());
+        for(const auto& path:paths)QVERIFY(!QFile::exists(path));
+        auto* open=findVisualItem(window->contentItem(),"openTrashButton");QVERIFY(open);QVERIFY(QMetaObject::invokeMethod(open,"clicked"));QTest::qWait(100);QVERIFY(warnings.isEmpty());
+        controller.restoreProject(folder);QTRY_VERIFY(!controller.busy());QCOMPARE(controller.folders().size(),2);QCOMPARE(controller.recentProjects().size(),2);QVERIFY(controller.trashedProjects().isEmpty());for(const auto& path:paths)QVERIFY(QFile::exists(path));
+        QVERIFY(controller.deleteFolder(folder));QTRY_VERIFY(!controller.busy());controller.deleteProjectPermanently(folder);QTRY_VERIFY(!controller.busy());QVERIFY(controller.trashedProjects().isEmpty());QVERIFY(controller.folders().isEmpty());QVERIFY(controller.recentProjects().isEmpty());QVERIFY(warnings.isEmpty());QVERIFY(controller.shutdown());
     }
     void homeTrashConfirmationAndRestore(){
         QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.setTheme("Dark");controller.newProject("Quadro na lixeira","A4",210,297,false,"Branco");QTRY_VERIFY(!controller.dirty());controller.home();
         QTRY_COMPARE(controller.recentProjects().size(),1);const auto project=controller.recentProjects()[0].toMap();const auto id=project["id"].toString();const auto path=project["path"].toString();
         QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));
-        QTRY_VERIFY(findVisualItem(window->contentItem(),"trashProjectButton"));auto* remove=findVisualItem(window->contentItem(),"trashProjectButton");QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,remove->mapToScene(QPointF(remove->width()/2,remove->height()/2)).toPoint());
+        QDir().mkpath("screenshots");QTest::qWait(100);QVERIFY(window->grabWindow().save("screenshots/home-modern-dark.png"));
+        window->resize(1920,1080);QTest::qWait(100);QVERIFY(window->grabWindow().save("screenshots/home-modern-wide.png"));
+        window->resize(520,640);QTest::qWait(100);QVERIFY(window->grabWindow().save("screenshots/home-modern-small.png"));window->resize(1200,800);QTest::qWait(100);
+        auto* edit=findVisualItem(window->contentItem(),"editProjectButton_"+id);QVERIFY(edit);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,edit->mapToScene({edit->width()/2,edit->height()/2}).toPoint());auto* editDialog=window->findChild<QObject*>("editProjectDialog");QVERIFY(editDialog);QTRY_VERIFY(editDialog->property("opened").toBool());auto* remove=findVisualItem(window->contentItem(),"trashProjectButton");QVERIFY(remove);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,remove->mapToScene(QPointF(remove->width()/2,remove->height()/2)).toPoint());
         auto* dialog=window->findChild<QObject*>("deleteProjectDialog");QVERIFY(dialog);QTRY_VERIFY(dialog->property("opened").toBool());QVERIFY(QFile::exists(path));QVERIFY(controller.trashedProjects().isEmpty());
+        auto* content=dialog->property("contentItem").value<QQuickItem*>();QVERIFY(content);
+        for(auto* item:content->findChildren<QQuickItem*>())QVERIFY(!item->property("text").toString().contains(path));
         auto* cancel=findVisualItem(window->contentItem(),"cancelProjectDeletion");QVERIFY(cancel);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,cancel->mapToScene(QPointF(cancel->width()/2,cancel->height()/2)).toPoint());QTRY_VERIFY(!dialog->property("visible").toBool());QCOMPARE(controller.recentProjects().size(),1);
-        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,remove->mapToScene(QPointF(remove->width()/2,remove->height()/2)).toPoint());QTRY_VERIFY(dialog->property("opened").toBool());
+        edit=findVisualItem(window->contentItem(),"editProjectButton_"+id);QVERIFY(edit);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,edit->mapToScene({edit->width()/2,edit->height()/2}).toPoint());QTRY_VERIFY(editDialog->property("opened").toBool());remove=findVisualItem(window->contentItem(),"trashProjectButton");QVERIFY(remove);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,remove->mapToScene(QPointF(remove->width()/2,remove->height()/2)).toPoint());QTRY_VERIFY(dialog->property("opened").toBool());
         auto* confirm=findVisualItem(window->contentItem(),"confirmProjectDeletion");QVERIFY(confirm);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,confirm->mapToScene(QPointF(confirm->width()/2,confirm->height()/2)).toPoint());
         QTRY_VERIFY(!controller.busy());QCOMPARE(controller.trashedProjects().size(),1);QVERIFY(controller.recentProjects().isEmpty());QVERIFY(!QFile::exists(path));QTRY_VERIFY(!dialog->property("visible").toBool());
         auto* open=findVisualItem(window->contentItem(),"openTrashButton");QVERIFY(open);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,open->mapToScene(QPointF(open->width()/2,open->height()/2)).toPoint());auto* trash=window->findChild<QObject*>("trashDialog");QVERIFY(trash);QTRY_VERIFY(trash->property("opened").toBool());QDir().mkpath("screenshots");QVERIFY(window->grabWindow().save("screenshots/trash-dark.png"));
         controller.restoreProject(id);QTRY_VERIFY(!controller.busy());QVERIFY(controller.trashedProjects().isEmpty());QCOMPARE(controller.recentProjects().size(),1);QVERIFY(QFile::exists(path));
         controller.trashProject(id);QTRY_VERIFY(!controller.busy());controller.deleteProjectPermanently(id);QTRY_VERIFY(!controller.busy());QVERIFY(controller.trashedProjects().isEmpty());QVERIFY(controller.recentProjects().isEmpty());QVERIFY(!QFile::exists(path));
+        QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
+    }
+    void drawnInlineTextAndFormatting(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);canvas->setTool("text");
+        QSignalSpy boxes(canvas,&CanvasItem::textBoxRequested);
+        const auto start=canvas->mapToScene(QPointF(400,220)).toPoint(),end=start+QPoint(260,120);
+        QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,start);QTest::mouseMove(window,end);
+        QVERIFY(canvas->selectionRect().width()>200);
+        QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,end);QCOMPARE(boxes.size(),1);
+        const auto box=boxes[0][0].toRectF();
+        auto* inlineEditor=window->findChild<QObject*>("inlineTextEditor");QVERIFY(inlineEditor);QTRY_VERIFY(inlineEditor->property("active").toBool());
+        auto* dialog=window->findChild<QObject*>("textDialog");QVERIFY(dialog);QVERIFY(!dialog->property("visible").toBool());
+        auto* source=findVisualItem(window->contentItem(),"textSource");QVERIFY(source);QTRY_VERIFY(source->hasActiveFocus());
+        for(const char c:std::string("Aula de geometria"))QTest::keyClick(window,c);
+        QVERIFY(QMetaObject::invokeMethod(source,"select",Q_ARG(int,0),Q_ARG(int,4)));
+        auto* bold=findVisualItem(window->contentItem(),"inlineBoldButton");QVERIFY(bold);
+        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,bold->mapToScene({bold->width()/2,bold->height()/2}).toPoint());
+        auto* textDocument=source->property("textDocument").value<QObject*>();QVERIFY(textDocument);
+        QVERIFY(controller.textEmphasis(textDocument,0,4)["bold"].toBool());QVERIFY(!controller.textEmphasis(textDocument,5,7)["bold"].toBool());
+        QVERIFY(QMetaObject::invokeMethod(source,"select",Q_ARG(int,8),Q_ARG(int,16)));
+        QTest::keyClick(window,Qt::Key_I,Qt::ControlModifier);
+        QVERIFY(controller.textEmphasis(textDocument,8,16)["italic"].toBool());QVERIFY(!controller.textEmphasis(textDocument,0,4)["italic"].toBool());
+        QDir().mkpath("screenshots");QVERIFY(window->grabWindow().save("screenshots/text-inline-cursive.png"));
+        auto* format=findVisualItem(window->contentItem(),"textFormatButton");QVERIFY(format);
+        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,format->mapToScene({format->width()/2,format->height()/2}).toPoint());QTRY_VERIFY(dialog->property("opened").toBool());
+        QVERIFY(window->grabWindow().save("screenshots/text-formatting.png"));
+        QVERIFY(!controller.fontFamilies().empty());QVERIFY(controller.fontFamilies().contains(controller.defaultTextFont()));
+        auto* fontSelector=findVisualItem(window->contentItem(),"textFontSelector");QVERIFY(fontSelector);
+        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,fontSelector->mapToScene({fontSelector->width()/2,fontSelector->height()/2}).toPoint());
+        auto* fontPopup=window->findChild<QObject*>("fontPickerPopup");QVERIFY(fontPopup);QTRY_VERIFY(fontPopup->property("opened").toBool());
+        auto* fontList=findVisualItem(window->contentItem(),"fontList");QVERIFY(fontList);QVERIFY(fontList->property("count").toInt()>6);
+        QTest::qWait(100);
+        auto* firstFont=findVisualItem(window->contentItem(),"fontOption_0");QVERIFY(firstFont);
+        auto* firstFontBackground=findVisualItem(window->contentItem(),"fontOptionBackground_0");QVERIFY(firstFontBackground);
+        const auto idleFontColor=firstFontBackground->property("color").value<QColor>();
+        QTest::mouseMove(window,firstFont->mapToScene({firstFont->width()/2,firstFont->height()/2}).toPoint());
+        QTRY_VERIFY(firstFont->property("hovered").toBool());
+        QVERIFY(firstFontBackground->property("color").value<QColor>()!=idleFontColor);
+        QVERIFY(firstFont->clip());
+        auto* firstPreview=findVisualItem(window->contentItem(),"fontPreview_0");QVERIFY(firstPreview);QVERIFY(firstPreview->clip());
+        QVERIFY(firstPreview->height()<firstFont->height());
+        QVERIFY(window->grabWindow().save("screenshots/text-font-picker.png"));
+        const auto wheelPosition=fontList->mapToScene({fontList->width()/2,fontList->height()/2});
+        QTest::mouseMove(window,wheelPosition.toPoint());
+        QTest::qWait(50);
+        QWheelEvent wheel(wheelPosition,window->mapToGlobal(wheelPosition.toPoint()),{},QPoint(0,-120),Qt::NoButton,Qt::NoModifier,Qt::NoScrollPhase,false);
+        QCoreApplication::sendEvent(window,&wheel);
+        QTRY_VERIFY2(fontList->property("contentY").toDouble()>0,qPrintable(QString("wheel %1,%2; view %3x%4; content %5; accepted %6").arg(wheelPosition.x()).arg(wheelPosition.y()).arg(fontList->width()).arg(fontList->height()).arg(fontList->property("contentHeight").toDouble()).arg(wheel.isAccepted())));
+        const double wheelEnd=fontList->property("contentY").toDouble();
+        QVERIFY(!fontList->property("flicking").toBool());
+        QTest::qWait(350);
+        QCOMPARE(fontList->property("contentY").toDouble(),wheelEnd);
+        QWheelEvent preciseWheel(wheelPosition,window->mapToGlobal(wheelPosition.toPoint()),QPoint(0,-17),{},Qt::NoButton,Qt::NoModifier,Qt::ScrollUpdate,false);
+        QCoreApplication::sendEvent(window,&preciseWheel);
+        QCOMPARE(fontList->property("contentY").toDouble(),wheelEnd+17.);
+        auto* fontScrollBar=findVisualItem(window->contentItem(),"fontScrollBar");QVERIFY(fontScrollBar);
+        fontList->setProperty("contentY",0.);
+        QTest::qWait(100);
+        const auto thumbStart=fontScrollBar->mapToScene({fontScrollBar->width()/2,5}).toPoint();
+        QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,thumbStart);
+        for(int step=1;step<=20;++step){
+            QTest::mouseMove(window,thumbStart+QPoint(0,int((fontScrollBar->height()-15)*step/20)),10);
+            QCoreApplication::processEvents();
+        }
+        QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,thumbStart+QPoint(0,int(fontScrollBar->height()-15)));
+        QVERIFY(fontList->property("contentY").toDouble()>fontList->property("contentHeight").toDouble()/2);
+        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,QPoint(600,170));
+        QTRY_VERIFY(!fontPopup->property("visible").toBool());QVERIFY(dialog->property("visible").toBool());
+        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,fontSelector->mapToScene({fontSelector->width()/2,fontSelector->height()/2}).toPoint());
+        QTRY_VERIFY(fontPopup->property("opened").toBool());
+        QVERIFY(window->grabWindow().save("screenshots/text-font-picker.png"));
+        auto* fontSearch=findVisualItem(window->contentItem(),"fontSearchField");QVERIFY(fontSearch);fontSearch->setProperty("text","DejaVu Sans");
+        QTRY_VERIFY(fontList->property("count").toInt()>0);QTRY_VERIFY(fontSearch->hasActiveFocus());
+        QTest::keyClick(window,Qt::Key_Return);QTRY_VERIFY(!fontPopup->property("visible").toBool());
+        QVERIFY(dialog->property("draft").toMap()["fontFamily"].toString().contains("DejaVu Sans"));
+        auto draft=dialog->property("draft").toMap();draft["fontFamily"]="DejaVu Sans";draft["fontSizePt"]=20;draft["color"]="#397ce0";dialog->setProperty("draft",draft);
+        auto* apply=findVisualItem(window->contentItem(),"applyTextFormatButton");QVERIFY(apply);
+        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,apply->mapToScene({apply->width()/2,apply->height()/2}).toPoint());QTRY_VERIFY(!dialog->property("visible").toBool());QTRY_VERIFY(source->hasActiveFocus());
+        QDir().mkpath("screenshots");QVERIFY(window->grabWindow().save("screenshots/text-inline-editing.png"));
+        QTest::keyClick(window,Qt::Key_Return,Qt::ControlModifier);QTRY_VERIFY(!inlineEditor->property("active").toBool());QCOMPARE(controller.page()->texts.size(),std::size_t(1));
+        const auto text=controller.page()->texts[0];QCOMPARE(text.source,std::string("Aula de geometria"));QCOMPARE(text.fontFamily,std::string("DejaVu Sans"));QCOMPARE(text.fontSizePt,20.);QCOMPARE(text.boxWidthMm,box.width());
+        QCOMPARE(text.formats.size(),std::size_t(2));QCOMPARE(text.formats[0],(TextFormat{0,4,true,false}));QCOMPARE(text.formats[1],(TextFormat{8,8,false,true}));
+        const auto formatted=ProjectStore::deserialize(ProjectStore::serialize(Project{newId(),"Formatted text","now","now",{*controller.page()}}));QVERIFY(formatted);QCOMPARE(formatted.project.pages[0].texts[0].formats,text.formats);
+        QVERIFY(length(text.corners[0]-Point{box.x(),box.y()})<1e-8);QCOMPARE(canvas->selectedCount(),1);
+        canvas->editSelectedText();QTRY_VERIFY(inlineEditor->property("active").toBool());source->setProperty("text","Texto revisado");
+        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,canvas->mapToScene(QPointF(200,150)).toPoint());QTRY_VERIFY(!inlineEditor->property("active").toBool());QCOMPARE(controller.page()->texts[0].source,std::string("Texto revisado"));
+        controller.undo();QCOMPARE(controller.page()->texts[0].source,text.source);controller.redo();
+        controller.save();QTRY_VERIFY(!controller.dirty());const auto loaded=ProjectStore::load(controller.recentProjects()[0].toMap()["path"].toString());QVERIFY(loaded);QCOMPARE(loaded.project.pages[0].texts[0].boxWidthMm,box.width());
+        canvas->editSelectedText();QTRY_VERIFY(inlineEditor->property("active").toBool());source->setProperty("text","Texto salvo ao fechar");
+        window->close();QTRY_VERIFY(!window->isVisible());
+        const auto closed=ProjectStore::load(controller.recentProjects()[0].toMap()["path"].toString());QVERIFY(closed);QCOMPARE(closed.project.pages[0].texts[0].source,std::string("Texto salvo ao fechar"));
         QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
     }
     void milestone3BackgroundAndText(){
@@ -184,11 +924,11 @@ private slots:
         QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());
         auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));
         auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);canvas->setPenLineStyle("dotted");canvas->setDotSpacing(3.5);
-        QCOMPARE(canvas->penLineStyle(),QString("dotted"));canvas->setTool("text");QSignalSpy request(canvas,&CanvasItem::textRequested);
-        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,canvas->mapToScene(QPointF(260,220)).toPoint());QTRY_COMPARE(request.size(),1);
-        auto* dialog=window->findChild<QObject*>("textDialog");QVERIFY(dialog);QTRY_VERIFY(dialog->property("opened").toBool());
+        QCOMPARE(canvas->penLineStyle(),QString("dotted"));canvas->setTool("text");QSignalSpy request(canvas,&CanvasItem::textBoxRequested);
+        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,canvas->mapToScene(QPointF(400,220)).toPoint());QTRY_COMPARE(request.size(),1);
+        auto* dialog=window->findChild<QObject*>("inlineTextEditor");QVERIFY(dialog);QTRY_VERIFY(dialog->property("active").toBool());
         auto* editor=findVisualItem(window->contentItem(),"textSource");QVERIFY(editor);editor->setProperty("text","Aula de geometria");
-        QDir().mkpath("screenshots");QVERIFY(window->grabWindow().save("screenshots/milestone3-text-dialog.png"));
+        QDir().mkpath("screenshots");QVERIFY(window->grabWindow().save("screenshots/milestone3-inline-text.png"));QVERIFY(QMetaObject::invokeMethod(dialog,"cancel"));
         controller.upsertText({},QPointF(30,40),{{"source","Aula de geometria\nTexto editável"},{"fontSizePt",22},{"fontFamily","DejaVu Sans"},{"bold",true},{"alignment",1},{"color","#397ce0"}});
         QTRY_VERIFY(!controller.textBusy());QVERIFY2(controller.textError().isEmpty(),qPrintable(controller.textError()));QCOMPARE(controller.page()->texts.size(),std::size_t(1));
         const auto id=QString::fromStdString(controller.page()->texts[0].id);QCOMPARE(controller.textValues(id)["fontSizePt"].toDouble(),22.);QVERIFY(!controller.image(id.toStdString()).isNull());
@@ -562,7 +1302,24 @@ private slots:
         QVariantMap rotate;for(const auto& h:canvas->selectionHandles())if(h.toMap()["type"].toString()=="rotate")rotate=h.toMap();
         const auto rotatePosition=screen({rotate["x"].toDouble(),rotate["y"].toDouble()});
         QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,rotatePosition);QTest::mouseMove(window,rotatePosition+QPoint(30,10));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,rotatePosition+QPoint(30,10));QVERIFY(std::abs(controller.page()->shapes[0].rotation)>0.1);controller.undo();
-        canvas->setSelectedFill(0.25);QCOMPARE(controller.page()->shapes[0].fillOpacity,0.25);canvas->duplicateSelection();QCOMPARE(controller.page()->shapes.size(),std::size_t(2));canvas->deleteSelection();QCOMPARE(controller.page()->shapes.size(),std::size_t(1));
+        canvas->setSelectedFill(0.25);QCOMPARE(controller.page()->shapes[0].fillOpacity,0.25);
+        const auto layerBefore=objects(*controller.page());const auto selectedId=controller.page()->shapes[0].id;
+        QCOMPARE(objectId(layerBefore.back()),selectedId);
+        canvas->forceActiveFocus();QTest::keyClick(window,Qt::Key_Down,Qt::ControlModifier);
+        auto layerAfter=objects(*controller.page());QCOMPARE(objectId(layerAfter[layerAfter.size()-2]),selectedId);QCOMPARE(canvas->selectedCount(),1);
+        controller.undo();QCOMPARE(objectId(objects(*controller.page()).back()),selectedId);
+        controller.redo();QCOMPARE(objectId(objects(*controller.page())[layerAfter.size()-2]),selectedId);
+        QTest::keyClick(window,Qt::Key_Up,Qt::ControlModifier);QCOMPARE(objectId(objects(*controller.page()).back()),selectedId);
+        auto* duplicateButton=window->findChild<QQuickItem*>("duplicateSelectionButton");QVERIFY(duplicateButton);QCOMPARE(duplicateButton->property("text").toString(),QString("Duplicar"));
+        auto* backwardButton=window->findChild<QQuickItem*>("moveLayerBackwardButton");QVERIFY(backwardButton);
+        QCOMPARE(backwardButton->property("tooltip").toString(),QString("Mover para trás (Ctrl + seta para baixo)"));
+        auto* forwardButton=window->findChild<QQuickItem*>("moveLayerForwardButton");QVERIFY(forwardButton);
+        QCOMPARE(forwardButton->property("tooltip").toString(),QString("Mover para frente (Ctrl + seta para cima)"));
+        canvas->setTool("pen");QCOMPARE(canvas->cursor().shape(),Qt::CrossCursor);
+        canvas->setTool("select");QCOMPARE(canvas->cursor().shape(),Qt::ArrowCursor);
+        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,backwardButton->mapToScene({backwardButton->width()/2,backwardButton->height()/2}).toPoint());
+        QCOMPARE(objectId(objects(*controller.page())[layerAfter.size()-2]),selectedId);
+        canvas->duplicateSelection();QCOMPARE(controller.page()->shapes.size(),std::size_t(2));canvas->deleteSelection();QCOMPARE(controller.page()->shapes.size(),std::size_t(1));
         QImage bitmap(80,60,QImage::Format_ARGB32);bitmap.fill(QColor("#397ce0"));QGuiApplication::clipboard()->setImage(bitmap);
         canvas->forceActiveFocus();QTest::keyClick(window,Qt::Key_V,Qt::ControlModifier);QTRY_COMPARE(controller.page()->images.size(),std::size_t(1));
         const auto centerPoint=screen({canvas->width()/2,canvas->height()/2});QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,centerPoint);QCOMPARE(canvas->selectionName(),QString("Imagem"));
@@ -585,6 +1342,7 @@ int main(int argc,char** argv){
     QGuiApplication app(argc,argv);app.setOrganizationName("ScalarTests");app.setApplicationName("Desktop");
     QQuickStyle::setStyle("Basic");
     qmlRegisterType<CanvasItem>("Scalar",1,0,"BoardCanvas");
+    qmlRegisterType<scalar::ApplicationLogo>("Scalar",1,0,"ApplicationLogo");
     qmlRegisterUncreatableType<AppController>("Scalar",1,0,"ApplicationController","Use App");
     DesktopTests tests;return QTest::qExec(&tests,argc,argv);
 }

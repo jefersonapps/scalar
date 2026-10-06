@@ -13,7 +13,7 @@ C.ModernDialog {
             Text { text: "Lixeira"; color: Theme.text; font.pixelSize: Theme.heading; font.weight: Font.DemiBold; Layout.fillWidth: true }
             C.IconButton { iconName: "close"; label: "Fechar lixeira"; onClicked: root.close() }
         }
-        Text { text: "Quadros excluídos ficam aqui por 30 dias."; color: Theme.secondary; font.pixelSize: Theme.caption; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+        Text { text: "Pastas e quadros excluídos ficam aqui por 30 dias."; color: Theme.secondary; font.pixelSize: Theme.caption; Layout.fillWidth: true; wrapMode: Text.WordWrap }
         ListView {
             id: list
             Layout.fillWidth: true; Layout.preferredHeight: Math.min(Theme.section*6,Math.max(Theme.section*2,contentHeight)); clip: true; spacing: Theme.sm
@@ -23,12 +23,13 @@ C.ModernDialog {
                 width: list.width; implicitHeight: row.implicitHeight+Theme.md*2; radius: Theme.radiusMedium
                 RowLayout {
                     id: row; anchors.fill: parent; anchors.margins: Theme.md; spacing: Theme.sm
+                    C.Icon { name: modelData.isFolder ? "folder" : "page"; color: Theme.secondary; Layout.preferredWidth: Theme.icon; Layout.preferredHeight: Theme.icon }
                     ColumnLayout {
                         Layout.fillWidth: true; spacing: Theme.xs
                         Text { text: modelData.name; color: Theme.text; font.pixelSize: Theme.body; font.weight: Font.Medium; Layout.fillWidth: true; elide: Text.ElideRight }
                         Text { text: "Expira em " + Qt.formatDate(new Date(new Date(modelData.deletedAt).getTime()+30*24*60*60*1000),"dd MMM yyyy"); color: Theme.secondary; font.pixelSize: Theme.caption }
                     }
-                    C.IconButton { objectName: "restoreTrashedProject"; iconName: "undo"; label: "Restaurar quadro"; enabled: !App.busy; onClicked: App.restoreProject(modelData.id) }
+                    C.IconButton { objectName: "restoreTrashedProject"; iconName: "undo"; label: modelData.isFolder ? "Restaurar pasta e conteúdo" : "Restaurar quadro"; enabled: !App.busy; onClicked: App.restoreProject(modelData.id) }
                     C.IconButton { objectName: "deleteTrashedProject"; iconName: "trash"; label: "Excluir permanentemente"; enabled: !App.busy; onClicked: root.permanentDeletionRequested(modelData) }
                 }
             }

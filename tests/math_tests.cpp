@@ -1,14 +1,37 @@
 #include <QtTest>
 #include <QGuiApplication>
 #include <QFile>
+#include <QFontDatabase>
+#include <QFontMetricsF>
+#include <QRawFont>
+#include <QTextDocument>
 #include "math/MathRenderer.h"
 #include "math/SvgValidation.h"
 #include "rendering/TextRenderer.h"
 #include "rendering/MathMesh.h"
+#include "geometry/Geometry.h"
 using namespace scalar;
 class MathTests : public QObject {
     Q_OBJECT
 private slots:
+    void installedFontsAndPortugueseAccents(){
+        registerTextFonts();
+        const auto font=documentFont("Lobster Two",24);
+        const auto raw=QRawFont::fromFont(font);QVERIFY(raw.isValid());
+        for(const auto character:QString::fromUtf8("áàâãéêíóôõúüçÁÀÂÃÉÊÍÓÔÕÚÜÇ"))QVERIFY(raw.supportsCharacter(character));
+        QTextDocument document;document.setPlainText(QString::fromUtf8("Expressão: á ç ∫ Σ α 😊"));
+        for(const auto& family:QFontDatabase::families()){
+            document.setDefaultFont(documentFont(family,24));QVERIFY(document.size().height()>0);
+            QVERIFY(QFontMetricsF(document.defaultFont()).horizontalAdvance(family)>=0);
+        }
+    }
+    void mixedEmphasisChangesRendering(){
+        TextObject text;text.source="Aula de geometria";text.fontFamily="DejaVu Sans";
+        const auto plain=textBitmap(text,96./25.4);
+        text.formats={{0,4,true,false},{8,8,false,true}};
+        const auto formatted=textBitmap(text,96./25.4);QVERIFY(formatted!=plain);
+        const auto prepared=prepareText(text);QVERIFY(prepared.error.isEmpty());QCOMPARE(prepared.object.formats,text.formats);
+    }
     void delimiters(){
         const auto parts=mathFragments("Área $x^2$ e $$\\frac{a}{b}$$; custo \\$5. Sem $fim");
         QCOMPARE(parts.size(),std::size_t(2));QCOMPARE(parts[0].latex,std::string("x^2"));QVERIFY(!parts[0].display);
@@ -30,6 +53,17 @@ private slots:
         if(!svgRenderingAvailable())QSKIP("SVG renderer unavailable");
         TextObject t;t.source="$x$";t.style.rgba=0xcc5364ff;t.math={{"x","<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1000 1000\"><path fill=\"currentColor\" d=\"M0 0H1000V1000H0Z\"/></svg>",false,0,3,1,1}};
         const auto image=textBitmap(t,4);QVERIFY(!image.isNull());bool colored=false;for(int y=0;y<image.height();++y)for(int x=0;x<image.width();++x)if(image.pixelColor(x,y).red()>100&&image.pixelColor(x,y).alpha()>100)colored=true;QVERIFY(colored);
+    }
+    void drawnTextBoxWrapsAndKeepsDimensions(){
+        TextObject t;t.source="Uma aula de geometria com exemplos e construções para os alunos.";
+        t.fontFamily="DejaVu Sans";t.boxWidthMm=40;t.boxHeightMm=35;t.corners={{12,17}};
+        const auto prepared=prepareText(t);QVERIFY2(prepared.error.isEmpty(),qPrintable(prepared.error));
+        QCOMPARE(prepared.object.corners[0].x,12.);QCOMPARE(prepared.object.corners[0].y,17.);
+        QVERIFY(std::abs(length(prepared.object.corners[1]-prepared.object.corners[0])-40)<1e-8);
+        QVERIFY(length(prepared.object.corners[3]-prepared.object.corners[0])>=35);
+        t.boxWidthMm=100;t.boxHeightMm=0;
+        const auto wide=prepareText(t);QVERIFY(wide.error.isEmpty());
+        QVERIFY(wide.naturalSize.height()<prepared.naturalSize.height());
     }
     void vectorMeshHolesAndTransforms(){
         const auto result=svgMathMesh("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1000 1000\"><g transform=\"translate(100 100) scale(2)\"><path d=\"M0 0H300V300H0Z M100 100V200H200V100H100Z\"/></g></svg>");

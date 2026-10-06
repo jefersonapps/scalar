@@ -3,8 +3,11 @@
 #include <QImage>
 #include <QString>
 #include <QSizeF>
+#include <QFont>
 class QPainter;
 namespace scalar {
+void registerTextFonts();
+QFont documentFont(const QString& family,int pixelSize,bool bold=false,bool italic=false);
 struct PreparedText {TextObject object;QImage image;QString error;std::vector<Point> geometry{};QSizeF naturalSize{};};
 struct TextVisual {QImage text;std::vector<Point> math;QString error;QSizeF naturalSize;};
 QSizeF textNaturalSize(const TextObject& object);

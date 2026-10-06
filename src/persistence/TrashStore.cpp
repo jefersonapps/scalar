@@ -17,6 +17,13 @@ QString moveFile(const QString& from,const QString& to){
 }
 }
 TrashResult moveProjectToTrash(const QVariantMap& e){
+    if(e.value("isFolder").toBool()){
+        for(const auto& project:e.value("projects").toList()){
+            const auto result=moveProjectToTrash(project.toMap());
+            if(!result.error.isEmpty())return {TrashAction::Move,e,result.error,{}};
+        }
+        return {TrashAction::Move,e,{},{}};
+    }
     const auto from=e.value("originalPath").toString(),to=e.value("trashPath").toString();
     // A durable SQLite record precedes the file operation; maintenance resumes interrupted moves.
     QString error;if(!QFile::exists(to))error=moveFile(from,to);
@@ -24,11 +31,30 @@ TrashResult moveProjectToTrash(const QVariantMap& e){
     return {TrashAction::Move,e,error,{}};
 }
 TrashResult restoreTrashedProject(const QVariantMap& e){
+    if(e.value("isFolder").toBool()){
+        for(const auto& project:e.value("projects").toList()){
+            const auto result=restoreTrashedProject(project.toMap());
+            if(!result.error.isEmpty())return {TrashAction::Restore,e,result.error,{}};
+        }
+        return {TrashAction::Restore,e,{},{}};
+    }
     const auto from=e.value("trashPath").toString(),to=e.value("originalPath").toString();
     QString error;if(QFile::exists(from))error=moveFile(from,to);else if(!QFile::exists(to))error="O arquivo da lixeira não foi encontrado.";
     if(error.isEmpty()&&QFile::exists(from+".png")&&!QFile::exists(to+".png"))moveFile(from+".png",to+".png");return {TrashAction::Restore,e,error,{}};
 }
 TrashResult deleteTrashedProject(const QVariantMap& e){
+    if(e.value("isFolder").toBool()){
+        for(const auto& project:e.value("projects").toList()){
+            const auto entry=project.toMap();
+            if(QFile::exists(entry.value("originalPath").toString())&&!QFile::exists(entry.value("trashPath").toString())){
+                const auto moved=moveProjectToTrash(entry);
+                if(!moved.error.isEmpty())return {TrashAction::Delete,e,moved.error,{}};
+            }
+            const auto result=deleteTrashedProject(entry);
+            if(!result.error.isEmpty())return {TrashAction::Delete,e,result.error,{}};
+        }
+        return {TrashAction::Delete,e,{},{}};
+    }
     const auto path=e.value("trashPath").toString();
     for(const auto& file:QStringList{path+".png",path})if(QFile::exists(file)&&!QFile::remove(file))return {TrashAction::Delete,e,"Não foi possível excluir o arquivo da lixeira.",{}};
     return {TrashAction::Delete,e,{},{}};

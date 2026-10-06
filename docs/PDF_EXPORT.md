@@ -10,4 +10,8 @@ O writer produz um temporário e valida contagem de páginas e medidas com Qt PD
 
 Testes executados verificam PDF com A4 retrato, A4 paisagem e Carta; medidas físicas, contagem, texto selecionável, geometria sem imagens raster para documentos vetoriais, base PDF com anotação acima, exportação assíncrona e preservação do destino em falha. A navegação foi exercitada na UI e capturada no tema escuro em janela de 520 × 640. Testes offscreen não validam GPU, stylus física ou Windows.
 
-Este fluxo exporta todas as páginas com configurações fixas. Intervalos, qualidade configurável, margens adicionais, desligar fundo/grade e exportação PNG continuam como evolução do Milestone 5.
+Este fluxo exporta todas as páginas com configurações fixas. Intervalos, qualidade configurável, margens adicionais, desligar fundo/grade e exportação PNG permanecem para um ciclo futuro. O Milestone 5 segue o escopo revisado de régua, compasso e construções geométricas.
+
+No modo Infinito, cada página do PDF usa os limites de todo o conteúdo visível com margem de 10 mm, incluindo traços, contornos, textos, imagens e a base PDF. Coordenadas negativas são transladadas apenas durante a exportação. Quadros vazios usam o tamanho físico de referência; quadros acima de 5000 mm são reduzidos proporcionalmente para respeitar os limites da página PDF. A página original e seus objetos permanecem intactos.
+
+A base PDF é composta sobre papel branco no cache de renderização. Alterar a cor do quadro muda apenas o espaço ao redor do PDF, preservando o texto e os elementos da página importada.

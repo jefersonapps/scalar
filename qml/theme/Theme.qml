@@ -5,15 +5,29 @@ QtObject {
     readonly property color background: dark ? "#09090b" : "#f3f5f7"
     readonly property color workspace: dark ? "#111113" : "#e9eef1"
     readonly property color surface: dark ? "#18181b" : "#ffffff"
+    readonly property color dropdownSurface: dark ? "#27272b" : "#f8fafc"
+    readonly property color dropdownBorder: dark ? "#62626a" : "#b5c2cc"
+    readonly property color dropdownHover: dark ? "#3b3b43" : "#e4edf3"
     readonly property color glass: dark ? "#ed18181b" : "#edffffff"
     readonly property color hover: dark ? "#27272a" : "#edf3f5"
     readonly property color pressed: dark ? "#3f3f46" : "#dce9ec"
-    readonly property color accent: dark ? "#fafafa" : "#167b69"
-    readonly property color accentSoft: dark ? "#27272a" : "#dcefe9"
-    readonly property color accentText: dark ? "#09090b" : "#ffffff"
+    readonly property color accent: "#087caa"
+    readonly property color accentSoft: dark ? "#16323e" : "#dceef7"
+    readonly property color accentText: "#ffffff"
+    readonly property var folderColors: ["#268fb5","#3ca889","#b98a38","#9765c5","#ce7284"]
+    readonly property int folderCardWidth: 192
+    readonly property int folderCardHeight: 72
     readonly property color text: dark ? "#fafafa" : "#243345"
     readonly property color secondary: dark ? "#a1a1aa" : "#66798b"
     readonly property color border: dark ? "#303033" : "#dce5e9"
+    readonly property color selectionBorder: dark ? "#64646d" : "#9aa7b3"
+    readonly property color selectionSurface: dark ? "#303034" : "#e0e6eb"
+    readonly property int homeContentWidth: 1280
+    readonly property int librarySidebarWidth: 232
+    readonly property int homeHeroHeight: 272
+    readonly property int homeHeroCompactHeight: 168
+    readonly property int homeHeroMediumHeight: 224
+    readonly property int homeActionHeight: 80
     readonly property color shadow: dark ? "#70000000" : "#1026384a"
     readonly property color scrim: dark ? "#80000000" : "#60202020"
     readonly property var backgroundColors: ["#ffffff","#fff7e6","#fef3c7","#dcfce7","#dbeafe","#fce7f3","#ede9fe","#214f43","#18221e","#000000"]
@@ -69,6 +83,18 @@ QtObject {
     readonly property int maxContent: 1040
     readonly property int topbarHeight: 72
     readonly property int navigationInlineBreakpoint: 1100
+    readonly property color guideSurface: dark ? "#c02a383c" : "#c0e5f3ef"
+    readonly property color guideInk: dark ? "#d9faf0" : "#164a3c"
+    readonly property int guideHandle: 16
+    readonly property int compassLegWidth: 10
+    readonly property int compassJointSize: 28
+    readonly property int compassGripLength: 22
+    readonly property real compassTipFraction: 0.88
+    readonly property color compassMetal: dark ? "#bcc6cf" : "#a8b2bd"
+    readonly property color compassMetalEdge: dark ? "#5d6b78" : "#647180"
+    readonly property color compassHighlight: "#e6edf3"
+    readonly property color compassGrip: dark ? "#435363" : "#46586b"
+    readonly property color compassPencil: dark ? "#75b6cc" : "#29859f"
     readonly property int toolbarHeight: 56
     readonly property int handleSize: 12
     readonly property int propertiesWidth: 280

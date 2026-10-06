@@ -19,7 +19,7 @@ QVariantList AppController::gridPresets() const {
 QVariantList AppController::pages() const {
     QVariantList result;
     for(int i=0;i<pageCount();++i){const auto& p=project_.pages[i];const auto id=QString::fromStdString(p.id);
-        result.append(QVariantMap{{"id",id},{"index",i},{"widthMm",p.size.widthMm},{"heightMm",p.size.heightMm},{"pdf",bool(p.pdf)},{"thumbnail",thumbnails_.value(id)}});
+        result.append(QVariantMap{{"id",id},{"index",i},{"widthMm",p.size.widthMm},{"heightMm",p.size.heightMm},{"pdf",bool(p.pdf)},{"infinite",p.size.infinite},{"thumbnail",thumbnails_.value(id)}});
     }return result;
 }
 void AppController::selectPage(int index){
@@ -32,9 +32,20 @@ void AppController::addPage(){
     Page blank;blank.id=newId();blank.size=page()->size;blank.background=page()->background;blank.backgroundStyle=page()->backgroundStyle;
     project_.pages.push_back(std::move(blank));selectPage(pageCount()-1);mutate();emit pagesChanged();
 }
+bool AppController::setPageSize(const QString& preset,double width,double height,bool landscape){
+    if(!page()||documentBusy())return false;
+    PageSize size=preset=="A4"?PageSize::a4():preset=="Carta"?PageSize::letter():PageSize{width,height};
+    if(preset=="Infinito"){size=current().size;size.infinite=true;}
+    if(!size.valid())return false;
+    if((landscape&&size.widthMm<size.heightMm)||(!landscape&&size.widthMm>size.heightMm))std::swap(size.widthMm,size.heightMm);
+    if(size.widthMm==pageWidth()&&size.heightMm==pageHeight()&&size.infinite==pageInfinite())return true;
+    if(current().pdf&&!current().pdf->size.valid())current().pdf->size=current().size;
+    history().resizePage(current(),size);mutate();emit pagesChanged();return true;
+}
 void AppController::duplicatePage(){
     if(!page()||loading_||imageImportPending_||textPending_||pdfPending_||pageCount()>=1000)return;
     auto copy=*page();copy.id=newId();
+    for(auto& stroke:copy.erasedInk){stroke.id=newId();stroke.properties.revision=0;}
     for(const auto& before:objects(copy)){
         auto after=before;const auto id=newId();if(std::holds_alternative<ImageObject>(after)||std::holds_alternative<TextObject>(after))aliasImage(objectId(before),id);
         std::visit([&](auto& object){object.id=id;object.properties.revision=0;},after);replaceObject(copy,objectId(before),after);
@@ -51,7 +62,7 @@ void AppController::importPdfPages(const QString& range){
     if(pdfPending_||loading_||pdfInfo_.sizes.empty())return;QString error;const auto selected=pdfPageRange(range,pdfPageCount(),error);
     if(!error.isEmpty()){pdfInfo_.error=error;emit changed();return;}
     if(pageCount()+int(selected.size())>1000){pdfInfo_.error="O projeto comporta até 1000 páginas.";emit changed();return;}
-    std::vector<Page> imported;for(int index:selected){Page p;p.id=newId();p.size=pdfInfo_.sizes[index];p.pdf=PdfPageObject{pdfInfo_.assetId,pdfInfo_.data,index,pdfPageCount()};imported.push_back(std::move(p));}
+    std::vector<Page> imported;for(int index:selected){Page p;p.id=newId();p.size=pdfInfo_.sizes[index];p.pdf=PdfPageObject{pdfInfo_.assetId,pdfInfo_.data,index,pdfPageCount(),p.size};imported.push_back(std::move(p));}
     const bool fresh=!active();const int first=pageCount();
     if(fresh){Project p;p.id=newId();p.name=pdfInfo_.name.toStdString();if(p.name.empty())p.name="PDF importado";p.createdAt=p.updatedAt=QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs).toStdString();p.pages=std::move(imported);const auto path=dataDir_+"/projects/"+QString::fromStdString(p.id)+".board";install(std::move(p),path);}
     else {for(auto& p:imported){dirtyThumbnails_.insert(QString::fromStdString(p.id));project_.pages.push_back(std::move(p));}selectPage(first);}

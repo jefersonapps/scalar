@@ -92,13 +92,19 @@ PointerSample interpolate(const PointerSample& a,const PointerSample& b,double t
 
 }
 }
-std::vector<StrokeObject> eraseStroke(const StrokeObject& stroke,Point from,Point to,double radius,std::span<const std::array<Point,4>> protectedAreas){
-    if(stroke.samples.empty()||radius<=0)return {stroke};
+static std::vector<StrokeObject> splitStroke(const StrokeObject& stroke,Point from,Point to,double radius,std::span<const std::array<Point,4>> protectedAreas,bool keepInside){
+    if(stroke.samples.empty()||radius<=0)return keepInside?std::vector<StrokeObject>{}:std::vector<StrokeObject>{stroke};
     radius+=stroke.style.maxWidthMm/2;
+    double left=stroke.samples.front().position.x,right=left,top=stroke.samples.front().position.y,bottom=top;
+    for(const auto& sample:stroke.samples){left=std::min(left,sample.position.x);right=std::max(right,sample.position.x);top=std::min(top,sample.position.y);bottom=std::max(bottom,sample.position.y);}
+    if(right<std::min(from.x,to.x)-radius||left>std::max(from.x,to.x)+radius||bottom<std::min(from.y,to.y)-radius||top>std::max(from.y,to.y)+radius)
+        return keepInside?std::vector<StrokeObject>{}:std::vector<StrokeObject>{stroke};
 
     if(stroke.samples.size()==1){
-        for(const auto& area:protectedAreas){auto image=ImageObject{};image.corners.assign(area.begin(),area.end());if(hitTest(image,stroke.samples[0].position,0))return {stroke};}
-        return distanceToSegment(stroke.samples[0].position,from,to)<=radius?std::vector<StrokeObject>{}:std::vector<StrokeObject>{stroke};
+        bool inside=distanceToSegment(stroke.samples[0].position,from,to)<=radius;
+        for(const auto& area:protectedAreas){auto image=ImageObject{};image.corners.assign(area.begin(),area.end());if(hitTest(image,stroke.samples[0].position,0))inside=false;}
+        if(inside!=keepInside)return {};
+        auto dot=stroke;if(keepInside)dot.id=newId();return {dot};
     }
 
     std::vector<StrokeObject> result;
@@ -114,7 +120,8 @@ std::vector<StrokeObject> eraseStroke(const StrokeObject& stroke,Point from,Poin
 
     for(std::size_t i=1;i<stroke.samples.size();++i){const auto& a=stroke.samples[i-1];
         const auto& b=stroke.samples[i];
-        const auto cuts=subtractProtected(intersections(a.position,b.position,from,to,radius),a.position,b.position,protectedAreas);
+        auto cuts=subtractProtected(intersections(a.position,b.position,from,to,radius),a.position,b.position,protectedAreas);
+        if(keepInside){std::vector<Interval> complement;double position=0;for(auto [lo,hi]:cuts){if(lo>position)complement.emplace_back(position,lo);position=hi;}if(position<1)complement.emplace_back(position,1);cuts=std::move(complement);}
 
         double cursor=0;
 
@@ -132,7 +139,9 @@ std::vector<StrokeObject> eraseStroke(const StrokeObject& stroke,Point from,Poin
 
     }
     finish();
-    return changed?result:std::vector<StrokeObject>{stroke};
+    return (keepInside||changed)?result:std::vector<StrokeObject>{stroke};
 
 }
+std::vector<StrokeObject> eraseStroke(const StrokeObject& stroke,Point from,Point to,double radius,std::span<const std::array<Point,4>> protectedAreas){return splitStroke(stroke,from,to,radius,protectedAreas,false);}
+std::vector<StrokeObject> inkInsideEraser(const StrokeObject& stroke,Point from,Point to,double radius,std::span<const std::array<Point,4>> protectedAreas){return splitStroke(stroke,from,to,radius,protectedAreas,true);}
 }

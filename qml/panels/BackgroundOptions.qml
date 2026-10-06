@@ -11,6 +11,14 @@ C.GlassPopover {
     property string colorTarget: "color"
     C.CustomColorDialog { id: customColor; onChosen: value => root.change(root.colorTarget,value.toString()); onPreviewed: value => root.change(root.colorTarget,value.toString()) }
     property var draft: ({})
+    signal pageSizeChanged()
+    function applyPageSize(landscape) {
+        if(pagePreset.currentIndex===2 && (!pageWidth.acceptableInput || !pageHeight.acceptableInput))return
+        if(App.setPageSize(pagePreset.currentText,Number(pageWidth.text),Number(pageHeight.text),landscape)){
+            pageWidth.text=App.pageWidth.toFixed(2);pageHeight.text=App.pageHeight.toFixed(2)
+            root.pageSizeChanged()
+        }
+    }
     function change(key, value) { const next = Object.assign({}, draft); next[key] = value; draft = next; applyLive() }
     function applyLive() { if(App.validBackground(draft)) App.setBackground(draft) }
     function chooseGrid(index) {
@@ -19,19 +27,48 @@ C.GlassPopover {
         draft = Object.assign({},draft,{gridType:preset.gridType,spacingX:preset.spacingX,spacingY:preset.spacingY})
         applyLive()
     }
-    onOpened: draft = Object.assign({}, App.background)
+    onOpened: {
+        draft=Object.assign({},App.background)
+        const w=Math.min(App.pageWidth,App.pageHeight),h=Math.max(App.pageWidth,App.pageHeight)
+        pagePreset.currentIndex=App.pageInfinite ? 3 : Math.abs(w-210)<0.01 && Math.abs(h-297)<0.01 ? 0 : Math.abs(w-215.9)<0.01 && Math.abs(h-279.4)<0.01 ? 1 : 2
+        pageWidth.text=App.pageWidth.toFixed(2);pageHeight.text=App.pageHeight.toFixed(2)
+    }
     contentItem: ScrollView {
         id: backgroundScroll
         contentWidth: availableWidth
         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
         implicitWidth: Theme.propertiesWidth
-        implicitHeight: Math.min(form.implicitHeight,root.parent.height-Theme.topbarHeight-Theme.xxl)
+        implicitHeight: Math.min(form.implicitHeight,root.parent.height-root.y-root.topPadding-root.bottomPadding-Theme.lg)
         clip: true
         ColumnLayout {
         id: form
         width: backgroundScroll.availableWidth
         spacing: Theme.sm
         Text { text: "Fundo e grade"; color: Theme.text; font.pixelSize: Theme.body; font.weight: Font.DemiBold }
+        Text { text: "Tamanho da página atual";color: Theme.secondary;font.pixelSize: Theme.caption }
+        C.SelectField {
+            id: pagePreset;objectName: "currentPageSizeSelector"
+            Layout.fillWidth: true;model: ["A4","Carta","Personalizado","Infinito"]
+            onActivated: index => { if(index!==2)root.applyPageSize(App.pageWidth>App.pageHeight) }
+        }
+        RowLayout {
+            visible: pagePreset.currentIndex===2
+            C.Field { id: pageWidth;objectName: "currentPageWidthField";Layout.fillWidth: true;placeholderText: "Largura (mm)";validator: DoubleValidator { bottom: 10;top: 5000;locale: "C";decimals: 2 } onAccepted: root.applyPageSize(App.pageWidth>App.pageHeight) }
+            Text { text: "×";color: Theme.secondary }
+            C.Field { id: pageHeight;objectName: "currentPageHeightField";Layout.fillWidth: true;placeholderText: "Altura (mm)";validator: DoubleValidator { bottom: 10;top: 5000;locale: "C";decimals: 2 } onAccepted: root.applyPageSize(App.pageWidth>App.pageHeight) }
+            Text { text: "mm";color: Theme.secondary;font.pixelSize: Theme.caption }
+        }
+        C.ActionButton { visible: pagePreset.currentIndex===2;text: "Aplicar tamanho";iconName: "page";Layout.fillWidth: true;enabled: pageWidth.acceptableInput && pageHeight.acceptableInput && !App.documentBusy;onClicked: root.applyPageSize(App.pageWidth>App.pageHeight) }
+        C.SegmentedControl {
+            objectName: "currentPageOrientation"
+            visible: !App.pageInfinite
+            Layout.fillWidth: true;options: ["Retrato","Paisagem"]
+            currentIndex: App.pageWidth>App.pageHeight ? 1 : 0
+            onSelected: index => root.applyPageSize(index===1)
+        }
+        Text { Layout.fillWidth: true;wrapMode: Text.WordWrap;text: App.pageInfinite ? "Espaço ilimitado · PDF ajustado ao conteúdo" : App.pageWidth.toFixed(1)+" × "+App.pageHeight.toFixed(1)+" mm";color: Theme.secondary;font.pixelSize: Theme.caption }
+        Rectangle { Layout.fillWidth: true;height: Theme.hairline;color: Theme.border;Layout.topMargin: Theme.sm;Layout.bottomMargin: Theme.sm }
+        Text { text: "Grade";color: Theme.secondary;font.pixelSize: Theme.caption }
         C.SelectField {
             objectName: "gridPresetSelector"
             Layout.fillWidth: true; model: App.gridPresets.map(p => p.name).concat(["Personalizado"])
@@ -39,7 +76,7 @@ C.GlassPopover {
                 const index = App.gridPresets.findIndex(p => p.gridType === root.draft.gridType && p.spacingX === root.draft.spacingX && p.spacingY === root.draft.spacingY)
                 return index < 0 ? App.gridPresets.length : index
             }
-            onActivated: root.chooseGrid(index)
+            onActivated: index => root.chooseGrid(index)
         }
         Text { text: "Cor do fundo"; color: Theme.secondary; font.pixelSize: Theme.caption }
         Flow {
@@ -55,7 +92,7 @@ C.GlassPopover {
         }
         C.SelectField {
             Layout.fillWidth: true; model: ["Sem grade", "Pautado", "Quadriculado", "Pontilhado", "Milimetrado", "Isométrico"]
-            currentIndex: root.draft.gridType || 0; onActivated: root.change("gridType",index)
+            currentIndex: root.draft.gridType || 0; onActivated: index => root.change("gridType",index)
         }
         RowLayout {
             visible: root.draft.gridType > 0

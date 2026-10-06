@@ -9,11 +9,32 @@
 #include <QPainterPath>
 #include <QRegularExpression>
 #include <QXmlStreamReader>
+#include <QTextBoundaryFinder>
+#include <QFontDatabase>
+static void initializeTextFontResources(){Q_INIT_RESOURCE(text_fonts);}
 namespace scalar {
+void registerTextFonts(){
+    static const bool registered=[]{
+        initializeTextFontResources();
+        for(const auto* name:{"Regular","Italic","Bold"})QFontDatabase::addApplicationFont(QString(":/assets/fonts/LobsterTwo-%1.otf").arg(name));
+        return true;
+    }();
+    (void)registered;
+}
+QFont documentFont(const QString& family,int pixelSize,bool bold,bool italic){
+    QFont result(family);
+    result.setPixelSize(std::max(1,pixelSize));result.setBold(bold);result.setItalic(italic);
+#ifdef Q_OS_LINUX
+    // Qt 6's fontconfig fallback can dereference an invalid charset for some
+    // installed fonts. Keep explicitly chosen fonts on their own glyph engine.
+    result.setStyleStrategy(QFont::NoFontMerging);
+#endif
+    return result;
+}
 namespace {
 constexpr double baseScale=96./25.4;
 QColor textColor(const TextObject& t){const auto c=t.style.rgba;return QColor((c>>24)&255,(c>>16)&255,(c>>8)&255,c&255);}
-QFont font(const TextObject& t,double scale){QFont f(QString::fromStdString(t.fontFamily));f.setPixelSize(std::max(1,int(std::round(t.fontSizePt*25.4/72*scale))));f.setBold(t.bold);f.setItalic(t.italic);return f;}
+QFont font(const TextObject& t,double scale){return documentFont(QString::fromStdString(t.fontFamily),int(std::round(t.fontSizePt*25.4/72*scale)),t.bold,t.italic);}
 QImage svgBitmap(const std::string& svg,QSize size,QColor color){
     const auto mesh=svgMathMesh(svg);if(!mesh.error.isEmpty())return {};
     QXmlStreamReader xml(QString::fromStdString(svg));double width=1,height=1;
@@ -24,24 +45,51 @@ QImage svgBitmap(const std::string& svg,QSize size,QColor color){
     for(std::size_t i=0;i+2<mesh.vertices.size();i+=3){const auto a=mesh.vertices[i],b=mesh.vertices[i+1],c=mesh.vertices[i+2];triangles.moveTo(a.x,a.y);triangles.lineTo(b.x,b.y);triangles.lineTo(c.x,c.y);triangles.closeSubpath();}
     painter.fillPath(triangles,color);return image;
 }
-struct Run {QString text;const MathFragment* math=nullptr;double x=0,y=0,width=0,height=0;};
+struct Run {QString text;const MathFragment* math=nullptr;double x=0,y=0,width=0,height=0;bool bold=false,italic=false;};
 struct Layout {std::vector<Run> runs;double width=0,height=0;};
 Layout layout(const TextObject& t){
-    const auto f=font(t,baseScale);const QFontMetricsF metrics(f);const double em=f.pixelSize(),lineHeight=metrics.height()*1.25,maxWidth=std::max(120.,80*baseScale);
+    const auto f=font(t,baseScale);const QFontMetricsF metrics(f);const double em=f.pixelSize(),lineHeight=metrics.height()*1.25,maxWidth=t.boxWidthMm>0?std::max(1.,t.boxWidthMm*baseScale-4):std::max(120.,80*baseScale);
     Layout out;double x=0,y=0,h=lineHeight;std::size_t start=0;
     auto newline=[&]{out.width=std::max(out.width,x);x=0;y+=h;h=lineHeight;};
-    auto add=[&](QString word,const MathFragment* math){
-        const double w=math?math->widthEm*em:metrics.horizontalAdvance(word),height=math?math->heightEm*em:lineHeight;
+    auto add=[&](QString word,const MathFragment* math,bool bold,bool italic){
+        auto runFont=f;runFont.setBold(bold);runFont.setItalic(italic);const QFontMetricsF runMetrics(runFont);
+        const double w=math?math->widthEm*em:runMetrics.horizontalAdvance(word),height=math?math->heightEm*em:runMetrics.height()*1.25;
         if(math&&math->display&&x>0)newline();
         if(x>0&&x+w>maxWidth)newline();
-        out.runs.push_back({word,math,x,y,w,height});x+=w;h=std::max(h,height);
+        out.runs.push_back({word,math,x,y,w,height,bold,italic});x+=w;h=std::max(h,height);
         if(math&&math->display)newline();
     };
-    auto plain=[&](std::string value){const auto text=QString::fromStdString(value);const auto pieces=text.split(QRegularExpression("(?<=\\s)|(?=\\n)"));
-        for(const auto& word:pieces){if(word.contains('\n')){auto parts=word.split('\n');for(int i=0;i<parts.size();++i){if(!parts[i].isEmpty())add(parts[i],nullptr);if(i+1<parts.size())newline();}}else if(!word.isEmpty())add(word,nullptr);}
+    auto wordRun=[&](const QString& word,bool bold,bool italic){
+        auto runFont=f;runFont.setBold(bold);runFont.setItalic(italic);const QFontMetricsF runMetrics(runFont);
+        if(t.boxWidthMm<=0||runMetrics.horizontalAdvance(word)<=maxWidth){add(word,nullptr,bold,italic);return;}
+        // Wrap long words at grapheme boundaries, preserving accents and emoji.
+        QTextBoundaryFinder finder(QTextBoundaryFinder::Grapheme,word);QString chunk;int start=0;
+        for(int end=finder.toNextBoundary();end>=0;end=finder.toNextBoundary()){
+            const auto grapheme=word.mid(start,end-start);start=end;
+            if(!chunk.isEmpty()&&runMetrics.horizontalAdvance(chunk+grapheme)>maxWidth){add(chunk,nullptr,bold,italic);chunk.clear();}
+            chunk+=grapheme;
+        }
+        if(!chunk.isEmpty())add(chunk,nullptr,bold,italic);
     };
-    for(const auto& m:t.math){plain(t.source.substr(start,m.start-start));add({},&m);start=m.start+m.length;}plain(t.source.substr(start));
+    auto styleAt=[&](std::size_t position){
+        const auto it=std::upper_bound(t.formats.begin(),t.formats.end(),position,[](std::size_t p,const TextFormat& f){return p<f.start;});
+        if(it!=t.formats.begin()){const auto& format=*std::prev(it);if(position<format.start+format.length)return std::pair{format.bold,format.italic};}
+        return std::pair{t.bold,t.italic};
+    };
+    auto styledWord=[&](const QString& word,std::size_t position){
+        for(qsizetype first=0;first<word.size();){auto last=first+1;const auto style=styleAt(position+first);
+            while(last<word.size()&&styleAt(position+last)==style)++last;
+            wordRun(word.mid(first,last-first),style.first,style.second);first=last;
+        }
+    };
+    auto plain=[&](std::string value,std::size_t byteStart){const auto text=QString::fromStdString(value);const auto pieces=text.split(QRegularExpression("(?<=\\s)|(?=\\n)"));
+        std::size_t position=QString::fromStdString(t.source.substr(0,byteStart)).size();
+        for(const auto& word:pieces){if(word.contains('\n')){auto parts=word.split('\n');for(int i=0;i<parts.size();++i){if(!parts[i].isEmpty())styledWord(parts[i],position);position+=parts[i].size();if(i+1<parts.size()){newline();++position;}}}else if(!word.isEmpty()){styledWord(word,position);position+=word.size();}}
+    };
+    for(const auto& m:t.math){plain(t.source.substr(start,m.start-start),start);add({},&m,t.bold,t.italic);start=m.start+m.length;}plain(t.source.substr(start),start);
     out.width=std::max(1.,std::max(out.width,x));out.height=std::max(lineHeight,y+h);
+    if(t.boxWidthMm>0)out.width=std::max(out.width,t.boxWidthMm*baseScale-4);
+    if(t.boxHeightMm>0)out.height=std::max(out.height,t.boxHeightMm*baseScale-4);
     if(t.alignment){std::map<double,double> right;for(const auto& run:out.runs)right[run.y]=std::max(right[run.y],run.x+run.width);for(auto& run:out.runs)run.x+=(out.width-right[run.y])*(t.alignment==1?.5:1.);}
     return out;
 }
@@ -50,9 +98,8 @@ bool svgRenderingAvailable(){return true;}
 QString paintVectorText(QPainter& painter,const TextObject& t){
     const auto l=layout(t);const double em=font(t,baseScale).pixelSize();
     painter.save();painter.scale(1/baseScale,1/baseScale);painter.translate(2,2);painter.setFont(font(t,baseScale));painter.setPen(textColor(t));
-    const QFontMetricsF metrics(painter.font());
     for(const auto& run:l.runs){
-        if(!run.math){painter.drawText(QPointF(run.x,run.y+metrics.ascent()),run.text);continue;}
+        if(!run.math){auto runFont=painter.font();runFont.setBold(run.bold);runFont.setItalic(run.italic);painter.setFont(runFont);painter.drawText(QPointF(run.x,run.y+QFontMetricsF(runFont).ascent()),run.text);continue;}
         const auto mesh=svgMathMesh(run.math->svg);if(!mesh.error.isEmpty()){painter.restore();return mesh.error;}
         QPainterPath path;path.setFillRule(Qt::WindingFill);
         for(std::size_t i=0;i+2<mesh.vertices.size();i+=3){const auto a=mesh.vertices[i],b=mesh.vertices[i+1],c=mesh.vertices[i+2];path.moveTo(run.x+a.x*em,run.y+a.y*em);path.lineTo(run.x+b.x*em,run.y+b.y*em);path.lineTo(run.x+c.x*em,run.y+c.y*em);path.closeSubpath();}
@@ -64,8 +111,7 @@ static QImage renderBitmap(const TextObject& t,double scale,bool includeMath){
     const auto l=layout(t);const double ratio=std::min(scale/baseScale,4096./std::max(l.width+4,l.height+4));
     QImage image(std::max(1,int(std::ceil((l.width+4)*ratio))),std::max(1,int(std::ceil((l.height+4)*ratio))),QImage::Format_ARGB32_Premultiplied);image.fill(Qt::transparent);
     QPainter p(&image);p.setRenderHint(QPainter::Antialiasing);p.setRenderHint(QPainter::TextAntialiasing);p.setRenderHint(QPainter::SmoothPixmapTransform);p.scale(ratio,ratio);p.translate(2,2);p.setFont(font(t,baseScale));p.setPen(textColor(t));
-    const QFontMetricsF metrics(p.font());
-    for(const auto& run:l.runs){if(run.math){if(!includeMath)continue;const auto bitmap=svgBitmap(run.math->svg,QSize(std::max(1,int(run.width*ratio)),std::max(1,int(run.height*ratio))),textColor(t));p.drawImage(QRectF(run.x,run.y,run.width,run.height),bitmap);}else p.drawText(QPointF(run.x,run.y+metrics.ascent()),run.text);}
+    for(const auto& run:l.runs){if(run.math){if(!includeMath)continue;const auto bitmap=svgBitmap(run.math->svg,QSize(std::max(1,int(run.width*ratio)),std::max(1,int(run.height*ratio))),textColor(t));p.drawImage(QRectF(run.x,run.y,run.width,run.height),bitmap);}else {auto runFont=p.font();runFont.setBold(run.bold);runFont.setItalic(run.italic);p.setFont(runFont);p.drawText(QPointF(run.x,run.y+QFontMetricsF(runFont).ascent()),run.text);}}
     return image;
 }
 QImage textBitmap(const TextObject& t,double scale){return renderBitmap(t,scale,true);}

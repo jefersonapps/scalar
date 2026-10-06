@@ -7,7 +7,6 @@ C.GlassPopover {
     id: root
     objectName: "pagesPanel"
     width: Math.min(Theme.pagesPanelWidth,parent.width-Theme.xxl)
-    signal importPdfRequested()
     contentItem: ColumnLayout {
         spacing: Theme.md
         RowLayout {
@@ -23,15 +22,14 @@ C.GlassPopover {
                 required property var modelData
                 objectName: "pageThumbnail_" + modelData.index
                 width: grid.cellWidth-Theme.sm; height: Theme.pageTileHeight
-                pageData: modelData; selected: modelData.index === App.currentPage; enabled: !App.busy
+                pageData: modelData; selected: modelData.index === App.currentPage; enabled: !App.documentBusy
                 onClicked: App.selectPage(modelData.index)
             }
             ScrollBar.vertical: ScrollBar {}
         }
         RowLayout {
-            C.ActionButton { objectName: "addPageButton"; text: "Nova página"; Layout.fillWidth: true; enabled: !App.busy && App.pageCount < 1000; onClicked: App.addPage() }
-            C.IconButton { iconName: "duplicate"; label: "Duplicar página atual"; enabled: !App.busy && App.pageCount < 1000; onClicked: App.duplicatePage() }
+            C.ActionButton { objectName: "addPageButton"; text: "Nova página"; iconName: "pageAdd"; Layout.fillWidth: true; enabled: !App.documentBusy && App.pageCount < 1000; onClicked: App.addPage() }
+            C.ActionButton { text: "Duplicar"; iconName: "duplicate"; enabled: !App.documentBusy && App.pageCount < 1000; onClicked: App.duplicatePage() }
         }
-        C.ActionButton { objectName: "importPdfButton"; text: "Importar PDF"; Layout.fillWidth: true; enabled: !App.busy; onClicked: { root.close(); root.importPdfRequested() } }
     }
 }

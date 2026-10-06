@@ -14,6 +14,10 @@ int main(){try{
     check(eraseStroke(stroke,{20,0},{20,20},1).size()==2,"swept crossing missed");
     check(eraseStroke(stroke,{0,100},{100,100},2)[0].id==stroke.id,"unrelated stroke changed");
     check(eraseStroke(stroke,{0,10},{100,10},2).empty(),"full coverage");
+    const auto recoverable=inkInsideEraser(stroke,{50,10},{50,10},2);
+    check(recoverable.size()==1&&recoverable[0].samples.front().position==split[0].samples.back().position&&recoverable[0].samples.back().position==split[1].samples.front().position,"recoverable ink does not match removed interval");
+    check(inkInsideEraser(stroke,{50,100},{50,100},2).empty(),"restore invents distant ink");
+    check(recoverable[0].samples.front().pressure==split[0].samples.back().pressure,"restoration loses pressure");
     const std::array<Point,4> shield{{{40,0},{60,0},{60,20},{40,20}}};
     const std::vector<std::array<Point,4>> shields{shield};
     const auto protectedSplit=eraseStroke(stroke,{0,10},{100,10},2,shields);

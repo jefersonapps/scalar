@@ -1,6 +1,6 @@
 # Design System — Scalar
 
-Fonte de verdade: `qml/theme/Theme.qml`. Tokens semânticos separam interface e página. Fontes são as fontes de sistema do Qt, sem assets proprietários.
+Fonte de verdade: `qml/theme/Theme.qml`. Tokens semânticos separam interface e página. A interface usa a fonte do sistema do Qt. O texto do quadro usa Lobster Two como padrão, embutida com licença SIL OFL para garantir acentos e funcionamento offline.
 
 | Token | Light | Dark |
 |---|---|---|
@@ -48,7 +48,7 @@ Propriedades da forma distinguem “Cor do contorno”, “Cor do preenchimento�
 
 BackgroundOptions reúne preset, paleta de nove fundos, hexadecimal, CustomColorDialog com HSV e preview, tipo de grade, cor/espessura/espaçamento/opacidade. O formulário tem largura vinculada ao viewport, Flow quebra a paleta em linhas e ScrollView tem apenas rolagem vertical. Paletas claras usam check escuro para contraste.
 
-TextDialog reutiliza ModernDialog/Field/ActionButton/ColorPicker/SelectField para fonte, tamanho, negrito, itálico, alinhamento e código LaTeX. Entrada de canvas e atalhos ficam suspensos durante edição/modal. Tema não muda a página.
+InlineTextEditor permite desenhar a caixa e escrever diretamente no canvas, com margens locais que acompanham o zoom. Um botão de formatação no canto superior esquerdo abre TextDialog, que reutiliza ModernDialog/Field/ActionButton/ColorPicker/SelectField para fontes do sistema, tamanho, alinhamento e cor personalizada. Negrito e itálico ficam acima da caixa e atuam sobre o trecho selecionado; Ctrl+B/Ctrl+I oferecem a mesma ação. FontSelector reúne variantes da mesma família, oculta sufixos técnicos de fornecedor na interface e preserva o identificador real no documento. A lista abre no início, inclui busca, contagem, nome na própria fonte e identificação legível na fonte da interface. Os delegates são reutilizados com cache pequeno; a roda do mouse, trackpad e barra vertical navegam a lista. Clique fora e Esc fecham o seletor. No Qt 6.4, o modal de formatação cede a captura de entrada ao seletor para não interceptar sua rolagem. O código LaTeX é editado na própria caixa. Clique fora ou Ctrl+Enter conclui; Esc cancela. Entrada de desenho e atalhos de ferramentas ficam suspensos enquanto se escreve. Tema não muda a página.
 
 ProjectCard inclui ação acessível de lixeira. DeleteProjectDialog informa nome, caminho e retenção/irreversibilidade antes de confirmar; TrashDialog apresenta expiração, restaurar e excluir. Superfícies, margens, duração, typography e touch targets usam Theme, incluindo estados disabled/pressed/checked.
 
@@ -61,3 +61,23 @@ PageThumbnail usa miniatura, número, tamanho físico e indicação PDF; a pági
 Cor do fundo é um controle separado do preset de grade, inclusive na criação. O padrão inicial é branco no tema claro e preto no escuro; o documento aberto conserva sua cor. A seleção de grade preserva cor de fundo, cor da grade, opacidade e espessura. Capturas offscreen da M4 validam alinhamento, dimensões e textura PDF; não comprovam qualidade dos meshes no backend GPU.
 
 PageNavigator mantém setas e contador sempre acessíveis no cabeçalho, com limites desabilitados e targets de 44 px. Clicar no contador abre PagesPanel. O canvas começa abaixo dos controles; sua exclusão de input cobre somente a toolbar inferior. Em larguras abaixo do token navigationInlineBreakpoint, o navegador ocupa uma segunda linha superior. Na janela estreita, o botão de miniaturas do topo fica oculto, pois o contador já oferece acesso; exportação PDF permanece visível. `build/screenshots/quick-pages-dark-small.png` documenta o layout em 520 × 640; `quick-pages-dark-top.png` mostra o cabeçalho largo.
+
+## Componentes do ciclo 5
+
+RulerGuide usa guideSurface, guideInk e guideHandle nos temas claro/escuro: superfície translúcida com divisões mm/cm, comprimento e ângulo. CompassGuide usa compassMetal, compassMetalEdge, compassHighlight, compassGrip e compassPencil para duas hastes com gradiente discreto, dobradiça, ponta seca e lápis. A área interior permanece aberta. A haste azul indica ajuste de abertura; a ponta desenha. Áreas de captura são calculadas em pixels lógicos, independente do zoom. Os guias não recebem blur nem alteram o fundo.
+
+GeometryOptions reutiliza GlassPopover, campos e sliders. O conteúdo rola verticalmente quando a janela é pequena. A toolbar mantém targets de 44 px e permite rolagem horizontal quando as ferramentas excedem a largura disponível. Construções aparecem somente nas propriedades de linhas e triângulos selecionados. Ícones de régua, compasso e rotação seguem os paths lineares com caps arredondados existentes.
+
+ModernCheckBox apresenta indicador arredondado, check vetorial, borda neutra e label em Theme.text. O snap da régua usa este componente, com target de 44 px e estados de hover/foco/disabled próprios do tema.
+
+Home: conteúdo centralizado com largura máxima homeContentWidth, painel de criação com ilustração geométrica vetorial e três atalhos em cards. Projetos recentes mantêm miniaturas, data e acesso à lixeira, com contagem na seção. Altura do painel e espaçamentos se adaptam à janela; em dimensões compactas, textos secundários e ilustração cedem espaço aos projetos. Tokens homeHeroHeight/homeHeroMediumHeight/homeHeroCompactHeight/homeActionHeight centralizam as medidas.
+
+Seleção de ferramenta usa selectionBorder e selectionSurface neutros, preservando destaque de ícone e fundo. A área de rolagem da toolbar tem margem vertical xs e horizontal sm, garantindo altura suficiente para botões de 44 px e suas bordas sem corte.
+
+Marca no cabeçalho: Scalar. Azul primário: #087caa em ambos os temas, com texto branco em ações primárias e superfícies accentSoft correspondentes. A paleta folderColors contém cinco matizes; FolderCard usa ícone na cor escolhida, tint suave e destaque no alvo de drop. FolderDialog reutiliza campos e ColorPicker para nome/cor. Pastas ficam numa faixa horizontal rolável; ao abrir uma pasta, o painel de criação cede espaço à organização. Em janelas pequenas com pastas, a Home prioriza a lista de quadros. Arraste apresenta um preview no overlay, sem deslocar os cards do grid.
+
+Quadros sem pasta aparecem diretamente na Home, sem uma pasta virtual. O botão Nova pasta usa ícone de pasta e espaçamento lg em relação à contagem. Dentro de uma pasta, arrastar um quadro para o botão Voltar o move para a pasta pai ou para a Home se não houver pasta pai.
+
+A logo usa icon.png incorporado aos recursos. Branding aplica cantos arredondados com transparência em tempo de execução à logo da Home e ao ícone da janela, mantendo a imagem original. O ícone da janela fornece tamanhos de 16 a 512 px para a barra de tarefas e HiDPI.
+
+Biblioteca: barra lateral com Início, Recentes, Todos os quadros e árvore expansível de pastas em janelas a partir de hintBreakpoint, sem abas duplicadas no conteúdo. O painel de apresentação da Home ajusta sua altura ao conteúdo e mantém margens superiores e inferiores iguais. Busca global por nome tem ícone de lupa e ação para limpar. Cards usam ajustes para abrir EditProjectDialog; a exclusão fica no modal. No editor, o título permite edição em Field com Enter/clique fora para salvar e Esc para cancelar. O azul primário #087caa com texto branco é usado em ambos os temas para preservar contraste.

@@ -8,12 +8,21 @@ import "components" as C
 import "theme"
 ApplicationWindow {
     id: window
+    property string homeFolder: ""
+    property bool wasMaximized: false
+    function toggleFullScreen() {
+        if(visibility===Window.FullScreen){if(wasMaximized)showMaximized();else showNormal()}
+        else {wasMaximized=visibility===Window.Maximized;showFullScreen()}
+    }
     width: Theme.windowWidth; height: Theme.windowHeight
     minimumWidth: Theme.minimumWidth; minimumHeight: Theme.minimumHeight
     visible: true
     title: App.active ? App.projectName + " — Scalar" : "Scalar"
     color: Theme.background
-    onClosing: close => { close.accepted = App.shutdown() }
+    onClosing: close => {
+        if(App.active && pageLoader.item && !pageLoader.item.prepareToClose())close.accepted=false
+        else close.accepted=App.shutdown()
+    }
     Loader {
         id: pageLoader
         anchors.fill: parent
@@ -21,17 +30,26 @@ ApplicationWindow {
     }
     Component {
         id: home
-        HomePage { onCreateRequested: newProject.open(); onOpenRequested: openFile.open(); onImportPdfRequested: pdfFile.open(); onSettingsRequested: settings.open() }
+        HomePage {
+            initialFolder: window.homeFolder
+            onCreateRequested: { window.homeFolder=""; newProject.open() }
+            onProjectRequested: (path,folderId) => { window.homeFolder=folderId; App.openPath(path) }
+            onFolderProjectCreated: folderId => window.homeFolder=folderId
+            onOpenRequested: { window.homeFolder=""; openFile.open() }
+            onImportPdfRequested: pdfFile.open()
+            onSettingsRequested: settings.open()
+            onFullScreenRequested: window.toggleFullScreen()
+        }
     }
     Component {
         id: editor
-        EditorPage { overlaysOpen: settings.visible || saveFile.visible || openFile.visible || imageFile.visible || pdfFile.visible || exportFile.visible || pdfImport.visible || newProject.visible || recovery.visible; onSaveAsRequested: saveFile.open(); onImageRequested: imageFile.open(); onImportPdfRequested: pdfFile.open(); onExportPdfRequested: exportFile.open(); onSettingsRequested: settings.open() }
+        EditorPage { overlaysOpen: settings.visible || saveFile.visible || openFile.visible || imageFile.visible || pdfFile.visible || exportFile.visible || pdfImport.visible || newProject.visible || recovery.visible; onBackRequested: App.home(); onSaveAsRequested: saveFile.open(); onImageRequested: imageFile.open(); onImportPdfRequested: pdfFile.open(); onExportPdfRequested: exportFile.open(); onSettingsRequested: settings.open();onFullScreenRequested: window.toggleFullScreen() }
     }
     NewProjectDialog { id: newProject }
     SettingsDialog { id: settings }
     ImportPdfDialog { id: pdfImport }
     FileDialog { id: pdfFile; title: "Importar PDF"; nameFilters: ["PDF (*.pdf)"]; onAccepted: App.inspectPdfFile(selectedFile) }
-    FileDialog { id: openFile; title: "Abrir quadro"; nameFilters: ["Projetos Scalar (*.board)"]; onAccepted: App.open(selectedFile) }
+    FileDialog { id: openFile; title: "Abrir quadro"; nameFilters: ["Projetos Scalar (*.board)"]; onAccepted: { window.homeFolder=""; App.open(selectedFile) } }
     FileDialog { id: saveFile; title: "Salvar quadro como"; fileMode: FileDialog.SaveFile; defaultSuffix: "board"; nameFilters: ["Projetos Scalar (*.board)"]; onAccepted: App.saveAs(selectedFile) }
     FileDialog { id: exportFile; objectName: "exportPdfFileDialog"; title: "Exportar todas as páginas como PDF"; fileMode: FileDialog.SaveFile; defaultSuffix: "pdf"; nameFilters: ["PDF (*.pdf)"]; onAccepted: App.exportPdf(selectedFile) }
     FileDialog { id: imageFile; title: "Importar imagens"; fileMode: FileDialog.OpenFiles; nameFilters: ["Imagens (*.png *.jpg *.jpeg *.webp *.bmp *.svg)"]; onAccepted: { if(pageLoader.item) pageLoader.item.insertImages(selectedFiles) } }
@@ -49,4 +67,5 @@ ApplicationWindow {
     Component.onCompleted: { if(App.recoveryAvailable) recovery.open() }
     Shortcut { sequence: "Ctrl+O"; enabled: !settings.visible && !newProject.visible && !recovery.visible; onActivated: openFile.open() }
     Shortcut { sequence: "Ctrl+N"; enabled: !settings.visible && !newProject.visible && !recovery.visible; onActivated: newProject.open() }
+    Shortcut { sequence: "F11";onActivated: window.toggleFullScreen() }
 }

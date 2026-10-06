@@ -18,7 +18,7 @@ void PdfRenderCache::clear(){pending_.reset();desired_.clear();pageKey_.clear();
 void PdfRenderCache::request(const std::optional<PdfPageObject>& pdf,PageSize physical,double scale){
     if(!pdf){if(!desired_.isEmpty())clear();return;}
     const auto pageKey=QString::fromStdString(pdf->assetId)+":"+QString::number(pdf->pageIndex);
-    const auto size=pdfRenderSize(physical,scale);const auto key=pageKey+":"+QString::number(size.width())+"x"+QString::number(size.height());
+    const auto size=pdfRenderSize(pdf->size.valid()?pdf->size:physical,scale);const auto key=pageKey+":"+QString::number(size.width())+"x"+QString::number(size.height());
     if(key==desired_)return;
     if(pageKey!=pageKey_){image_={};++revision_;emit imageChanged();}
     pageKey_=pageKey;desired_=key;pending_.reset();

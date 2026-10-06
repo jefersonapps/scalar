@@ -18,9 +18,9 @@ AbstractButton {
     ToolTip.delay: Theme.tooltipDelay
     background: Rectangle {
         radius: Theme.radiusMedium
-        color: root.down ? Theme.pressed : root.selected ? Theme.accentSoft : root.hovered ? Theme.hover : "transparent"
+        color: root.down ? Theme.pressed : root.selected ? Theme.selectionSurface : root.hovered ? Theme.hover : "transparent"
         border.width: root.selected ? 1 : 0
-        border.color: Theme.accent
+        border.color: Theme.selectionBorder
         Behavior on color { ColorAnimation { duration: Theme.fast } }
     }
     contentItem: Icon {

@@ -10,7 +10,7 @@ Bounds CanvasItem::selectedBounds() const{
     auto b=bounds(selected[0]);for(const auto& o:selected){const auto r=bounds(o);b.left=std::min(b.left,r.left);b.right=std::max(b.right,r.right);b.top=std::min(b.top,r.top);b.bottom=std::max(b.bottom,r.bottom);}return b;
 }
 QRectF CanvasItem::selectionRect() const{
-    Bounds b;if(state_==State::Marquee)b={std::min(dragStart_.x,lastPan_.x),std::min(dragStart_.y,lastPan_.y),std::max(dragStart_.x,lastPan_.x),std::max(dragStart_.y,lastPan_.y)};else if(selectedCount())b=selectedBounds();else return {};
+    Bounds b;if(state_==State::Marquee||state_==State::CreatingText)b={std::min(dragStart_.x,lastPan_.x),std::min(dragStart_.y,lastPan_.y),std::max(dragStart_.x,lastPan_.x),std::max(dragStart_.y,lastPan_.y)};else if(selectedCount())b=selectedBounds();else return {};
     const auto a=view_.worldToScreen({b.left,b.top}),c=view_.worldToScreen({b.right,b.bottom});return {a.x,a.y,c.x-a.x,c.y-a.y};
 }
 QVariantList CanvasItem::selectionHandles() const{
@@ -31,6 +31,20 @@ double CanvasItem::selectedWidth() const{
     return std::visit([](const auto& s){if constexpr(std::is_same_v<std::decay_t<decltype(s)>,ImageObject>)return 0.85;else return s.style.maxWidthMm;},selected.front());
 }
 double CanvasItem::selectedFill() const{const auto selected=selectedObjects();if(selected.size()==1)if(const auto* s=std::get_if<ShapeObject>(&selected[0]))return s->fillOpacity;return 0;}
+int CanvasItem::selectedPattern() const{
+    int result=-1;for(const auto& object:selectedObjects()){
+        const int pattern=std::visit([](const auto& s){if constexpr(std::is_same_v<std::decay_t<decltype(s)>,StrokeObject>||std::is_same_v<std::decay_t<decltype(s)>,ShapeObject>)return int(s.style.pattern);else return -1;},object);
+        if(pattern<0||(result>=0&&result!=pattern))return -1;result=pattern;
+    }return result;
+}
+void CanvasItem::setSelectedPattern(int pattern){
+    if(!controller_||pattern<0||pattern>2)return;
+    std::vector<ObjectChange> changes;for(auto object:selectedObjects()){
+        auto before=object;bool changed=false;
+        std::visit([&](auto& s){if constexpr(std::is_same_v<std::decay_t<decltype(s)>,StrokeObject>||std::is_same_v<std::decay_t<decltype(s)>,ShapeObject>){if(int(s.style.pattern)!=pattern){s.style.pattern=LinePattern(pattern);++s.properties.revision;changed=true;}}},object);
+        if(changed)changes.push_back({before,object});
+    }controller_->changeObjects(std::move(changes),CommandKind::ChangeStyle);selectionUpdated();
+}
 QColor CanvasItem::selectedFillColor() const{
     const auto selected=selectedObjects();if(selected.size()==1)if(const auto* s=std::get_if<ShapeObject>(&selected[0]))return QColor::fromRgba((s->fillColor()>>8)|0xff000000);
     return {};
@@ -42,6 +56,8 @@ QColor CanvasItem::selectedBorderColor() const{
     },selected.front());return {};
 }
 QString CanvasItem::interactionHint() const{
+    if(state_==State::DrawingCompass)return compassComplete_?"Circunferência completa · solte para confirmar":"Compasso · gire a ponta para desenhar um arco";
+    if(drawing()&&guidedEdge_)return "Snap da régua · traço alinhado";
     if(state_==State::ShapePreview&&previewShape_)return QString::fromStdString(shapeName(previewShape_->kind))+" reconhecido"+(previewShape_->style.pattern==LinePattern::Dashed?" · tracejado":" · Shift para tracejado")+" · solte para confirmar";
     if(state_==State::CreatingShape)return "Arraste para definir a forma";
     return drawing()?"Escrevendo · segure para reconhecer uma forma":"";
@@ -81,6 +97,8 @@ void CanvasItem::commitSelection(){
 QString CanvasItem::selectedTextId() const {const auto selected=selectedObjects();if(selected.size()==1&&std::holds_alternative<TextObject>(selected[0]))return QString::fromStdString(objectId(selected[0]));return {};}
 void CanvasItem::editSelectedText(){const auto id=selectedTextId();if(!id.isEmpty())emit textRequested({},id);}
 void CanvasItem::deleteSelection(){
+    if(selectedGuide_=="compass"){setCompassVisible(false);selectedGuide_.clear();emit geometryToolsChanged();return;}
+    if(selectedGuide_=="ruler"){setRulerVisible(false);selectedGuide_.clear();emit geometryToolsChanged();return;}
     if(!controller_)return;std::vector<ObjectChange> changes;for(auto o:selectedObjects())changes.push_back({o,{}});selection_.clear();controller_->changeObjects(std::move(changes),CommandKind::DeleteObject);selectionUpdated();
 }
 void CanvasItem::duplicateSelection(){
@@ -88,9 +106,34 @@ void CanvasItem::duplicateSelection(){
     for(auto o:selected){o=transformed(o,{},{5,5});const auto id=newId();if(std::holds_alternative<ImageObject>(o)||std::holds_alternative<TextObject>(o))controller_->aliasImage(objectId(o),id);std::visit([&](auto& s){s.id=id;s.properties.zIndex=z++;},o);changes.push_back({{},o});selection_.select(id,true);}
     controller_->changeObjects(std::move(changes),CommandKind::AddObject);selectionUpdated();
 }
+void CanvasItem::moveSelectionLayer(bool forward){
+    if(!controller_||!controller_->page()||state_!=State::Idle||!selectedCount())return;
+    const auto before=objects(*controller_->page());auto ordered=before;bool moved=false;
+    // Move each selected block by one neighbor, preserving its internal order.
+    if(forward){
+        for(std::size_t i=ordered.size();i>1;--i)
+            if(selection_.contains(objectId(ordered[i-2]))&&!selection_.contains(objectId(ordered[i-1]))){std::swap(ordered[i-2],ordered[i-1]);moved=true;}
+    }else{
+        for(std::size_t i=1;i<ordered.size();++i)
+            if(selection_.contains(objectId(ordered[i]))&&!selection_.contains(objectId(ordered[i-1]))){std::swap(ordered[i],ordered[i-1]);moved=true;}
+    }
+    if(!moved)return;
+    std::vector<ObjectChange> changes;
+    for(std::size_t i=0;i<ordered.size();++i){
+        auto& object=ordered[i];auto& p=properties(object);
+        if(p.zIndex==static_cast<int>(i))continue;
+        const auto original=findObject(*controller_->page(),objectId(object));
+        p.zIndex=static_cast<int>(i);++p.revision;changes.push_back({original,object});
+    }
+    controller_->changeObjects(std::move(changes),CommandKind::ChangeLayer);selectionUpdated();
+}
 void CanvasItem::recognizeSelection(){
     const auto selected=selectedObjects();if(!controller_||selected.size()!=1||recognitionWatcher_.isRunning())return;
-    if(const auto* s=std::get_if<StrokeObject>(&selected[0])){current_=*s;requestEpoch_=++inputEpoch_;state_=State::Idle;const auto snapshot=*s;recognitionWatcher_.setFuture(QtConcurrent::run([snapshot]{return recognizeShape(snapshot);}));}
+    if(const auto* s=std::get_if<StrokeObject>(&selected[0])){
+        current_=*s;requestEpoch_=++inputEpoch_;state_=State::Idle;
+        const auto snapshot=*s;const auto page=controller_->page()?*controller_->page():Page{};
+        recognitionWatcher_.setFuture(QtConcurrent::run([snapshot,page]{return recognizeShape(snapshot,page);}));
+    }
 }
 void CanvasItem::setSelectedFill(double opacity){
     if(!controller_)return;std::vector<ObjectChange> changes;for(auto o:selectedObjects()){auto before=o;if(auto* s=std::get_if<ShapeObject>(&o)){s->fillOpacity=std::clamp(opacity,0.,1.);++s->properties.revision;changes.push_back({before,o});}}

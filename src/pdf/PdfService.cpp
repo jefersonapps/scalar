@@ -4,6 +4,7 @@
 #include <QBuffer>
 #include <QRegularExpression>
 #include <QSet>
+#include <QPainter>
 #ifdef SCALAR_HAVE_QT_PDF
 #include <QPdfDocument>
 #endif
@@ -58,7 +59,13 @@ QImage renderPdf(const PdfPageObject& page,QSize size,QString* error){
     QBuffer buffer;buffer.setData(QByteArray(reinterpret_cast<const char*>(page.data->data()),qsizetype(page.data->size())));buffer.open(QIODevice::ReadOnly);
     QPdfDocument document(nullptr);document.load(&buffer);
     if(document.status()!=QPdfDocument::Status::Ready||page.pageIndex<0||page.pageIndex>=document.pageCount()){if(error)*error="Não foi possível abrir a página PDF incorporada.";return {};}
-    auto bitmap=document.render(page.pageIndex,size);if(bitmap.isNull()&&error)*error="Não foi possível renderizar a página PDF.";return bitmap;
+    const auto bitmap=document.render(page.pageIndex,size);
+    if(bitmap.isNull()){if(error)*error="Não foi possível renderizar a página PDF.";return {};}
+    // PDF paper is white even when the document has no explicit background.
+    // Qt PDF returns transparent pixels there; flatten once in the cached render
+    // so changing the board color cannot reveal hidden white text or lose black ink.
+    QImage paper(bitmap.size(),QImage::Format_RGB32);paper.fill(Qt::white);
+    QPainter painter(&paper);painter.drawImage(0,0,bitmap);painter.end();return paper;
 #else
     if(error)*error="Este build não inclui o módulo Qt PDF.";return {};
 #endif

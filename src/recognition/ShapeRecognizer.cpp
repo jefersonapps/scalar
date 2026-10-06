@@ -88,7 +88,7 @@ std::vector<Point> simplifyRdp(const std::vector<Point>& p,double epsilon){
     return result;
 
 }
-static RecognitionResult recognizeConfidentShape(const StrokeObject& stroke){
+static RecognitionResult recognizeConfidentShape(const StrokeObject& stroke,bool allowClosedSectors=true,bool contextualArc=false){
     if(stroke.samples.size()<4)return {};
 
     std::vector<Point> raw;
@@ -106,6 +106,49 @@ static RecognitionResult recognizeConfidentShape(const StrokeObject& stroke){
     shape.properties=stroke.properties;
     shape.properties.revision++;
 
+    // Angle marks are open circular arcs: require a constant radius, one turn
+    // direction and distributed curvature, rather than a bent line or an S curve.
+    if(chord>=3&&len/chord>1.005&&len/chord<2.0){
+        Point mean;for(auto v:p)mean=mean+v;mean=mean*(1./p.size());
+        if(const auto fitted=circleCenter(p,mean)){
+            const auto middle=(p.front()+p.back())*.5,delta=p.back()-p.front();
+            const Point normal{-delta.y/chord,delta.x/chord};
+            const auto offset=*fitted-middle;
+            const auto center=middle+normal*(offset.x*normal.x+offset.y*normal.y);
+            const double radius=length(p.front()-center);
+            double error=0,maxError=0,sweep=0,backtracking=0;
+            double previous=std::atan2(p.front().y-center.y,p.front().x-center.x);
+            for(auto v:p){
+                const double residual=std::abs(length(v-center)-radius)/std::max(radius,1e-9);
+                error+=residual*residual;maxError=std::max(maxError,residual);
+                const double angle=std::atan2(v.y-center.y,v.x-center.x);
+                const double step=std::remainder(angle-previous,2*std::numbers::pi);
+                sweep+=step;backtracking+=std::abs(step);previous=angle;
+            }
+            error=std::sqrt(error/p.size());
+            bool smooth=true;int curvedParts=0,parts=0;
+            // Reject corners and curves with a long straight tail.
+            for(std::size_t i=64;i+64<p.size();i+=64){
+                const auto a=p[i]-p[i-64],b=p[i+64]-p[i];
+                const double turn=std::atan2(a.x*b.y-a.y*b.x,a.x*b.x+a.y*b.y);
+                ++parts;
+                if(turn*sweep>0&&std::abs(turn)>(std::abs(sweep)<.65?.008:std::abs(sweep)*.045))++curvedParts;
+                if(turn*sweep<-.03||std::abs(turn)>(contextualArc?1.05:.80))smooth=false;
+            }
+            if(smooth&&curvedParts>=parts-(std::abs(sweep)<.65?2:1)&&radius>=2&&radius<=5000&&error<(contextualArc?.085:.045)&&maxError<(contextualArc?.18:.10)
+                &&std::abs(sweep)>=.40&&std::abs(sweep)<=3.05
+                &&backtracking-std::abs(sweep)<.06&&std::abs(len/(radius*std::abs(sweep))-1)<.30){
+                shape.kind=ShapeKind::CircularSector;shape.fillOpacity=.10;shape.center=center;
+                shape.radiusX=shape.radiusY=radius;
+                shape.vertices.push_back(center);
+                const double start=std::atan2(p.front().y-center.y,p.front().x-center.x);
+                for(int i=0;i<=96;++i){const double angle=start+sweep*i/96.;shape.vertices.push_back(center+Point{radius*std::cos(angle),radius*std::sin(angle)});}
+                shape.vertices[1]=p.front();shape.vertices.back()=p.back();
+                return {shape,1-error*4};
+            }
+        }
+    }
+
     if(chord>=3&&len/chord<1.15){
         double residual=0;
         for(auto v:p)residual=std::max(residual,distanceToSegment(v,p.front(),p.back()));
@@ -119,6 +162,26 @@ static RecognitionResult recognizeConfidentShape(const StrokeObject& stroke){
     const double diagonal=std::hypot(b.width(),b.height());
 
     if(diagonal<4||chord>diagonal*0.18||len<diagonal*1.7)return {};
+
+    // Also accept a pizza slice drawn as one closed gesture: two radial sides
+    // and one circular arc. The arc fit must agree with their common vertex.
+    if(allowClosedSectors)for(std::size_t apex=0;apex+1<p.size();apex+=8){
+        const auto candidate=p[apex];std::vector<Point> loop;double radius=0;
+        for(std::size_t i=0;i+1<p.size();++i){const auto point=p[(apex+i)%(p.size()-1)];loop.push_back(point);radius=std::max(radius,length(point-candidate));}
+        if(radius<2)continue;
+        std::size_t first=0,last=loop.size()-1;
+        while(first<loop.size()&&length(loop[first]-candidate)<radius*.97)++first;
+        while(last>first&&length(loop[last]-candidate)<radius*.97)--last;
+        if(last<=first+30||first<8||loop.size()-last<8)continue;
+        StrokeObject arc=stroke;arc.samples.clear();
+        for(std::size_t i=first;i<=last;++i)arc.samples.push_back({loop[i]});
+        const auto result=recognizeConfidentShape(arc,false);
+        if(!result.shape||result.shape->kind!=ShapeKind::CircularSector||length(result.shape->center-candidate)>radius*.08)continue;
+        bool radial=true;
+        for(std::size_t i=0;i<first;++i)if(distanceToSegment(loop[i],result.shape->center,loop[first])>radius*.035)radial=false;
+        for(std::size_t i=last+1;i<loop.size();++i)if(distanceToSegment(loop[i],result.shape->center,loop[last])>radius*.035)radial=false;
+        if(radial)return result;
+    }
 
     Point mean;
     for(auto v:p)mean=mean+v;
@@ -253,13 +316,36 @@ static RecognitionResult recognizeConfidentShape(const StrokeObject& stroke){
                 if(!polygonFallback.shape) polygonFallback={shape,1-error*4};
                 shape.vertices.clear();
 
+            }else{
+                // A parallelogram has parallel, similarly sized opposite sides,
+                // but its adjacent sides need not meet at right angles.
+                const auto a=left[1]-left[0],b=left[2]-left[1];
+                const auto c=left[3]-left[2],d=left[0]-left[3];
+                const auto oppositeMatch=[](Point u,Point v){
+                    const double product=length(u)*length(v);
+                    return product>1e-8 && u.x*v.x+u.y*v.y<0
+                        && std::abs(u.x*v.y-u.y*v.x)/product<0.22
+                        && std::min(length(u),length(v))/std::max(length(u),length(v))>0.72;
+                };
+                if(oppositeMatch(a,c)&&oppositeMatch(b,d)){
+                    const auto center=(left[0]+left[1]+left[2]+left[3])*0.25;
+                    const auto halfA=(a-c)*0.25,halfB=(b-d)*0.25;
+                    shape.kind=ShapeKind::Polygon;
+                    shape.vertices={center-halfA-halfB,center+halfA-halfB,
+                                    center+halfA+halfB,center-halfA+halfB};
+                    if(error<0.035)return {shape,1-error*4};
+                    if(!polygonFallback.shape)polygonFallback={shape,1-error*4};
+                    shape.vertices.clear();
+                }
             }
         }
     }
     }
     if(!polygonFallback.shape)polygonFallback=regularPolygon;
-    const bool hasStrongCorners=corners.size()>=3&&regularPolygon.shape
-        &&std::abs(double(corners.size())-double(regularPolygon.shape->vertices.size()))<=2;
+    const bool hasParallelogramCorners=corners.size()==4&&polygonFallback.shape
+        &&polygonFallback.shape->kind==ShapeKind::Polygon&&polygonFallback.shape->vertices.size()==4;
+    const bool hasStrongCorners=hasParallelogramCorners||(corners.size()>=3&&regularPolygon.shape
+        &&std::abs(double(corners.size())-double(regularPolygon.shape->vertices.size()))<=2);
     if(const auto center=circleCenter(p,mean)){
         double radius=0;
         for(auto v:p)radius+=length(v-*center);
@@ -318,18 +404,17 @@ RecognitionResult recognizeShape(const StrokeObject& stroke){
     if(stroke.samples.empty())return {};
     if(auto result=recognizeConfidentShape(stroke);result.shape)return result;
     // Hold is an explicit request to straighten the gesture, including hesitant
-    // endings. PCA keeps terminal jitter from defeating nearly straight lines.
+    // endings. PCA classifies the gesture; it must not move the pen endpoints.
     ShapeObject shape;shape.id=stroke.id;shape.style=stroke.style;shape.properties=stroke.properties;++shape.properties.revision;
     Point mean;for(const auto& s:stroke.samples)mean=mean+s.position;mean=mean*(1./stroke.samples.size());
     double xx=0,xy=0,yy=0;for(const auto& s:stroke.samples){const auto p=s.position-mean;xx+=p.x*p.x;xy+=p.x*p.y;yy+=p.y*p.y;}
-    const double angle=.5*std::atan2(2*xy,xx-yy);const Point direction{std::cos(angle),std::sin(angle)};
+    const double angle=.5*std::atan2(2*xy,xx-yy);
     double lo=1e9,hi=-1e9,top=1e9,bottom=-1e9;
     for(const auto& s:stroke.samples){const auto p=rotatePoint(s.position,mean,-angle)-mean;lo=std::min(lo,p.x);hi=std::max(hi,p.x);top=std::min(top,p.y);bottom=std::max(bottom,p.y);}
     const auto extent=hi-lo,thickness=bottom-top;const auto chord=length(stroke.samples.back().position-stroke.samples.front().position);
     if(extent<1||thickness<extent*.18||chord>std::hypot(extent,thickness)*.35){
-        shape.kind=ShapeKind::Line;shape.vertices={mean+direction*lo,mean+direction*hi};shape.fillOpacity=0;
+        shape.kind=ShapeKind::Line;shape.vertices={stroke.samples.front().position,stroke.samples.back().position};shape.fillOpacity=0;
         if(length(shape.vertices[1]-shape.vertices[0])<.2)shape.vertices[1]=shape.vertices[0]+Point{.2,0};
-        if(length(shape.vertices[0]-stroke.samples.front().position)>length(shape.vertices[1]-stroke.samples.front().position))std::reverse(shape.vertices.begin(),shape.vertices.end());
     }else{
         shape.kind=std::max(extent,thickness)/std::max(.1,std::min(extent,thickness))<1.2?ShapeKind::Circle:ShapeKind::Ellipse;
         shape.center=rotatePoint(mean+Point{(lo+hi)/2,(top+bottom)/2},mean,angle);shape.radiusX=std::max(.2,extent/2);shape.radiusY=std::max(.2,thickness/2);shape.rotation=angle;
@@ -364,6 +449,150 @@ std::optional<ClosedLines> closeConnectedLines(const Page& page,const std::strin
     };
     search(newest->vertices[1]);return result;
 }
+std::optional<ShapeObject> recognizeRightAngle(const Page& page,const StrokeObject& stroke){
+    if(stroke.marker||stroke.samples.size()<4)return {};
+    const auto first=stroke.samples.front().position,last=stroke.samples.back().position;
+    const double chord=length(last-first);if(chord<1||chord>40)return {};
+    struct Edge{Point a,b;};std::vector<Edge> starts,ends;
+    const double reach=std::min(1.5,chord*.20);
+    const auto add=[&](Point a,Point b){
+        if(length(b-a)<chord*.6)return;
+        if(distanceToSegment(first,a,b)<=reach&&starts.size()<64)starts.push_back({a,b});
+        if(distanceToSegment(last,a,b)<=reach&&ends.size()<64)ends.push_back({a,b});
+    };
+    for(const auto& shape:page.shapes){
+        if(!shape.properties.visible||shape.id==stroke.id||(shape.style.rgba&255)==0)continue;
+        if(shape.kind==ShapeKind::Line&&shape.vertices.size()==2)add(shape.vertices[0],shape.vertices[1]);
+        else if(shape.kind==ShapeKind::Triangle||shape.kind==ShapeKind::Rectangle||shape.kind==ShapeKind::Square||shape.kind==ShapeKind::Polygon)
+            for(std::size_t i=0;i<shape.vertices.size();++i)add(shape.vertices[i],shape.vertices[(i+1)%shape.vertices.size()]);
+    }
+    for(const auto& ink:page.strokes){
+        if(ink.id==stroke.id||ink.marker||!ink.properties.visible||(ink.style.rgba&255)==0||ink.samples.size()<2)continue;
+        const auto a=ink.samples.front().position,b=ink.samples.back().position;const double extent=length(b-a);
+        if(extent<chord*.6)continue;
+        double error=0;for(const auto& sample:ink.samples)error=std::max(error,distanceToSegment(sample.position,a,b));
+        if(error<=std::max(.15,extent*.02))add(a,b);
+    }
+    double best=1e9;std::optional<ShapeObject> result;
+    for(const auto& start:starts)for(const auto& end:ends){
+        const auto a=start.b-start.a,b=end.b-end.a;const double cross=a.x*b.y-a.y*b.x;
+        // Only contextual right angles: within 10 degrees of perpendicular.
+        if(std::abs(a.x*b.x+a.y*b.y)>length(a)*length(b)*.174)continue;
+        const auto offset=end.a-start.a;const auto corner=start.a+a*((offset.x*b.y-offset.y*b.x)/cross);
+        if(distanceToSegment(corner,start.a,start.b)>reach||distanceToSegment(corner,end.a,end.b)>reach)continue;
+        const auto project=[&](Point p,const Edge& edge){const auto d=edge.b-edge.a,v=p-edge.a;return edge.a+d*((v.x*d.x+v.y*d.y)/(d.x*d.x+d.y*d.y));};
+        const auto rayA=project(first,start)-corner,rayB=project(last,end)-corner;
+        const double ra=length(rayA),rb=length(rayB),side=(ra+rb)*.5;
+        if(side<.5||side>25||std::min(ra,rb)<side*.7||std::max(ra,rb)>side*1.3)continue;
+        const auto u=rayA*(side/ra),v=rayB*(side/rb),p=corner+u,q=corner+v,kink=corner+u+v;
+        std::size_t split=0;double closest=1e9;
+        for(std::size_t i=0;i<stroke.samples.size();++i){const double d=length(stroke.samples[i].position-kink);if(d<closest){closest=d;split=i;}}
+        if(split==0||split+1==stroke.samples.size()||closest>side*.25)continue;
+        double error=0;
+        for(std::size_t i=0;i<stroke.samples.size();++i)error=std::max(error,distanceToSegment(stroke.samples[i].position,i<=split?p:kink,i<=split?kink:q));
+        if(error>std::max(.15,side*.14))continue; // curved arcs and extra corners are not square marks
+        const double score=error+closest+distanceToSegment(first,start.a,start.b)+distanceToSegment(last,end.a,end.b);
+        if(score>=best)continue;
+        ShapeObject shape;shape.id=stroke.id;shape.style=stroke.style;shape.properties=stroke.properties;++shape.properties.revision;
+        shape.kind=ShapeKind::RightAngle;shape.vertices={corner,p,kink,q};shape.fillOpacity=.10;
+        result=shape;best=score;
+    }
+    return result;
+}
+static std::optional<ShapeObject> matchedCircularSector(const Page& page,ShapeObject sector,double tolerance){
+    if(sector.kind!=ShapeKind::CircularSector||sector.vertices.size()<4||!std::isfinite(tolerance)||tolerance<=0)return {};
+    const Point first=sector.vertices[1],last=sector.vertices.back();
+    const double radius=sector.radiusX;
+    if(radius<.2)return {};
+    // A tight hand-drawn bend can fit a much smaller circle than the intended
+    // corner. Use the endpoint span as well, so a small gap to the second side
+    // does not exclude it before the full-arc/wedge checks below can run.
+    const double chord=length(last-first);
+    const double reach=std::min(tolerance,std::max({.6,radius*.30,chord*.25}));
+    struct Edge{Point a,b;};std::vector<Edge> starts,ends;
+    const auto add=[&](Point a,Point b){
+        if(length(b-a)<1)return;
+        if(distanceToSegment(first,a,b)<=reach&&starts.size()<64)starts.push_back({a,b});
+        if(distanceToSegment(last,a,b)<=reach&&ends.size()<64)ends.push_back({a,b});
+    };
+    for(const auto& shape:page.shapes){
+        if(!shape.properties.visible||shape.id==sector.id||(shape.style.rgba&255)==0)continue;
+        if(shape.kind==ShapeKind::Line){if(shape.vertices.size()==2)add(shape.vertices[0],shape.vertices[1]);}
+        else if(shape.kind==ShapeKind::Triangle||shape.kind==ShapeKind::Rectangle||shape.kind==ShapeKind::Square||shape.kind==ShapeKind::Polygon)
+            for(std::size_t i=0;i<shape.vertices.size();++i)add(shape.vertices[i],shape.vertices[(i+1)%shape.vertices.size()]);
+    }
+    for(const auto& stroke:page.strokes){
+        if(!stroke.properties.visible||stroke.marker||stroke.id==sector.id||(stroke.style.rgba&255)==0||stroke.samples.size()<2)continue;
+        const auto a=stroke.samples.front().position,b=stroke.samples.back().position;const double extent=length(b-a);
+        if(extent<1||std::max(distanceToSegment(first,a,b),distanceToSegment(last,a,b))>extent+reach)continue;
+        double error=0;for(const auto& sample:stroke.samples)error=std::max(error,distanceToSegment(sample.position,a,b));
+        if(error<=std::max(.2,extent*.025))add(a,b);
+    }
+    double originalSweep=0;
+    for(std::size_t i=2;i<sector.vertices.size();++i){const auto a=sector.vertices[i-1]-sector.center,b=sector.vertices[i]-sector.center;originalSweep+=std::atan2(a.x*b.y-a.y*b.x,a.x*b.x+a.y*b.y);}
+    double best=1e9;std::optional<ShapeObject> aligned;
+    for(const auto& start:starts)for(const auto& end:ends){
+        const auto a=start.b-start.a,b=end.b-end.a;
+        const double cross=a.x*b.y-a.y*b.x;
+        if(std::abs(cross)<length(a)*length(b)*.12)continue;
+        const auto offset=end.a-start.a;
+        const auto center=start.a+a*((offset.x*b.y-offset.y*b.x)/cross);
+        const double centerError=length(center-sector.center);
+        if(length(center-first)>chord*3||length(center-last)>chord*3||distanceToSegment(center,start.a,start.b)>reach||distanceToSegment(center,end.a,end.b)>reach)continue;
+        const auto project=[&](Point p,const Edge& edge){const auto d=edge.b-edge.a,v=p-edge.a;return edge.a+d*((v.x*d.x+v.y*d.y)/(d.x*d.x+d.y*d.y));};
+        const auto rayA=project(first,start)-center,rayB=project(last,end)-center;
+        const double ra=length(rayA),rb=length(rayB),r=(ra+rb)*.5;
+        if(r<.2||r>chord*3||std::abs(ra-rb)>std::max(reach,r*.45))continue;
+        const double angle=std::atan2(rayA.y,rayA.x),sweep=std::atan2(rayA.x*rayB.y-rayA.y*rayB.x,rayA.x*rayB.x+rayA.y*rayB.y);
+        if(sweep*originalSweep<=0||std::abs(sweep)<.35||std::abs(sweep)>3.05)continue;
+        // For shallow arcs the unconstrained circle center is unreliable. Prefer
+        // a nearby contour corner only when the entire arc supports its wedge.
+        double radialError=0,maxRadialError=0;bool inside=true;
+        for(std::size_t i=1;i<sector.vertices.size();++i){
+            const auto v=sector.vertices[i]-center;const double error=std::abs(length(v)-r);
+            radialError+=error*error;maxRadialError=std::max(maxRadialError,error);
+            const double progress=std::atan2(rayA.x*v.y-rayA.y*v.x,rayA.x*v.x+rayA.y*v.y)/sweep;
+            if(progress<-.15||progress>1.15){inside=false;break;}
+        }
+        radialError=std::sqrt(radialError/(sector.vertices.size()-1));
+        if(!inside||radialError>r*.30||maxRadialError>r*.45)continue;
+        const double score=distanceToSegment(first,start.a,start.b)+distanceToSegment(last,end.a,end.b)+radialError+centerError*.2+std::abs(ra-rb);
+        if(score>=best)continue;
+        auto candidate=sector;candidate.center=center;candidate.radiusX=candidate.radiusY=r;candidate.vertices={center};
+        for(int i=0;i<=96;++i){const double t=angle+sweep*i/96.;candidate.vertices.push_back(center+Point{r*std::cos(t),r*std::sin(t)});}
+        aligned=std::move(candidate);best=score;
+    }
+    return aligned;
+}
+ShapeObject alignCircularSector(const Page& page,ShapeObject sector,double tolerance){
+    return matchedCircularSector(page,sector,tolerance).value_or(sector);
+}
+RecognitionResult recognizeShape(const StrokeObject& stroke,const Page& page){
+    auto result=recognizeShape(stroke);
+    // A small hand-drawn angle can be uneven enough to fail an isolated circle
+    // fit. Relax that fit only when both nearby sides validate the whole arc.
+    if(!result.shape||result.shape->kind==ShapeKind::Line){
+        auto contextual=recognizeConfidentShape(stroke,false,true);
+        if(contextual.shape&&contextual.shape->kind==ShapeKind::CircularSector){
+            if(auto aligned=matchedCircularSector(page,*contextual.shape,3))
+                return {std::move(aligned),contextual.confidence};
+        }
+    }
+    if(result.shape&&result.shape->kind==ShapeKind::CircularSector){
+        result.shape=matchedCircularSector(page,std::move(*result.shape),3);
+        if(!result.shape){
+            // Holding an open gesture asks to straighten it. Without a nearby
+            // angle, a curved line candidate must still become a segment.
+            const auto first=stroke.samples.front().position,last=stroke.samples.back().position;
+            if(length(last-first)>=.2){
+                ShapeObject line;line.id=stroke.id;line.style=stroke.style;line.properties=stroke.properties;++line.properties.revision;
+                line.kind=ShapeKind::Line;line.vertices={first,last};line.fillOpacity=0;
+                result={std::move(line),.76};
+            }else result.confidence=0;
+        }
+    }
+    return result;
+}
 std::string shapeName(ShapeKind kind){switch(kind){case ShapeKind::Line:return "Linha";
         case ShapeKind::Circle:return "Círculo";
         case ShapeKind::Ellipse:return "Elipse";
@@ -371,6 +600,9 @@ std::string shapeName(ShapeKind kind){switch(kind){case ShapeKind::Line:return "
         case ShapeKind::Rectangle:return "Retângulo";
         case ShapeKind::Square:return "Quadrado";
         case ShapeKind::Polygon:return "Polígono";
+        case ShapeKind::CircularArc:return "Arco circular";
+        case ShapeKind::CircularSector:return "Setor circular";
+        case ShapeKind::RightAngle:return "Ângulo reto";
         }return {};
     }
 }

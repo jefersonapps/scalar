@@ -1,6 +1,6 @@
 # Milestone 4 — páginas, imagens e importação de PDF
 
-Implementado em Scalar 0.4, com Qt 6.4.2 e C++20. A exportação PDF foi adicionada após este ciclo; veja [PDF_EXPORT.md](PDF_EXPORT.md). Exportação PNG e opções avançadas permanecem no Milestone 5.
+Implementado em Scalar 0.4, com Qt 6.4.2 e C++20. A exportação PDF foi adicionada após este ciclo; veja [PDF_EXPORT.md](PDF_EXPORT.md). Exportação PNG e opções avançadas permanecem para um ciclo futuro; o escopo revisado do Milestone 5 é régua, compasso e construções geométricas.
 
 ## Entrega
 

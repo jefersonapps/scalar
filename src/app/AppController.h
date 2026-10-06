@@ -25,9 +25,12 @@ class AppController : public QObject {
     Q_PROPERTY(QVariantList backgroundPresets READ backgroundPresets NOTIFY preferencesChanged)
     Q_PROPERTY(QVariantList gridPresets READ gridPresets NOTIFY preferencesChanged)
     Q_PROPERTY(bool textBusy READ textBusy NOTIFY changed)
+    Q_PROPERTY(QStringList fontFamilies READ fontFamilies CONSTANT)
+    Q_PROPERTY(QString defaultTextFont READ defaultTextFont CONSTANT)
     Q_PROPERTY(QString textError READ textError NOTIFY changed)
     Q_PROPERTY(bool active READ active NOTIFY changed)
     Q_PROPERTY(QString projectName READ projectName NOTIFY changed)
+    Q_PROPERTY(bool pageInfinite READ pageInfinite NOTIFY changed)
     Q_PROPERTY(double pageWidth READ pageWidth NOTIFY changed)
     Q_PROPERTY(double pageHeight READ pageHeight NOTIFY changed)
     Q_PROPERTY(QColor pageColor READ pageColor NOTIFY changed)
@@ -35,10 +38,12 @@ class AppController : public QObject {
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY changed)
     Q_PROPERTY(bool dirty READ dirty NOTIFY changed)
     Q_PROPERTY(bool busy READ busy NOTIFY changed)
+    Q_PROPERTY(bool documentBusy READ documentBusy NOTIFY changed)
     Q_PROPERTY(bool loading READ loading NOTIFY changed)
     Q_PROPERTY(bool systemDark READ systemDark NOTIFY preferencesChanged)
     Q_PROPERTY(QString status READ status NOTIFY changed)
     Q_PROPERTY(QVariantList recentProjects READ recentProjects NOTIFY recentChanged)
+    Q_PROPERTY(QVariantList folders READ folders NOTIFY recentChanged)
     Q_PROPERTY(QString theme READ theme WRITE setTheme NOTIFY preferencesChanged)
     Q_PROPERTY(bool reducedEffects READ reducedEffects WRITE setReducedEffects NOTIFY preferencesChanged)
     Q_PROPERTY(QString defaultSize READ defaultSize WRITE setDefaultSize NOTIFY preferencesChanged)
@@ -60,12 +65,20 @@ public:
     explicit AppController(QObject* parent=nullptr,const QString& dataDirectory={});
     ~AppController() override;
     bool textBusy() const {return textPending_;}
+    QStringList fontFamilies() const;
+    QString defaultTextFont() const;
+    Q_INVOKABLE QFont textFont(const QString& family,int pixelSize,bool bold=false,bool italic=false) const;
+    Q_INVOKABLE QVariantMap textEmphasis(QObject* document,int start,int end) const;
+    Q_INVOKABLE void formatTextSelection(QObject* document,int start,int end,bool bold,bool enabled);
+    Q_INVOKABLE QVariantList textFormats(QObject* document,bool defaultBold,bool defaultItalic) const;
+    Q_INVOKABLE void restoreTextFormats(QObject* document,const QVariantList& formats);
     QString textError() const {return textError_;}
     Q_INVOKABLE QVariantMap textValues(const QString& id) const;
     Q_INVOKABLE void upsertText(const QString& id,QPointF position,const QVariantMap& values);
     void refreshTextTextures(double pixelsPerMm);
     bool active() const { return !project_.pages.empty(); }
     QString projectName() const { return QString::fromStdString(project_.name); }
+    bool pageInfinite() const { return page()&&page()->size.infinite; }
     double pageWidth() const { return page()?page()->size.widthMm:210; }
     double pageHeight() const { return page()?page()->size.heightMm:297; }
     QColor pageColor() const;
@@ -81,7 +94,8 @@ public:
     bool dirty() const { return dirty_; }
     bool loading() const { return loading_; }
     bool systemDark() const;
-    bool busy() const { return loading_||saveWatcher_.isRunning()||imageImportPending_||textPending_||trashPending_||pdfPending_; }
+    bool documentBusy() const { return loading_||imageImportPending_||textPending_||trashPending_||pdfPending_||renamePending_||fillPending_; }
+    bool busy() const { return documentBusy()||saveWatcher_.isRunning(); }
     QString status() const { return status_; }
     QVariantList trashedProjects() const {return library_->trash();}
     Q_INVOKABLE void trashProject(const QString& id);
@@ -89,6 +103,11 @@ public:
     Q_INVOKABLE void deleteProjectPermanently(const QString& id);
     void maintainTrashedProjects();
     QVariantList recentProjects() const { return library_->recent(); }
+    Q_INVOKABLE QVariantList searchProjects(const QString& query,const QString& folderId,const QString& scope) const;
+    QVariantList folders() const { return library_->folders(); }
+    Q_INVOKABLE QString saveFolder(const QString& id,const QString& name,const QString& color,const QString& parentId={}){const auto result=library_->saveFolder(id,name,color,parentId);if(!result.isEmpty())emit recentChanged();return result;}
+    Q_INVOKABLE bool deleteFolder(const QString& id);
+    Q_INVOKABLE bool moveProjectToFolder(const QString& projectId,const QString& folderId){if(!library_->moveToFolder(projectId,folderId))return false;emit recentChanged();return true;}
     QString theme() const;
     void setTheme(const QString& theme);
     bool reducedEffects() const;
@@ -106,6 +125,7 @@ public:
     QVariantList pages() const;
     Q_INVOKABLE void selectPage(int index);
     Q_INVOKABLE void addPage();
+    Q_INVOKABLE bool setPageSize(const QString& preset,double width,double height,bool landscape);
     Q_INVOKABLE void duplicatePage();
     bool pdfSupported() const {return pdfAvailable();}
     bool pdfBusy() const {return pdfPending_;}
@@ -131,6 +151,8 @@ public:
     QSizeF textSize(const std::string& id) const {return textSizes_.value(QString::fromStdString(id));}
     QImage image(const std::string& id) const {return images_.value(QString::fromStdString(id));}
     void changeObjects(std::vector<ObjectChange> changes,CommandKind kind);
+    void eraseObjects(std::vector<ObjectChange> changes,std::vector<StrokeObject> recoverable);
+    void fillRegion(Point seed,QColor color,double opacity=.10);
     bool recognitionEnabled() const;
     void setRecognitionEnabled(bool value);
     int holdDelay() const;
@@ -138,6 +160,9 @@ public:
     std::int64_t nextZIndex() const;
     Q_INVOKABLE void newProject(const QString& name,const QString& preset,double width,double height,bool landscape,const QString& background,const QString& color={});
     Q_INVOKABLE void newDefault();
+    Q_INVOKABLE void newDefaultInFolder(const QString& folderId);
+    Q_INVOKABLE bool renameProject(const QString& id,const QString& name);
+    Q_INVOKABLE bool renameCurrentProject(const QString& name){return active() && renameProject(QString::fromStdString(project_.id),name);}
     Q_INVOKABLE void undo();
     Q_INVOKABLE void redo();
     Q_INVOKABLE void save();
@@ -161,6 +186,10 @@ signals:
 protected:
     bool eventFilter(QObject* watched,QEvent* event) override;
 private:
+    QFutureWatcher<ImportedImage> fillWatcher_;
+    bool fillPending_=false;
+    quint64 fillRevision_=0;
+    std::string fillPageId_;
     struct SaveResult { QString error,id,name,path,updated; quint64 revision=0; };
     void mutate();
     void closeLines(const std::string& newest);
@@ -191,11 +220,14 @@ private:
     QFutureWatcher<QString> exportWatcher_;
     bool exportPending_=false;
     std::unique_ptr<Library> library_;
-    QString dataDir_,path_,status_,pendingOpenPath_;
+    QString dataDir_,path_,status_,pendingOpenPath_,pendingFolderId_;
     bool trashPending_=false;
     QTimer autosave_,trashExpiry_;
     QFutureWatcher<TrashResult> trashWatcher_;
     QFutureWatcher<SaveResult> saveWatcher_;
+    QFutureWatcher<SaveResult> renameWatcher_;
+    bool renamePending_=false;
+    void finishRename();
     QFutureWatcher<LoadResult> loadWatcher_;
     QFutureWatcher<std::vector<ImportedImage>> imageWatcher_;
     QFutureWatcher<PreparedText> textWatcher_;
@@ -206,6 +238,7 @@ private:
     bool textPending_=false;
     bool textRasterPending_=false;
     double textRasterScale_=96./25.4;
+    double textRasterRequestedScale_=96./25.4;
     quint64 textRasterRevision_=0;
     QString importProjectId_;
     QString importPageId_;

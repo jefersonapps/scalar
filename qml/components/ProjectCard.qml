@@ -4,10 +4,12 @@ import QtQuick.Layouts
 import "../theme"
 AbstractButton {
     id: root
+    objectName: "projectCard_" + projectId
     property string projectName: ""
+    property string projectId: ""
     property string updated: ""
     property url thumbnail: ""
-    signal trashRequested()
+    signal editRequested()
     implicitWidth: Theme.cardWidth
     implicitHeight: Theme.cardHeight
     hoverEnabled: true
@@ -34,8 +36,23 @@ AbstractButton {
                 Text { Layout.fillWidth: true; text: root.projectName; elide: Text.ElideRight; color: Theme.text; font.pixelSize: Theme.body; font.weight: Font.DemiBold }
                 Text { text: Qt.formatDateTime(new Date(root.updated), "dd MMM · hh:mm"); color: Theme.secondary; font.pixelSize: Theme.caption }
             }
-            IconButton { objectName: "trashProjectButton"; iconName: "trash"; label: "Mover " + root.projectName + " para a lixeira"; enabled: !App.busy; onClicked: root.trashRequested() }
+            IconButton { objectName: "editProjectButton_"+root.projectId; iconName: "settings"; label: "Editar " + root.projectName; enabled: !App.busy; onClicked: root.editRequested() }
         }
     }
     padding: Theme.lg
+    DragHandler {
+        id: dragHandler; target: null
+        onActiveChanged: { if(active)dragPreview.Drag.active=true; else dragPreview.Drag.drop() }
+    }
+    Rectangle {
+        id: dragPreview
+        parent: Overlay.overlay
+        visible: dragHandler.active
+        width: Theme.folderCardWidth; height: Theme.touch; radius: Theme.radiusMedium
+        color: Theme.surface; border.color: Theme.accent; border.width: Theme.focusBorder
+        x: root.mapToItem(parent,dragHandler.centroid.position).x-width/2
+        y: root.mapToItem(parent,dragHandler.centroid.position).y-height/2
+        Drag.source: root; Drag.keys: ["scalar-project"]; Drag.hotSpot.x: width/2; Drag.hotSpot.y: height/2
+        Text { anchors.fill: parent; anchors.margins: Theme.md; text: root.projectName; elide: Text.ElideRight; color: Theme.text; font.pixelSize: Theme.body; verticalAlignment: Text.AlignVCenter }
+    }
 }

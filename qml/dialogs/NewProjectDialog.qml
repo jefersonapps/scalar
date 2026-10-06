@@ -31,7 +31,7 @@ C.ModernDialog {
         Text { text: "Nome do projeto"; color: Theme.secondary; font.pixelSize: Theme.caption }
         C.Field { id: nameField; objectName: "projectNameInput"; Layout.fillWidth: true; placeholderText: "Ex.: Aula de geometria"; maximumLength: 120 }
         Text { text: "Tamanho físico da página"; color: Theme.secondary; font.pixelSize: Theme.caption }
-        C.SelectField { id: preset; Layout.fillWidth: true; model: ["A4", "Carta", "Personalizado"] }
+        C.SelectField { id: preset; Layout.fillWidth: true; objectName: "newPageSizeSelector"; model: ["A4", "Carta", "Personalizado", "Infinito"] }
         RowLayout {
             visible: preset.currentIndex === 2
             Layout.fillWidth: true
@@ -41,14 +41,14 @@ C.ModernDialog {
             C.Field { id: pageHeight; Layout.fillWidth: true; text: "297"; placeholderText: "Altura (mm)"; validator: DoubleValidator { bottom: 10; top: 5000; locale: "C"; decimals: 2 } }
             Text { text: "mm"; color: Theme.secondary; font.pixelSize: Theme.caption }
         }
-        C.SegmentedControl { id: orientation; Layout.fillWidth: true; options: ["Retrato", "Paisagem"]; onSelected: index => currentIndex = index }
+        C.SegmentedControl { id: orientation; visible: preset.currentIndex !== 3; Layout.fillWidth: true; options: ["Retrato", "Paisagem"]; onSelected: index => currentIndex = index }
         Text { text: "Grade da página"; color: Theme.secondary; font.pixelSize: Theme.caption }
         C.SelectField { id: background; Layout.fillWidth: true; model: App.gridPresets.map(p => p.name) }
         Text { text: "Cor do fundo · padrão acompanha o tema"; color: Theme.secondary; font.pixelSize: Theme.caption }
         C.ColorPicker { Layout.fillWidth: true; colors: Theme.backgroundColors; selectedColor: root.pageColor; onPicked: value => root.pageColor = value }
         Text {
             Layout.fillWidth: true
-            text: preset.currentIndex === 0 ? "A4 · 210 × 297 mm" : preset.currentIndex === 1 ? "Carta · 215,9 × 279,4 mm" : "Dimensões em milímetros · mínimo 10, máximo 5000"
+            text: preset.currentIndex === 0 ? "A4 · 210 × 297 mm" : preset.currentIndex === 1 ? "Carta · 215,9 × 279,4 mm" : preset.currentIndex === 3 ? "Desenhe sem limites · o PDF inclui todo o conteúdo com margem" : "Dimensões em milímetros · mínimo 10, máximo 5000"
             color: Theme.secondary; font.pixelSize: Theme.caption; wrapMode: Text.WordWrap
         }
         C.ActionButton {

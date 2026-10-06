@@ -68,15 +68,35 @@ Bounds bounds(const CanvasObject& o){
         }return b;
 
 }
+Bounds pageRenderBounds(const Page& page,double marginMm){
+    if(!page.size.infinite)return {0,0,page.size.widthMm,page.size.heightMm};
+    std::optional<Bounds> extent;
+    const auto include=[&](Bounds b){if(!extent)extent=b;else {extent->left=std::min(extent->left,b.left);extent->top=std::min(extent->top,b.top);extent->right=std::max(extent->right,b.right);extent->bottom=std::max(extent->bottom,b.bottom);}};
+    for(const auto& view:objectViews(page))std::visit([&](const auto* object){
+        if(!object->properties.visible)return;
+        // Include the full pen/border width, not just its centerline.
+        const auto b=bounds(CanvasObject(*object));
+        const double padding=[&]{if constexpr(std::is_same_v<std::decay_t<decltype(*object)>,StrokeObject>||std::is_same_v<std::decay_t<decltype(*object)>,ShapeObject>)return object->style.maxWidthMm*.5;else return 0.;}();
+        include({b.left-padding,b.top-padding,b.right+padding,b.bottom+padding});
+    },view);
+    if(page.pdf){const auto size=page.pdf->size.valid()?page.pdf->size:page.size;include({0,0,size.widthMm,size.heightMm});}
+    if(!extent)return {0,0,page.size.widthMm,page.size.heightMm};
+    const auto b=*extent;return {b.left-marginMm,b.top-marginMm,b.right+marginMm,b.bottom+marginMm};
+}
 bool hitTest(const CanvasObject& o,Point p,double tolerance){
     if(!properties(o).visible||properties(o).locked)return false;
 
+    if(const auto* image=std::get_if<ImageObject>(&o)){
+        bool erased=false;for(const auto& region:image->erasedRegions)if(distanceToSegment(p,region.from,region.to)<region.radius)erased=!region.restore;
+        if(erased)return false;
+    }
     const auto width=std::visit([](const auto& s){if constexpr(std::is_same_v<std::decay_t<decltype(s)>,ImageObject>)return 0.;else return s.style.maxWidthMm/2;},o);
     tolerance+=width;
 
     if(!bounds(o).contains(p,tolerance))return false;
 
     if(const auto* stroke=std::get_if<StrokeObject>(&o)){
+        bool erased=false;for(const auto& region:stroke->erasedRegions)if(distanceToSegment(p,region.from,region.to)<region.radius)erased=!region.restore;if(erased)return false;
         if(stroke->samples.size()==1)return length(p-stroke->samples[0].position)<=tolerance;
 
         for(std::size_t i=1;i<stroke->samples.size();++i)if(distanceToSegment(p,stroke->samples[i-1].position,stroke->samples[i].position)<=tolerance)return true;
@@ -85,10 +105,11 @@ bool hitTest(const CanvasObject& o,Point p,double tolerance){
 
     }
     const auto* shape=std::get_if<ShapeObject>(&o);
+    if(shape){bool erasedPoint=false;for(const auto& erased:shape->erasedRegions)if(distanceToSegment(p,erased.from,erased.to)<erased.radius)erasedPoint=!erased.restore;if(erasedPoint)return false;}
 
     std::vector<Point> polygon;if(shape)polygon=shapeOutline(*shape);else std::visit([&](const auto& obj){if constexpr(requires {obj.corners;})polygon=obj.corners;},o);
 
-    const bool line=shape&&shape->kind==ShapeKind::Line;
+    const bool line=shape&&(shape->kind==ShapeKind::Line||shape->kind==ShapeKind::CircularArc);
 
     if(polygon.empty())return false;
 
@@ -104,6 +125,24 @@ bool hitTest(const CanvasObject& o,Point p,double tolerance){
     return !line&&(!shape||shape->fillOpacity>0)&&inside;
 
 }
+bool shapeTouchesEraser(const ShapeObject& shape,Point from,Point to,double radius){
+    // Contact uses the swept disk, not selection hit testing. A center inside an
+    // earlier erased hole can still overlap intact geometry along its rim.
+    const auto polygon=shapeOutline(shape);if(polygon.empty())return false;
+    const bool closed=shape.kind!=ShapeKind::Line&&shape.kind!=ShapeKind::CircularArc;
+    const auto cross=[](Point a,Point b){return a.x*b.y-a.y*b.x;};
+    bool insideFrom=false,insideTo=false;
+    for(std::size_t i=0;i<polygon.size();++i){
+        if(!closed&&i+1==polygon.size())break;
+        const auto a=polygon[i],b=polygon[(i+1)%polygon.size()];
+        const double distance=std::min({distanceToSegment(from,a,b),distanceToSegment(to,a,b),distanceToSegment(a,from,to),distanceToSegment(b,from,to)});
+        if(distance<=radius+shape.style.maxWidthMm*.5)return true;
+        if(cross(to-from,a-from)*cross(to-from,b-from)<0&&cross(b-a,from-a)*cross(b-a,to-a)<0)return true;
+        const auto inside=[&](Point p){return (a.y>p.y)!=(b.y>p.y)&&p.x<(b.x-a.x)*(p.y-a.y)/(b.y-a.y)+a.x;};
+        if(inside(from))insideFrom=!insideFrom;if(inside(to))insideTo=!insideTo;
+    }
+    return closed&&shape.fillOpacity>0&&(insideFrom||insideTo);
+}
 CanvasObject transformed(CanvasObject o,Point center,Point translation,double sx,double sy,double rotation){
     sx=std::max(0.01,sx);
     sy=std::max(0.01,sy);
@@ -114,12 +153,15 @@ CanvasObject transformed(CanvasObject o,Point center,Point translation,double sx
         };
 
     if(auto* s=std::get_if<StrokeObject>(&o)){for(auto& sample:s->samples)sample.position=move(sample.position);
+        for(auto& region:s->erasedRegions){region.from=move(region.from);region.to=move(region.to);region.radius*=std::min(sx,sy);}
         }
     else if(auto* image=std::get_if<ImageObject>(&o)){for(auto& p:image->corners)p=move(p);
+        for(auto& region:image->erasedRegions){region.from=move(region.from);region.to=move(region.to);region.radius*=std::min(sx,sy);}
         }
     else if(auto* text=std::get_if<TextObject>(&o)){for(auto& p:text->corners)p=move(p);}
     else {
         auto& shape=std::get<ShapeObject>(o);
+        for(auto& erased:shape.erasedRegions){erased.from=move(erased.from);erased.to=move(erased.to);erased.radius*=std::min(sx,sy);}
 
         if(shape.kind==ShapeKind::Circle||shape.kind==ShapeKind::Ellipse){
             // Nonuniform screen-axis resize of a rotated ellipse requires conic decomposition.
@@ -130,7 +172,10 @@ CanvasObject transformed(CanvasObject o,Point center,Point translation,double sx
             shape.radiusY*=scale;
             shape.rotation+=rotation;
 
-        }else for(auto& p:shape.vertices)p=move(p);
+        }else {
+            for(auto& p:shape.vertices)p=move(p);
+            if(shape.kind==ShapeKind::CircularArc||shape.kind==ShapeKind::CircularSector){shape.center=move(shape.center);shape.radiusX*=std::min(sx,sy);shape.radiusY*=std::min(sx,sy);shape.rotation+=rotation;}
+        }
 
     }
     ++properties(o).revision;

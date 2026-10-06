@@ -116,3 +116,7 @@ Nove entradas CTest cobrem núcleo, reconhecimento, borracha, persistência, lix
 Qt PDF é obrigatório no build desktop. Após instalar novos módulos, execute novamente a configuração CMake antes do build. A suíte adicional `pdf` usa documentos reais gerados temporariamente para verificar A4, A4 paisagem, Carta, intervalos, cache, incorporação e reabertura sem o arquivo original. Há dez entradas CTest; a UI também cobre miniaturas, navegação, importação e layout em janela pequena. Veja [o relatório](docs/MILESTONE_4.md) para resultados e limites.
 
 A exportação multipágina usa as mesmas dependências, sem biblioteca adicional. A suíte `pdf` também valida a saída A4/paisagem/Carta, texto selecionável, geometria vetorial, imagens, anotações sobre PDF e substituição segura do destino. A suíte desktop verifica o navegador de páginas persistente no editor. Veja [PDF_EXPORT.md](docs/PDF_EXPORT.md).
+
+## Milestone 5
+
+Régua, snap, compasso e construções usam Qt/STL, sem novas dependências. Configure e compile com os comandos do README. Há onze entradas CTest, incluindo `geometry_tools`. A suíte `desktop` simula mouse, stylus com pressão e touch para os guias, cancela gestos, verifica undo/redo e abre os painéis em janela pequena. Capturas ficam em `build/screenshots/milestone5-*.png`; veja [o relatório](docs/MILESTONE_5.md). Stylus física, renderização GPU e execução no Windows ainda precisam de validação nesses ambientes.

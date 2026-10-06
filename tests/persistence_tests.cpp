@@ -12,6 +12,11 @@ using namespace scalar;
 class PersistenceTests : public QObject {
     Q_OBJECT
 private slots:
+    void folderOrganizationPersists(){
+        QTemporaryDir dir;const auto database=dir.filePath("folders.sqlite");QString folder;
+        { Library library(database);QVERIFY(library.error().isEmpty());library.remember("board","Aula",dir.filePath("a.board"),"2026-10-03");folder=library.saveFolder({},"Geometria","#268fb5");QVERIFY(!folder.isEmpty());QVERIFY(library.saveFolder({},"geometria","#3ca889").isEmpty());QVERIFY(library.saveFolder({}," ","#268fb5").isEmpty());QVERIFY(library.saveFolder({},"Inválida","#ffffff").isEmpty());QVERIFY(!library.moveToFolder("missing",folder));QVERIFY(!library.moveToFolder("board","missing"));QVERIFY(library.moveToFolder("board",folder));QCOMPARE(library.folders()[0].toMap()["count"].toInt(),1);library.remember("board","Aula salva",dir.filePath("a.board"),"2026-10-04");QCOMPARE(library.recent()[0].toMap()["folderId"].toString(),folder);QCOMPARE(library.saveFolder(folder,"Matemática","#9765c5"),folder); }
+        { Library library(database);QCOMPARE(library.folders()[0].toMap()["name"].toString(),QString("Matemática"));QCOMPARE(library.folders()[0].toMap()["color"].toString(),QString("#9765c5"));QCOMPARE(library.recent()[0].toMap()["folderId"].toString(),folder);QVERIFY(library.moveToFolder("board",{}));QVERIFY(library.recent()[0].toMap()["folderId"].toString().isEmpty());QCOMPARE(library.folders()[0].toMap()["count"].toInt(),0);const auto child=library.saveFolder({},"Álgebra","#3ca889",folder);QVERIFY(!child.isEmpty());library.remember("nested","Subpasta",dir.filePath("nested.board"),"2026-10-05");QVERIFY(library.moveToFolder("nested",child));QVariantMap childEntry;for(const auto& entry:library.folders())if(entry.toMap()["id"]==child)childEntry=entry.toMap();QCOMPARE(childEntry["parentId"].toString(),folder);QCOMPARE(childEntry["count"].toInt(),1);QVERIFY(library.deleteFolder(folder));childEntry={};for(const auto& entry:library.folders())if(entry.toMap()["id"]==child)childEntry=entry.toMap();QVERIFY(childEntry.isEmpty());QVERIFY(library.folders().isEmpty());QCOMPARE(library.trash().size(),1);QVERIFY(library.trash()[0].toMap()["isFolder"].toBool());QVERIFY(library.forgetTrash(folder,false));QCOMPARE(library.folders().size(),2);QVERIFY(!library.deleteFolder("missing"));for(int i=0;i<30;++i)library.remember(QString::number(i),"Quadro",dir.filePath(QString::number(i)),"2026-10-03");QCOMPARE(library.recent().size(),32); }
+    }
     void saveLoad(){
         QTemporaryDir dir;QVERIFY(dir.isValid());
         Project p{newId(),"Geometria · aula 1","2026-10-03","2026-10-03",{{newId(),PageSize::a4(),0xffffffff,{{newId(),{},{{{5,6},0.2,12,-8,40,1234,1,DeviceType::Stylus},{{8,9},0.8}}}}},{newId(),PageSize::letter(true),0x214f43ff,{}}}};
@@ -39,10 +44,13 @@ private slots:
         QTemporaryDir dir;Project p{newId(),"Texto e fundo","now","now",{{newId(),PageSize::letter(),0xffffffff,{}}}};
         auto& page=p.pages[0];page.backgroundStyle={GridType::Isometric,0xcc5364ff,0.4,0.2,7,9};
         TextObject t;t.id=newId();t.source="Área $x^2$";t.fontFamily="DejaVu Sans";t.fontSizePt=24;t.bold=true;t.italic=true;t.alignment=2;t.corners={{10,10},{80,10},{80,30},{10,30}};
+        t.boxWidthMm=70;t.boxHeightMm=20;
+        t.formats={{0,4,false,true}};
         t.math={{"x^2","<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1000 1000\"><path d=\"M0 0L1000 1000\"/></svg>",false,6,5,1,1}};page.texts.push_back(t);
         const auto path=dir.filePath("v3.board");QVERIFY2(ProjectStore::save(path,p).isEmpty(),"v3 save");const auto loaded=ProjectStore::load(path);QVERIFY2(bool(loaded),qPrintable(loaded.error));
         QCOMPARE(ProjectStore::serialize(loaded.project),ProjectStore::serialize(p));QCOMPARE(loaded.project.pages[0].texts[0].math[0].latex,std::string("x^2"));
         auto broken=p;broken.pages[0].texts[0].math[0].start=0;QVERIFY(!ProjectStore::deserialize(ProjectStore::serialize(broken)));
+        broken=p;broken.pages[0].texts[0].formats[0].length=100;QVERIFY(!ProjectStore::deserialize(ProjectStore::serialize(broken)));
         broken=p;broken.pages[0].backgroundStyle.spacingY=0;QVERIFY(!ProjectStore::deserialize(ProjectStore::serialize(broken)));
         broken=p;broken.pages[0].texts[0].math[0].svg="<svg><image href=\"file:///tmp/private.png\"/></svg>";QVERIFY(!ProjectStore::deserialize(ProjectStore::serialize(broken)));
         {Library library(dir.filePath("presets.sqlite"));QVERIFY(library.saveBackgroundPreset("Minha grade",backgroundValues(page.background,page.backgroundStyle)));}
@@ -51,6 +59,18 @@ private slots:
     void corruptArchive(){
         auto data=ProjectStore::archive("{}");QString error;data[42]='!';
         QVERIFY(ProjectStore::unpack(data,error).isEmpty());QVERIFY(!error.isEmpty());
+    }
+    void circularArcRoundTrip(){
+        Project p{newId(),"Arco","now","now",{{newId(),PageSize::a4(),0xffffffff,{}}}};
+        ShapeObject arc;arc.id=newId();arc.kind=ShapeKind::CircularArc;arc.fillOpacity=0;
+        arc.vertices={{20,10},{17.071,17.071},{10,20}};arc.center={10,10};arc.radiusX=arc.radiusY=10;
+        p.pages[0].shapes.push_back(arc);
+        ShapeObject right;right.id=newId();right.kind=ShapeKind::RightAngle;right.vertices={{20,20},{24,20},{24,24},{20,24}};right.fillOpacity=.10;p.pages[0].shapes.push_back(right);
+        p.pages[0].shapes.back().erasedRegions={{{21,21},{23,23},.5}};
+        const auto loaded=ProjectStore::deserialize(ProjectStore::serialize(p));QVERIFY2(bool(loaded),qPrintable(loaded.error));
+        QCOMPARE(loaded.project.pages[0].shapes[0].kind,ShapeKind::CircularArc);
+        QCOMPARE(loaded.project.pages[0].shapes[1].kind,ShapeKind::RightAngle);
+        QCOMPARE(ProjectStore::serialize(loaded.project),ProjectStore::serialize(p));
     }
     void rejectSchema(){
         QVERIFY(!ProjectStore::deserialize("{}"));

@@ -22,7 +22,7 @@ int main(int argc,char** argv) {
             const auto w=view.screenToWorld({300,240}); view.zoomAt({300,240},1.1);
             near(view.screenToWorld({300,240}).x,w.x); near(view.screenToWorld({300,240}).y,w.y);
         }
-        PenStyle style; near(style.width(0),style.minWidthMm); near(style.width(1),style.maxWidthMm);
+        PenStyle style; near(style.maxWidthMm,0.40); near(style.width(0),style.minWidthMm); near(style.width(1),style.maxWidthMm);
         check(style.width(0.3)<style.width(0.8),"pressure not monotonic");
         StrokeObject stroke{newId(),style,{{{0,0},0.2},{{10,0},0.8},{{10,0},1}}};
         const auto mesh=strokeMesh(stroke); check(!mesh.empty() && mesh.size()%3==0,"invalid mesh");

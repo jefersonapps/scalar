@@ -19,6 +19,7 @@ struct Point {
 inline double length(Point p) { return std::hypot(p.x,p.y); }
 struct PageSize {
     double widthMm = 210, heightMm = 297;
+    bool infinite = false;
     bool valid() const { return std::isfinite(widthMm) && std::isfinite(heightMm) && widthMm >= 10 && heightMm >= 10 && widthMm <= 5000 && heightMm <= 5000; }
     static PageSize a4(bool landscape = false) { return landscape ? PageSize{297,210} : PageSize{210,297}; }
     static PageSize letter(bool landscape = false) { return landscape ? PageSize{279.4,215.9} : PageSize{215.9,279.4}; }
@@ -34,7 +35,7 @@ struct PointerSample {
 enum class LinePattern { Solid, Dashed, Dotted };
 struct PenStyle {
     std::uint32_t rgba = 0x263345ff;
-    double minWidthMm = 0.15, maxWidthMm = 0.85, gamma = 1.2, sensitivity = 1;
+    double minWidthMm = 0.15, maxWidthMm = 0.40, gamma = 1.2, sensitivity = 1;
     LinePattern pattern = LinePattern::Solid;
     double dashLengthMm = 3, gapLengthMm = 2, dotSpacingMm = 2.5;
     double width(double pressure) const {
@@ -46,13 +47,16 @@ struct ObjectProperties {
     std::int64_t zIndex=0;
     std::uint64_t revision=0; // render cache generation, never serialized
 };
+struct ErasedRegion {Point from,to;double radius=1;bool restore=false;};
 struct StrokeObject {
     std::string id;
     PenStyle style;
     std::vector<PointerSample> samples;
     ObjectProperties properties{};
+    bool marker=false;
+    std::vector<ErasedRegion> erasedRegions;
 };
-enum class ShapeKind { Line, Circle, Ellipse, Triangle, Rectangle, Square, Polygon };
+enum class ShapeKind { Line, Circle, Ellipse, Triangle, Rectangle, Square, Polygon, CircularArc, CircularSector, RightAngle };
 struct ShapeObject {
     std::string id;
     ShapeKind kind=ShapeKind::Line;
@@ -64,13 +68,16 @@ struct ShapeObject {
     std::optional<std::uint32_t> fillRgba; // absent in older projects: follows the border
     std::uint32_t fillColor() const { return fillRgba.value_or(style.rgba); }
     ObjectProperties properties{};
+    std::vector<ErasedRegion> erasedRegions;
 };
 struct ImageObject {
     std::string id;
     std::vector<Point> corners;
     std::shared_ptr<const std::vector<std::uint8_t>> png = std::make_shared<const std::vector<std::uint8_t>>();
     int pixelWidth=0,pixelHeight=0;
+    bool inkFill=false; // translucent region fill; does not shield ink from the eraser
     ObjectProperties properties{};
+    std::vector<ErasedRegion> erasedRegions;
 };
 struct MathFragment {
     std::string latex,svg;
@@ -78,14 +85,21 @@ struct MathFragment {
     std::size_t start=0,length=0; // UTF-8 byte offsets including delimiters
     double widthEm=0,heightEm=0;
 };
+struct TextFormat {
+    std::size_t start=0,length=0; // UTF-16 positions, matching the text editor
+    bool bold=false,italic=false;
+    bool operator==(const TextFormat&) const=default;
+};
 struct TextObject {
     std::string id,source,fontFamily;
     PenStyle style; // shared RGBA color, retained across text and math edits
     double fontSizePt=18;
+    double boxWidthMm=0,boxHeightMm=0; // zero retains legacy automatic sizing
     bool bold=false,italic=false;
     int alignment=0; // left, center, right
     std::vector<Point> corners;
     std::vector<MathFragment> math;
+    std::vector<TextFormat> formats;
     ObjectProperties properties{};
 };
 struct PdfPageObject {
@@ -93,6 +107,7 @@ struct PdfPageObject {
     std::shared_ptr<const std::vector<std::uint8_t>> data;
     int pageIndex=0;
     int sourcePageCount=0;
+    PageSize size{0,0}; // immutable physical size of the imported PDF page
 };
 using CanvasObject=std::variant<StrokeObject,ShapeObject,ImageObject,TextObject>;
 enum class GridType { None, Ruled, Square, Dots, Millimetric, Isometric };
@@ -118,6 +133,7 @@ struct Page {
     BackgroundStyle backgroundStyle{};
     std::vector<TextObject> texts{};
     std::optional<PdfPageObject> pdf{}; // original PDF, immutable page base
+    std::vector<StrokeObject> erasedInk{}; // recoverable ink, excluded from rendering and selection
 };
 struct Project {
     std::string id, name, createdAt, updatedAt;

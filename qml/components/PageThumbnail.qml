@@ -19,7 +19,7 @@ AbstractButton {
             Text { text: "Página " + (root.pageData.index+1); color: Theme.text; font.pixelSize: Theme.caption; Layout.fillWidth: true }
             Icon { visible: root.selected; name: "check"; color: Theme.accent; width: Theme.lg; height: Theme.lg }
         }
-        Text { text: root.pageData.widthMm.toFixed(0) + " × " + root.pageData.heightMm.toFixed(0) + " mm" + (root.pageData.pdf ? " · PDF" : ""); color: Theme.secondary; font.pixelSize: Theme.caption }
+        Text { text: (root.pageData.infinite ? "Infinito" : root.pageData.widthMm.toFixed(0) + " × " + root.pageData.heightMm.toFixed(0) + " mm") + (root.pageData.pdf ? " · PDF" : ""); color: Theme.secondary; font.pixelSize: Theme.caption }
     }
     padding: Theme.sm
 }

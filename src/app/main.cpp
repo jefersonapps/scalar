@@ -1,4 +1,5 @@
 #include "AppController.h"
+#include "Branding.h"
 #include "canvas/CanvasItem.h"
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
@@ -13,13 +14,15 @@
 #include <QLoggingCategory>
 int main(int argc,char** argv){
     QSurfaceFormat format;format.setSamples(4);QSurfaceFormat::setDefaultFormat(format);
-    QGuiApplication app(argc,argv);app.setOrganizationName("Scalar");app.setApplicationName("Scalar");app.setApplicationVersion("0.4.0");
+    QGuiApplication app(argc,argv);app.setOrganizationName("Scalar");app.setApplicationName("Scalar");app.setApplicationVersion("0.5.0");
+    app.setWindowIcon(scalar::applicationIcon());
     QQuickStyle::setStyle("Basic");
     QCommandLineParser parser;parser.addHelpOption();parser.addVersionOption();
     parser.addOption({"smoke-test","Exit after a short UI startup check."});
     parser.addOption({"screenshot","Save a startup screenshot to a PNG path.","path"});
     parser.addOption({"editor","Start with a new default project."});parser.process(app);
     qmlRegisterType<scalar::CanvasItem>("Scalar",1,0,"BoardCanvas");
+    qmlRegisterType<scalar::ApplicationLogo>("Scalar",1,0,"ApplicationLogo");
     qmlRegisterUncreatableType<scalar::AppController>("Scalar",1,0,"ApplicationController","Use the App singleton context.");
     scalar::AppController controller;QQmlApplicationEngine engine;
     bool qmlWarnings=false;

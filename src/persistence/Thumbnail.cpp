@@ -1,5 +1,6 @@
 #include "Thumbnail.h"
 #include "rendering/PageRenderer.h"
+#include "geometry/Geometry.h"
 #include <QImage>
 #include <QPainter>
 #include <QSaveFile>
@@ -8,8 +9,9 @@ QImage pageThumbnail(const Page& page,QSize size){
     const int width=size.width(),height=size.height();
     QImage image(width,height,QImage::Format_ARGB32_Premultiplied);image.fill(QColor("#e9eef1"));
     QPainter painter(&image);painter.setRenderHint(QPainter::Antialiasing);
-    const double scale=std::min((width-24)/page.size.widthMm,(height-24)/page.size.heightMm);
-    painter.translate((width-scale*page.size.widthMm)/2,(height-scale*page.size.heightMm)/2);painter.scale(scale,scale);
+    const auto area=pageRenderBounds(page);
+    const double scale=std::min((width-24)/area.width(),(height-24)/area.height());
+    painter.translate((width-scale*area.width())/2,(height-scale*area.height())/2);painter.scale(scale,scale);painter.translate(-area.left,-area.top);
     paintPage(painter,page,scale);painter.end();return image;
 }
 
