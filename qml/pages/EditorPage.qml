@@ -131,22 +131,24 @@ Item {
         }
         Connections { target: board; function onViewChanged() { sectorLabels.model = Qt.binding(() => board.sectorAngles) } }
         Rectangle {
-            x: board.selectionRect.x; y: board.selectionRect.y
-            width: board.selectionRect.width; height: board.selectionRect.height
-            visible: width > 0 || height > 0
+            objectName: "selectionFrame"
+            x: board.selectionFrame.x; y: board.selectionFrame.y
+            width: board.selectionFrame.width; height: board.selectionFrame.height
+            rotation: board.selectionRotation; transformOrigin: Item.TopLeft
+            visible: !inlineText.active && (width > 0 || height > 0)
             radius: 3
             color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.035)
             border.color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.8)
             border.width: 1.5
-        }
-        Rectangle {
-            visible: board.selectedCount > 0
-            x: board.selectionRect.x + board.selectionRect.width / 2
-            y: board.selectionRect.y - 23
-            width: 1; height: 23; color: Theme.accent
+            Rectangle {
+                visible: board.selectedCount > 0
+                x: parent.width / 2; y: -23
+                width: 1; height: 23; color: Theme.accent
+            }
         }
         Repeater {
-            model: board.selectionHandles
+            objectName: "selectionHandleRepeater"
+            model: inlineText.active ? [] : board.selectionHandles
             Rectangle {
                 required property var modelData
                 x: modelData.x-Theme.handleSize/2; y: modelData.y-Theme.handleSize/2
@@ -272,12 +274,17 @@ Item {
         id: inlineText; anchors.fill: board; canvas: board
         onFinished: { const action=root.afterTextEdit;root.afterTextEdit=null;if(action)action() }
     }
-    Row {
+    Item {
+        objectName: "selectedTextControls"
         visible: !inlineText.active && board.selectionName==="Texto" && board.selectedCount===1
-        x: board.x+board.selectionRect.x
-        y: Math.max(board.y,board.y+board.selectionRect.y-Theme.touch-Theme.xs)
-        spacing: Theme.xs
-        C.IconButton { objectName: "selectedTextFormatButton";iconName: "settings";label: "Fonte, tamanho e cor";selected: true;onClicked: { inlineText.begin(Qt.rect(0,0,60,18),board.selectedTextId());inlineText.openFormatting() } }
+        x: board.x+board.selectionFrame.x; y: board.y+board.selectionFrame.y
+        width: board.selectionFrame.width; height: board.selectionFrame.height
+        rotation: board.selectionRotation; transformOrigin: Item.TopLeft
+        C.TextEditingToolbar {
+            y: -height-Theme.xs; showColors: false
+            formatButtonName: "selectedTextFormatButton"
+            onFormatRequested: { inlineText.begin(Qt.rect(0,0,60,18),board.selectedTextId());Qt.callLater(inlineText.openFormatting) }
+        }
     }
     GeometryOptions {
         id: geometryOptions; canvas: board

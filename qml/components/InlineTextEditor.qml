@@ -16,6 +16,9 @@ Item {
     property real boxHeight: 18
     property real angle: 0
     property int formatRevision: 0
+    property int formatStart: 0
+    property int formatEnd: 0
+    property color dialogColor: Theme.text
     readonly property var selectionStyle: {
         const revision=formatRevision;const text=editor.text;const cursor=editor.cursorPosition
         return App.textEmphasis(editor.textDocument,editor.selectionStart,editor.selectionEnd)
@@ -26,7 +29,7 @@ Item {
     function begin(box,id) {
         if(active)return
         objectId=id
-        draft=id ? App.textValues(id) : ({source:"",fontFamily:App.defaultTextFont,fontSizePt:18,bold:false,italic:false,alignment:0,color:canvas.penColor.toString()})
+        draft=id ? App.textValues(id) : ({source:"",fontFamily:App.defaultTextFont,fontSizePt:16,bold:false,italic:false,alignment:0,color:canvas.penColor.toString()})
         origin=id ? Qt.point(draft.x,draft.y) : Qt.point(box.x,box.y)
         boxWidth=id ? draft.width : box.width
         boxHeight=id ? draft.height : box.height
@@ -37,7 +40,20 @@ Item {
         Qt.callLater(function(){ App.restoreTextFormats(editor.textDocument,root.draft.formats || []);root.formatRevision++;editor.forceActiveFocus();if(id)editor.selectAll() })
     }
     function change(key,value) { const next=Object.assign({},draft);next[key]=value;draft=next }
-    function openFormatting() { change("source",editor.text);formatting.begin(draft) }
+    function openFormatting() {
+        formatStart=editor.selectionStart;formatEnd=editor.selectionEnd
+        change("source",editor.text)
+        const values=Object.assign({},draft)
+        if(formatStart!==formatEnd && selectionStyle.color)values.color=selectionStyle.color
+        dialogColor=values.color || Theme.text
+        formatting.begin(values)
+    }
+    function applyColor(value,start,end) {
+        if(start===undefined){start=editor.selectionStart;end=editor.selectionEnd}
+        if(start===end){change("color",value.toString());App.colorTextSelection(editor.textDocument,0,editor.text.length,value)}
+        else App.colorTextSelection(editor.textDocument,start,end,value)
+        formatRevision++;editor.forceActiveFocus();editor.select(start,end)
+    }
     function toggleEmphasis(bold) {
         const start=editor.selectionStart,end=editor.selectionEnd
         const enabled=!(bold ? selectionStyle.bold : selectionStyle.italic)
@@ -83,11 +99,13 @@ Item {
             enabled: !root.committing
             padding: 2*root.pixelsPerMm/(96/25.4)
             color: root.draft.color || Theme.text
+            property color syntaxBackground: App.pageColor
             placeholderText: "Escreva aqui…"
             placeholderTextColor: App.pageColor.hslLightness<0.5 ? "#a1a1aa" : "#66798b"
             font: App.textFont(root.draft.fontFamily || App.defaultTextFont,Math.max(1,root.draft.fontSizePt*25.4/72*root.pixelsPerMm),root.draft.bold || false,root.draft.italic || false)
             horizontalAlignment: root.draft.alignment===1 ? TextEdit.AlignHCenter : root.draft.alignment===2 ? TextEdit.AlignRight : TextEdit.AlignLeft
             wrapMode: TextEdit.Wrap; selectByMouse: true
+            persistentSelection: true
             textFormat: TextEdit.PlainText
             background: null
             Keys.onEscapePressed: root.cancel()
@@ -98,35 +116,45 @@ Item {
                 }
             }
         }
-        Row {
-            x: 0; y: box.y<height+Theme.xs ? 0 : -height-Theme.xs
-            spacing: Theme.xs
-            IconButton {
-                objectName: "textFormatButton"
-                iconName: "settings";label: "Fonte, tamanho e cor";selected: true
-                onClicked: root.openFormatting()
-            }
-            ActionButton {
-                objectName: "inlineBoldButton";text: "B";implicitWidth: Theme.touch
-                font.bold: true;checked: root.selectionStyle.bold || false;focusPolicy: Qt.NoFocus
-                contentItem: Text { text: "B";font.bold: true;font.pixelSize: Theme.body;color: Theme.text;horizontalAlignment: Text.AlignHCenter;verticalAlignment: Text.AlignVCenter }
-                Accessible.name: "Negrito no texto selecionado"
-                onClicked: root.toggleEmphasis(true)
-                ToolTip.visible: hovered;ToolTip.text: "Negrito (Ctrl+B)"
-            }
-            ActionButton {
-                objectName: "inlineItalicButton";text: "I";implicitWidth: Theme.touch
-                font.italic: true;checked: root.selectionStyle.italic || false;focusPolicy: Qt.NoFocus
-                contentItem: Text { text: "I";font.italic: true;font.pixelSize: Theme.body;color: Theme.text;horizontalAlignment: Text.AlignHCenter;verticalAlignment: Text.AlignVCenter }
-                Accessible.name: "Itálico no texto selecionado"
-                onClicked: root.toggleEmphasis(false)
-                ToolTip.visible: hovered;ToolTip.text: "Itálico (Ctrl+I)"
+        TextEditingToolbar {
+            objectName: "inlineTextControls"
+            x: 0; y: -height-Theme.xs
+            bold: root.selectionStyle.bold || false; italic: root.selectionStyle.italic || false
+            selectedColor: root.selectionStyle.color || root.draft.color || Theme.text
+            onFormatRequested: root.openFormatting()
+            onBoldRequested: root.toggleEmphasis(true)
+            onItalicRequested: root.toggleEmphasis(false)
+            onColorPicked: value => root.applyColor(value)
+        }
+        Rectangle {
+            objectName: "inlineTextResizeHandle"
+            x: box.width-width/2; y: box.height-height/2
+            width: Theme.handleSize; height: Theme.handleSize; radius: 3
+            color: Theme.surface; border.color: Theme.accent; border.width: Theme.focusBorder
+            MouseArea {
+                id: resizeArea
+                anchors.centerIn: parent; width: Theme.touch; height: Theme.touch
+                enabled: !root.committing; cursorShape: Qt.SizeFDiagCursor
+                preventStealing: true
+                onPressed: mouse => mouse.accepted=true
+                onPositionChanged: mouse => {
+                    if(!pressed)return
+                    const point=mapToItem(box,mouse.x,mouse.y)
+                    root.boxWidth=Math.max(5,Math.min(10000,point.x/root.pixelsPerMm))
+                    root.boxHeight=Math.max(5,Math.min(10000,point.y/root.pixelsPerMm))
+                }
+                onReleased: editor.forceActiveFocus()
             }
         }
     }
     TextDialog {
         id: formatting
-        onApplied: values => { root.draft=values;editor.forceActiveFocus() }
+        onApplied: values => {
+            const changedColor=!Qt.colorEqual(values.color || Theme.text,root.dialogColor)
+            root.draft=Object.assign({},values,{color:root.draft.color})
+            if(changedColor)root.applyColor(values.color,root.formatStart,root.formatEnd)
+            else { editor.forceActiveFocus();editor.select(root.formatStart,root.formatEnd) }
+        }
         onClosed: editor.forceActiveFocus()
     }
     Text {

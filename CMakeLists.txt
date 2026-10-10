@@ -100,7 +100,11 @@ if(SCALAR_BUILD_DESKTOP)
             # MathJax's build sources are unused by the bundled JS runtime and
             # exceed NSIS's Windows path limit when staged inside the project.
             PATTERN "mathjax-full/components" EXCLUDE
-            PATTERN "mathjax-full/ts" EXCLUDE)
+            PATTERN "mathjax-full/ts" EXCLUDE
+            # Scalar loads the CommonJS js/ modules, not browser bundles.
+            PATTERN "mathjax-full/es5" EXCLUDE
+            PATTERN "*.map" EXCLUDE
+            PATTERN "*.d.ts" EXCLUDE)
     else()
         install(CODE "message(FATAL_ERROR \"Python 3.12 is required on the packaging machine to prepare the offline math runtime.\")")
     endif()
@@ -134,6 +138,7 @@ if(SCALAR_BUILD_DESKTOP)
     set(CPACK_PACKAGE_EXECUTABLES "scalar;Scalar")
     if(WIN32)
         set(CPACK_GENERATOR "NSIS;ZIP")
+        set(CPACK_NSIS_COMPRESSOR "/SOLID lzma")
         set(CPACK_NSIS_DISPLAY_NAME "Scalar")
         set(CPACK_NSIS_PACKAGE_NAME "Scalar")
         set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)

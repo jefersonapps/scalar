@@ -86,13 +86,13 @@ AppController::AppController(QObject* parent,const QString& dataDirectory):QObje
         textPending_=false;const auto prepared=textWatcher_.result();textError_=prepared.error;
         if(textProjectId_!=QString::fromStdString(project_.id)||!page()||textPageId_!=QString::fromStdString(page()->id)){emit changed();return;}
         if(!prepared.error.isEmpty()){status_=prepared.error;emit changed();return;}
-        auto object=prepared.object;images_.insert(QString::fromStdString(object.id),prepared.image);textMeshes_.insert(QString::fromStdString(object.id),prepared.geometry);textSizes_.insert(QString::fromStdString(object.id),prepared.naturalSize);
+        auto object=prepared.object;cacheTextVisual(object.id,{prepared.image,prepared.geometry,prepared.error,prepared.naturalSize,prepared.mathColors});
         history().apply(current(),{{textBefore_,CanvasObject(object)}},textBefore_?CommandKind::ChangeStyle:CommandKind::AddObject);textRasterRevision_=0;mutate();emit textCommitted(QString::fromStdString(object.id));
     });
     connect(&textRasterWatcher_,&QFutureWatcher<QHash<QString,TextVisual>>::finished,this,[this]{
         textRasterPending_=false;
         if(textRasterRevision_!=revision_){textRasterRevision_=0;refreshTextTextures(textRasterRequestedScale_);return;}
-        const auto results=textRasterWatcher_.result();for(auto i=results.begin();i!=results.end();++i){images_.insert(i.key(),i.value().text);textMeshes_.insert(i.key(),i.value().math);textSizes_.insert(i.key(),i.value().naturalSize);if(!i.value().error.isEmpty())status_=i.value().error;}
+        const auto results=textRasterWatcher_.result();for(auto i=results.begin();i!=results.end();++i){cacheTextVisual(i.key().toStdString(),i.value());if(!i.value().error.isEmpty())status_=i.value().error;}
         if(active())for(auto& object:current().texts)++object.properties.revision;
         emit documentChanged();
         refreshTextTextures(textRasterRequestedScale_);
@@ -140,7 +140,7 @@ bool AppController::defaultLandscape() const{return library_->setting("defaultLa
 void AppController::setDefaultLandscape(bool v){library_->setSetting("defaultLandscape",v);emit preferencesChanged();}
 QString AppController::defaultBackground() const{const auto value=library_->setting("defaultBackground","Sem grade").toString();return value=="Branco"||value=="Preto"||value=="Verde"?"Sem grade":value;}
 void AppController::setDefaultBackground(const QString& v){bool found=false;for(const auto& preset:gridPresets())if(preset.toMap().value("name").toString()==v)found=true;if(!found)return;library_->setSetting("defaultBackground",v);emit preferencesChanged();}
-void AppController::install(Project p,const QString& path){project_=std::move(p);currentPage_=0;path_=path;images_.clear();textMeshes_.clear();textSizes_.clear();histories_.clear();thumbnails_.clear();dirtyThumbnails_.clear();for(const auto& page:project_.pages)dirtyThumbnails_.insert(QString::fromStdString(page.id));pdfCache_.clear();dirty_=false;++revision_;textRasterRevision_=0;scheduleThumbnails();refreshPdf(textRasterScale_);emit pagesChanged();emit pageChanged();emit documentChanged();emit changed();}
+void AppController::install(Project p,const QString& path){project_=std::move(p);currentPage_=0;path_=path;images_.clear();textMeshes_.clear();textMathColors_.clear();textSizes_.clear();histories_.clear();thumbnails_.clear();dirtyThumbnails_.clear();for(const auto& page:project_.pages)dirtyThumbnails_.insert(QString::fromStdString(page.id));pdfCache_.clear();dirty_=false;++revision_;textRasterRevision_=0;scheduleThumbnails();refreshPdf(textRasterScale_);emit pagesChanged();emit pageChanged();emit documentChanged();emit changed();}
 void AppController::newProject(const QString& name,const QString& preset,double width,double height,bool landscape,const QString& background,const QString& pageColor) {
     if(loading_)return;
     PageSize size=preset=="A4"?PageSize::a4():preset=="Carta"?PageSize::letter():PageSize{width,height};
@@ -307,7 +307,7 @@ void AppController::openPath(const QString& path){
     if(trashPending_||loading_||!flush())return;loading_=true;pendingOpenPath_=path;status_="Abrindo projeto…";
     loadWatcher_.setFuture(QtConcurrent::run([path]{return ProjectStore::load(path);}));emit changed();
 }
-void AppController::home(){if(loading_||!flush())return;project_={};currentPage_=0;images_.clear();textMeshes_.clear();textSizes_.clear();histories_.clear();thumbnails_.clear();pdfCache_.clear();thumbnailsTimer_.stop();++revision_;emit pagesChanged();emit pageChanged();emit documentChanged();emit changed();}
+void AppController::home(){if(loading_||!flush())return;project_={};currentPage_=0;images_.clear();textMeshes_.clear();textMathColors_.clear();textSizes_.clear();histories_.clear();thumbnails_.clear();pdfCache_.clear();thumbnailsTimer_.stop();++revision_;emit pagesChanged();emit pageChanged();emit documentChanged();emit changed();}
 void AppController::recover(){if(!recovery_)return;recovery_=false;openPath(dataDir_+"/session.board");}
 void AppController::discardRecovery(){recovery_=false;QFile::remove(dataDir_+"/session.board");emit changed();}
 bool AppController::shutdown(){
@@ -337,12 +337,14 @@ QString AppController::defaultTextFont() const {return QStringLiteral("Lobster T
 QFont AppController::textFont(const QString& family,int pixelSize,bool bold,bool italic) const {return documentFont(family,pixelSize,bold,italic);}
 QVariantMap AppController::textEmphasis(QObject* document,int start,int end) const {return scalar::textEmphasis(document,start,end);}
 void AppController::formatTextSelection(QObject* document,int start,int end,bool bold,bool enabled){scalar::formatTextSelection(document,start,end,bold,enabled);}
+void AppController::colorTextSelection(QObject* document,int start,int end,const QColor& color){scalar::colorTextSelection(document,start,end,color);}
 QVariantList AppController::textFormats(QObject* document,bool bold,bool italic) const {return scalar::textFormats(document,bold,italic);}
 void AppController::restoreTextFormats(QObject* document,const QVariantList& formats){scalar::restoreTextFormats(document,formats);}
 QVariantMap AppController::textValues(const QString& id) const {
     if(page())if(auto object=findObject(*page(),id.toStdString()))if(const auto* t=std::get_if<TextObject>(&*object)){
         const auto c=t->style.rgba;const auto origin=t->corners[0],edge=t->corners[1]-origin;
-        QVariantList formats;for(const auto& f:t->formats)formats.append(QVariantMap{{"start",int(f.start)},{"length",int(f.length)},{"bold",f.bold},{"italic",f.italic}});
+        QVariantList formats;for(const auto& f:t->formats){QVariantMap span{{"start",int(f.start)},{"length",int(f.length)},{"bold",f.bold},{"italic",f.italic}};
+            if(f.rgba){const auto c=*f.rgba;span.insert("color",QColor((c>>24)&255,(c>>16)&255,(c>>8)&255,c&255).name(QColor::HexArgb));}formats.append(span);}
         return {{"source",QString::fromStdString(t->source)},{"fontFamily",QString::fromStdString(t->fontFamily)},{"fontSizePt",t->fontSizePt},{"bold",t->bold},{"italic",t->italic},{"alignment",t->alignment},{"color",QColor((c>>24)&255,(c>>16)&255,(c>>8)&255,c&255).name()},
             {"formats",formats},{"x",origin.x},{"y",origin.y},{"width",length(edge)},{"height",length(t->corners[3]-origin)},{"rotation",std::atan2(edge.y,edge.x)*180/std::numbers::pi},{"boxWidthMm",t->boxWidthMm},{"boxHeightMm",t->boxHeightMm}};
     }return {};
@@ -354,7 +356,7 @@ void AppController::upsertText(const QString& id,QPointF position,const QVariant
         textBefore_=original;t=std::get<TextObject>(*original);++t.properties.revision;
     }else{t.id=newId();t.properties.zIndex=nextZIndex();t.corners={{position.x(),position.y()}};}
     const auto source=v.value("source").toString();const QColor c(v.value("color","#263345").toString());
-    t.source=source.toStdString();t.fontFamily=v.value("fontFamily",defaultTextFont()).toString().toStdString();t.fontSizePt=v.value("fontSizePt",18).toDouble();t.bold=v.value("bold",false).toBool();t.italic=v.value("italic",false).toBool();t.alignment=v.value("alignment",0).toInt();
+    t.source=source.toStdString();t.fontFamily=v.value("fontFamily",defaultTextFont()).toString().toStdString();t.fontSizePt=v.value("fontSizePt",16).toDouble();t.bold=v.value("bold",false).toBool();t.italic=v.value("italic",false).toBool();t.alignment=v.value("alignment",0).toInt();
     t.boxWidthMm=v.value("boxWidthMm",t.boxWidthMm).toDouble();t.boxHeightMm=v.value("boxHeightMm",t.boxHeightMm).toDouble();
     if(t.fontFamily.empty())t.fontFamily=defaultTextFont().toStdString();
     if(!std::isfinite(t.boxWidthMm)||!std::isfinite(t.boxHeightMm)||t.boxWidthMm<0||t.boxWidthMm>10000||t.boxHeightMm<0||t.boxHeightMm>10000){textError_="Dimensões da caixa de texto inválidas.";emit changed();return;}
@@ -363,7 +365,10 @@ void AppController::upsertText(const QString& id,QPointF position,const QVariant
         t.formats.clear();int previous=0;
         for(const auto& value:v["formats"].toList()){const auto f=value.toMap();const int start=f["start"].toInt(),length=f["length"].toInt();
             if(start<previous||length<=0||start>source.size()||length>source.size()-start){textError_="Formatação de texto inválida.";emit changed();return;}
-            t.formats.push_back({std::size_t(start),std::size_t(length),f["bold"].toBool(),f["italic"].toBool()});previous=start+length;
+            TextFormat span{std::size_t(start),std::size_t(length),f["bold"].toBool(),f["italic"].toBool()};
+            if(f.contains("color")){const QColor color(f["color"].toString());if(!color.isValid()){textError_="Cor de texto inválida.";emit changed();return;}
+                span.rgba=(std::uint32_t(color.red())<<24)|(std::uint32_t(color.green())<<16)|(std::uint32_t(color.blue())<<8)|color.alpha();}
+            t.formats.push_back(span);previous=start+length;
         }
     }
     t.style.rgba=(std::uint32_t(c.red())<<24)|(std::uint32_t(c.green())<<16)|(std::uint32_t(c.blue())<<8)|255;

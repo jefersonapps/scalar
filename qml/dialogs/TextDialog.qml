@@ -26,7 +26,7 @@ C.ModernDialog {
         }
         Text { text: "Tamanho (pt)";color: Theme.secondary;font.pixelSize: Theme.caption }
         C.Field {
-            Layout.fillWidth: true;text: root.draft.fontSizePt || 18
+            Layout.fillWidth: true;text: root.draft.fontSizePt || 16
             validator: DoubleValidator { bottom: 6;top: 144;locale: "en_US" }
             onTextEdited: if(acceptableInput)root.change("fontSizePt",Number(text))
         }

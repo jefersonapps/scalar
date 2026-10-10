@@ -271,13 +271,17 @@ QSGNode* CanvasItem::updatePaintNode(QSGNode* old,UpdatePaintNodeData*){
             if(it==root->strokes.end()){auto* node=std::visit([&](const auto* s)->QSGNode*{
                 using T=std::decay_t<decltype(*s)>;
                 if constexpr(std::is_same_v<T,TextObject>){
-                    auto* node=imageNode(*s,window(),controller_->image(s->id));
-                    const auto vertices=controller_->mathGeometry(s->id);if(!vertices.empty()&&s->corners.size()==4){
+                    const auto* preview=editing&&textResizeVisual_?&*textResizeVisual_:nullptr;
+                    auto* node=imageNode(*s,window(),preview?preview->text:controller_->image(s->id));
+                    const auto vertices=preview?std::span<const Point>(preview->math):controller_->mathGeometry(s->id);if(!vertices.empty()&&s->corners.size()==4){
                         const auto origin=s->corners[0];const auto edge=s->corners[1]-origin;
                         // Meshes are in local mm; resizing is a geometry transform.
                         auto* transform=new QSGTransformNode;QMatrix4x4 m;
-                        const auto natural=controller_->textSize(s->id);m.scale(float(length(edge)/natural.width()),float(length(s->corners[3]-origin)/natural.height()));transform->setMatrix(m);
-                        transform->appendChildNode(meshNode(vertices,fromRgba(s->style.rgba)));node->appendChildNode(transform);
+                        const auto natural=preview?preview->naturalSize:controller_->textSize(s->id);m.scale(float(length(edge)/natural.width()),float(length(s->corners[3]-origin)/natural.height()));transform->setMatrix(m);
+                        const auto colors=preview?std::span<const MathColorRun>(preview->mathColors):controller_->mathColors(s->id);
+                        if(colors.empty())transform->appendChildNode(meshNode(vertices,fromRgba(s->style.rgba)));
+                        else for(const auto& run:colors)if(run.start<=vertices.size()&&run.count<=vertices.size()-run.start)transform->appendChildNode(meshNode(vertices.subspan(run.start,run.count),fromRgba(run.rgba)));
+                        node->appendChildNode(transform);
                     }return node;
                 }else if constexpr(std::is_same_v<T,ImageObject>){if(raster)return rasterShapeNode(*s,window(),root->rasterShapes[s->id],rasterScale,rasterBounds,controller_->image(s->id));return imageNode(*s,window(),controller_->image(s->id));}else if constexpr(std::is_same_v<T,StrokeObject>){if(raster){auto& cache=root->rasterShapes[s->id];if(acceptMarker){cache.raster=cache.pending.takeResult();cache.textures.clear();cache.hasPending=false;cache.prepared=true;--markerJobs;}return rasterShapeNode(*s,window(),cache,rasterScale,rasterBounds);}return objectNode(*s,window());}else {
                     if(raster)return rasterShapeNode(*s,window(),root->rasterShapes[s->id],rasterScale,rasterBounds);

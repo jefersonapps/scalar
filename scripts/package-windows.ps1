@@ -48,7 +48,7 @@ if (-not (Test-Path $qtPrefix)) {
 }
 
 Write-Host "Configurando o projeto com CMake e Ninja..." -ForegroundColor Cyan
-Remove-Item -Path "build-package" -Recurse -Force -ErrorAction SilentlyContinue
+# Reuse Ninja's incremental build; CPack creates its own clean staging tree.
 
 & cmake -S . -B build-package -G Ninja `
     -DCMAKE_BUILD_TYPE=Release `

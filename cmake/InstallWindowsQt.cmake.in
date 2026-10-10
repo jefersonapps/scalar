@@ -6,8 +6,37 @@ if(NOT EXISTS "${_scalar_executable}")
     message(FATAL_ERROR "Scalar executable was not installed before Qt deployment.")
 endif()
 execute_process(
-    COMMAND "@SCALAR_WINDEPLOYQT_EXECUTABLE@" --qmldir "@CMAKE_CURRENT_SOURCE_DIR@/qml" --compiler-runtime --no-translations "${_scalar_executable}"
+    # InstallRequiredSystemLibraries already deploys the app-local MSVC/UCRT
+    # DLLs. Avoid also shipping the 24 MB redistributable installer.
+    COMMAND "@SCALAR_WINDEPLOYQT_EXECUTABLE@" --release --verbose 0 --qmldir "@CMAKE_CURRENT_SOURCE_DIR@/qml" --no-compiler-runtime --no-translations "${_scalar_executable}"
     RESULT_VARIABLE _scalar_windeployqt_result)
 if(NOT _scalar_windeployqt_result EQUAL 0)
     message(FATAL_ERROR "windeployqt failed while preparing the Scalar installer.")
 endif()
+
+# main.cpp selects Basic explicitly. Other Controls styles are optional
+# imports discovered by qmlimportscanner, never used by Scalar's UI.
+file(REAL_PATH "${CMAKE_INSTALL_PREFIX}/bin" _scalar_bin)
+set(_scalar_unused_styles Fusion Imagine Material Universal Windows FluentWinUI3)
+foreach(_scalar_style IN LISTS _scalar_unused_styles)
+    set(_scalar_style_dir "${_scalar_bin}/qml/QtQuick/Controls/${_scalar_style}")
+    cmake_path(IS_PREFIX _scalar_bin "${_scalar_style_dir}" NORMALIZE _scalar_inside_bin)
+    if(NOT _scalar_inside_bin)
+        message(FATAL_ERROR "Qt style cleanup escaped the install staging directory.")
+    endif()
+    file(REMOVE_RECURSE "${_scalar_style_dir}")
+    file(GLOB _scalar_style_dlls "${_scalar_bin}/Qt6QuickControls2${_scalar_style}*.dll")
+    if(_scalar_style_dlls)
+        file(REMOVE ${_scalar_style_dlls})
+    endif()
+endforeach()
+# Metadata is for IDE tooling, not for the QML engine. Keep qmldir and QML.
+file(GLOB_RECURSE _scalar_qml_metadata "${_scalar_bin}/qml/*.qmltypes")
+if(_scalar_qml_metadata)
+    file(REMOVE ${_scalar_qml_metadata})
+endif()
+foreach(_scalar_runtime vcruntime140.dll vcruntime140_1.dll msvcp140.dll)
+    if(NOT EXISTS "${_scalar_bin}/${_scalar_runtime}")
+        message(FATAL_ERROR "Missing app-local MSVC runtime: ${_scalar_runtime}")
+    endif()
+endforeach()

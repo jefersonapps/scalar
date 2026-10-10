@@ -54,7 +54,7 @@ private slots:
         auto& page=p.pages[0];page.backgroundStyle={GridType::Isometric,0xcc5364ff,0.4,0.2,7,9};
         TextObject t;t.id=newId();t.source="Área $x^2$";t.fontFamily="DejaVu Sans";t.fontSizePt=24;t.bold=true;t.italic=true;t.alignment=2;t.corners={{10,10},{80,10},{80,30},{10,30}};
         t.boxWidthMm=70;t.boxHeightMm=20;
-        t.formats={{0,4,false,true}};
+        t.formats={{0,4,false,true,0xcc5364ff}};
         t.math={{"x^2","<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1000 1000\"><path d=\"M0 0L1000 1000\"/></svg>",false,6,5,1,1}};page.texts.push_back(t);
         const auto path=dir.filePath("v3.board");QVERIFY2(ProjectStore::save(path,p).isEmpty(),"v3 save");const auto loaded=ProjectStore::load(path);QVERIFY2(bool(loaded),qPrintable(loaded.error));
         QCOMPARE(ProjectStore::serialize(loaded.project),ProjectStore::serialize(p));QCOMPARE(loaded.project.pages[0].texts[0].math[0].latex,std::string("x^2"));

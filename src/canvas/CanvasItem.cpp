@@ -13,6 +13,11 @@
 #include <functional>
 namespace scalar {
 namespace {
+Qt::CursorShape selectionResizeCursor(double degrees){
+    const int direction=(int(std::round(std::remainder(degrees,180.)/45))+5)%4;
+    constexpr Qt::CursorShape cursors[]={Qt::SizeHorCursor,Qt::SizeFDiagCursor,Qt::SizeVerCursor,Qt::SizeBDiagCursor};
+    return cursors[direction];
+}
 template<class Object> void appendErasedRegion(Object& object,Point from,Point to,double radius,bool restore){
     if(!object.erasedRegions.empty()){
         auto& previous=object.erasedRegions.back();
@@ -208,7 +213,7 @@ void CanvasItem::cancelStroke(){
     if(rulerBefore_)ruler_=*rulerBefore_;if(compassBefore_)compass_=*compassBefore_;rulerBefore_.reset();compassBefore_.reset();guidedEdge_.reset();
     const bool was=drawing();holdTimer_.stop();++inputEpoch_;state_=State::Idle;current_={};previewShape_.reset();editBefore_.clear();editPreview_.clear();eraseBefore_.clear();erasePreview_.clear();eraseShapesBefore_.clear();eraseShapesPreview_.clear();eraseFillsBefore_.clear();eraseFillsPreview_.clear();recoverableInk_.clear();tabletActive_=false;touchDistance_=0;
     updateCursor();
-    if(was)emit drawingChanged();emit geometryToolsChanged();selectionUpdated();update();
+    textResizeVisual_.reset();if(was)emit drawingChanged();emit geometryToolsChanged();selectionUpdated();update();
 }
 ShapeObject CanvasItem::directShape(Point a,Point b) const{
     ShapeObject s;s.id=current_.id;s.style=style_;s.style.pattern=manualShapePattern_;
@@ -477,8 +482,19 @@ void CanvasItem::mouseDoubleClickEvent(QMouseEvent* e){
     mousePressEvent(e);
 }
 void CanvasItem::mouseReleaseEvent(QMouseEvent* e){if(e->button()==Qt::RightButton){e->accept();return;}angleSnap_=e->modifiers().testFlag(Qt::ControlModifier);eraserCtrl_=angleSnap_;if(tool_=="eraser")shiftHeld_=e->modifiers().testFlag(Qt::ShiftModifier);if(tabletActive_){e->accept();return;}eraserCursorVisible_=false;emit selectionChanged();endPointer(InputManager::mouse(*e,world(e->position())));state_=State::Idle;updateCursor();e->accept();}
-void CanvasItem::hoverMoveEvent(QHoverEvent* e){if(tool_=="select"&&state_==State::Idle){if(selectedCount()&&selectedBounds().contains(world(e->position())))setCursor(QCursor(Qt::SizeAllCursor));else updateCursor();}if(tool_=="eraser"&&state_==State::Idle){eraserCursorVisible_=contains(e->position());if(eraserCursorVisible_)eraserWorldPosition_=world(e->position());emit selectionChanged();}QQuickItem::hoverMoveEvent(e);}
-void CanvasItem::hoverLeaveEvent(QHoverEvent* e){eraserCursorVisible_=false;emit selectionChanged();QQuickItem::hoverLeaveEvent(e);}
+void CanvasItem::hoverMoveEvent(QHoverEvent* e){
+    if(tool_=="select"&&state_==State::Idle){
+        bool resizing=false;for(const auto& value:selectionHandles()){const auto handle=value.toMap();
+            if(QLineF(e->position(),QPointF(handle["x"].toDouble(),handle["y"].toDouble())).length()<12){resizing=handle["type"].toString()=="resize";break;}}
+        const auto local=rotatePoint(world(e->position())-selectionFrame_.origin,{},-selectionFrame_.angle);
+        if(resizing)setCursor(QCursor(selectionResizeCursor(selectionRotation())));
+        else if(selectedCount()&&Bounds{0,0,selectionFrame_.width,selectionFrame_.height}.contains(local))setCursor(QCursor(Qt::SizeAllCursor));
+        else updateCursor();
+    }
+    if(tool_=="eraser"&&state_==State::Idle){eraserCursorVisible_=contains(e->position());if(eraserCursorVisible_)eraserWorldPosition_=world(e->position());emit selectionChanged();}
+    QQuickItem::hoverMoveEvent(e);
+}
+void CanvasItem::hoverLeaveEvent(QHoverEvent* e){eraserCursorVisible_=false;updateCursor();emit selectionChanged();QQuickItem::hoverLeaveEvent(e);}
 void CanvasItem::mouseUngrabEvent(){
     if(tabletActive_)return;
     // A lost mouse grab must not discard ink already shown to the user.
@@ -520,6 +536,8 @@ void CanvasItem::touchEvent(QTouchEvent* e){
 void CanvasItem::updateCursor(){
     const auto shape=state_==State::Panning||state_==State::TouchGesture?Qt::ClosedHandCursor:
         tool_=="hand"||space_?Qt::OpenHandCursor:
+        state_==State::Resizing?selectionResizeCursor(editFrame_.angle*180/std::numbers::pi):
+        state_==State::Moving?Qt::SizeAllCursor:
         tool_=="pen"||tool_=="marker"?Qt::CrossCursor:Qt::ArrowCursor;
     setCursor(QCursor(shape));
 }

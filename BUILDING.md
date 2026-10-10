@@ -24,7 +24,9 @@ Esse é o comando principal para recompilar o aplicativo e gerar o instalador. O
 
 O script está configurado para Qt em `C:\Qt\6.8.2\msvc2022_64`, CMake em `C:\Program Files\CMake\bin` e NSIS em `C:\NSIS\nsis-3.10`. Ajuste os caminhos em [package-windows.ps1](scripts/package-windows.ps1) se sua instalação for diferente. CMake e Ninja também podem ser encontrados pelo `PATH`.
 
-O script recria `build-package/` a cada execução. Ao terminar, execute o instalador para atualizar o app. A tela final oferece **Executar o Scalar** e **Criar atalho na área de trabalho**, ambas marcadas por padrão. Instalações silenciosas não executam essas ações.
+O script reutiliza `build-package/` para recompilar somente os arquivos alterados. O CPack prepara uma área de empacotamento limpa. Ao terminar, execute o instalador para atualizar o app. A tela final oferece **Executar o Scalar** e **Criar atalho na área de trabalho**, ambas marcadas por padrão. Instalações silenciosas não executam essas ações.
+
+O instalador usa compressão LZMA sólida. Inclui as DLLs do runtime Visual C++ junto ao app, sem duplicar o instalador desse runtime. Estilos Qt Quick Controls não usados e os bundles de navegador do MathJax são excluídos; Node, LaTeX offline, codecs e backends gráficos permanecem no pacote.
 
 Para gerar também um pacote portátil, depois do script:
 

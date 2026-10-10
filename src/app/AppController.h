@@ -72,6 +72,7 @@ public:
     Q_INVOKABLE QFont textFont(const QString& family,int pixelSize,bool bold=false,bool italic=false) const;
     Q_INVOKABLE QVariantMap textEmphasis(QObject* document,int start,int end) const;
     Q_INVOKABLE void formatTextSelection(QObject* document,int start,int end,bool bold,bool enabled);
+    Q_INVOKABLE void colorTextSelection(QObject* document,int start,int end,const QColor& color);
     Q_INVOKABLE QVariantList textFormats(QObject* document,bool defaultBold,bool defaultItalic) const;
     Q_INVOKABLE void restoreTextFormats(QObject* document,const QVariantList& formats);
     QString textError() const {return textError_;}
@@ -158,9 +159,11 @@ public:
     Q_INVOKABLE void importImage(const QUrl& url,QPointF center);
     Q_INVOKABLE void importImages(const QVariantList& urls,QPointF center);
     Q_INVOKABLE void pasteImage(QPointF center);
-    void aliasImage(const std::string& from,const std::string& to){images_.insert(QString::fromStdString(to),image(from));textMeshes_.insert(QString::fromStdString(to),textMeshes_.value(QString::fromStdString(from)));textSizes_.insert(QString::fromStdString(to),textSize(from));}
+    void aliasImage(const std::string& from,const std::string& to){images_.insert(QString::fromStdString(to),image(from));textMeshes_.insert(QString::fromStdString(to),textMeshes_.value(QString::fromStdString(from)));textMathColors_.insert(QString::fromStdString(to),textMathColors_.value(QString::fromStdString(from)));textSizes_.insert(QString::fromStdString(to),textSize(from));}
     std::span<const Point> mathGeometry(const std::string& id) const {const auto i=textMeshes_.constFind(QString::fromStdString(id));return i==textMeshes_.cend()?std::span<const Point>{}:std::span<const Point>{i.value()};}
     QSizeF textSize(const std::string& id) const {return textSizes_.value(QString::fromStdString(id));}
+    std::span<const MathColorRun> mathColors(const std::string& id) const {const auto i=textMathColors_.constFind(QString::fromStdString(id));return i==textMathColors_.cend()?std::span<const MathColorRun>{}:std::span<const MathColorRun>{i.value()};}
+    void cacheTextVisual(const std::string& id,const TextVisual& visual){const auto key=QString::fromStdString(id);images_.insert(key,visual.text);textMeshes_.insert(key,visual.math);textSizes_.insert(key,visual.naturalSize);textMathColors_.insert(key,visual.mathColors);}
     QImage image(const std::string& id) const {return images_.value(QString::fromStdString(id));}
     void changeObjects(std::vector<ObjectChange> changes,CommandKind kind);
     void eraseObjects(std::vector<ObjectChange> changes,std::vector<StrokeObject> recoverable);
@@ -257,6 +260,7 @@ private:
     QString importPageId_;
     QHash<QString,QImage> images_;
     QHash<QString,std::vector<Point>> textMeshes_;
+    QHash<QString,std::vector<MathColorRun>> textMathColors_;
     QHash<QString,QSizeF> textSizes_;
     quint64 revision_=0;
     bool recognitionEnabled_=true;

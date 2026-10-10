@@ -2,6 +2,13 @@
 #include "app/Branding.h"
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+#include <QQmlComponent>
+#include <QQuickTextDocument>
+#include <QTextDocument>
+#include <QTextBlock>
+#include <QTextLayout>
+#include <QFontDatabase>
+#include <QSyntaxHighlighter>
 #include <QQuickWindow>
 #include <QQuickStyle>
 #include <QImage>
@@ -15,6 +22,7 @@
 #include <QDropEvent>
 #include <QTabletEvent>
 #include <QWheelEvent>
+#include <QHoverEvent>
 #include <QPointingDevice>
 #include <QPdfWriter>
 #include <QPainter>
@@ -36,6 +44,7 @@
 #include "rendering/PageRenderer.h"
 #include "rendering/ShapeRasterCache.h"
 #include "rendering/StrokeMesh.h"
+#include "rendering/TextFormatting.h"
 using namespace scalar;
 QQuickItem* findVisualItem(QQuickItem* parent,const QString& name){
     if(parent->objectName()==name)return parent;
@@ -51,6 +60,7 @@ public:
     using CanvasItem::mouseReleaseEvent;
     using CanvasItem::mouseDoubleClickEvent;
     using CanvasItem::mouseUngrabEvent;
+    using CanvasItem::hoverMoveEvent;
 };
 class ZoomInspectableCanvas : public CanvasItem {
 public:
@@ -183,6 +193,119 @@ private slots:
         QTest::qWait(200);QVERIFY(!window.grabWindow().isNull());QVERIFY(!findObject(*controller.page(),ids.back()));
         qInfo()<<"32 markers / 128,000 samples; maximum refinement CPU scene synchronization:"<<canvas->maxSyncNs/1000000.<<"ms";
         controller.redo();QCOMPARE(controller.page()->strokes.size(),std::size_t(32));canvas->fitPage();QVERIFY(!window.grabWindow().isNull());QVERIFY(findObject(*controller.page(),ids.back()));window.hide();delete canvas;QVERIFY(controller.shutdown());
+    }
+    void selectionFramesRotateAndTextResizeReflows(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        TextObject text;text.id=newId();text.source="A sentence with enough words to wrap onto several lines when the text box becomes narrow.";text.fontFamily="Lobster Two";text.boxWidthMm=80;text.corners={{50,80},{130,80},{130,100},{50,100}};
+        const auto prepared=prepareText(text);QVERIFY(prepared.error.isEmpty());text=prepared.object;controller.cacheTextVisual(text.id,{prepared.image,prepared.geometry,prepared.error,prepared.naturalSize});controller.changeObjects({{{},CanvasObject(text)}},CommandKind::AddObject);
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(800);canvas.setController(&controller);canvas.restorePageView();canvas.setTool("select");
+        const auto send=[&](QEvent::Type type,QPointF screen,Qt::KeyboardModifiers modifiers=Qt::NoModifier){QMouseEvent event(type,screen,screen,type==QEvent::MouseMove?Qt::NoButton:Qt::LeftButton,type==QEvent::MouseButtonRelease?Qt::NoButton:Qt::LeftButton,modifiers);if(type==QEvent::MouseButtonPress)canvas.mousePressEvent(&event);else if(type==QEvent::MouseMove)canvas.mouseMoveEvent(&event);else canvas.mouseReleaseEvent(&event);};
+        const auto click=[&](Point p,Qt::KeyboardModifiers modifiers=Qt::NoModifier){const auto s=canvas.screenPoint({p.x,p.y});send(QEvent::MouseButtonPress,s,modifiers);send(QEvent::MouseButtonRelease,s,modifiers);};
+        const auto handle=[&](const QString& type){for(const auto& value:canvas.selectionHandles()){const auto h=value.toMap();if(h["type"].toString()==type)return QPointF(h["x"].toDouble(),h["y"].toDouble());}return QPointF{};};
+        click(text.corners[0]+Point{5,5});QCOMPARE(canvas.selectedCount(),1);
+        const auto frame=canvas.selectionFrame();const auto center=frame.center(),rotate=handle("rotate");const auto delta=rotate-center;const QPointF rotated=center+QPointF(-delta.y(),delta.x());
+        send(QEvent::MouseButtonPress,rotate);send(QEvent::MouseMove,rotated);QVERIFY(std::abs(canvas.selectionRotation()-90)<1e-6);send(QEvent::MouseButtonRelease,rotated);
+        const auto rotatedText=controller.page()->texts[0];QVERIFY(std::abs(canvas.selectionRotation()-90)<1e-6);
+        const auto frameOrigin=canvas.selectionFrame().topLeft();const auto resize=handle("resize");
+        const auto bottomRight=frameOrigin+QPointF(-canvas.selectionFrame().height(),canvas.selectionFrame().width());QVERIFY(QLineF(resize,bottomRight).length()<1e-6);
+        QHoverEvent hover(QEvent::HoverMove,resize,resize,resize,Qt::NoModifier);canvas.hoverMoveEvent(&hover);QCOMPARE(canvas.cursor().shape(),Qt::SizeBDiagCursor);
+        const auto target=frameOrigin+(resize-frameOrigin)/2;
+        send(QEvent::MouseButtonPress,resize);QCOMPARE(canvas.cursor().shape(),Qt::SizeBDiagCursor);send(QEvent::MouseMove,target);QCOMPARE(canvas.cursor().shape(),Qt::SizeBDiagCursor);send(QEvent::MouseButtonRelease,target);QCOMPARE(canvas.cursor().shape(),Qt::ArrowCursor);
+        const auto resized=controller.page()->texts[0];QCOMPARE(resized.fontSizePt,text.fontSizePt);QVERIFY(resized.boxWidthMm<text.boxWidthMm*.6);
+        QVERIFY(length(resized.corners[3]-resized.corners[0])>length(rotatedText.corners[3]-rotatedText.corners[0]));
+        const auto natural=textNaturalSize(resized);QVERIFY(std::abs(length(resized.corners[1]-resized.corners[0])/natural.width()-1)<1e-6);
+        QVERIFY(length(resized.corners[0]-rotatedText.corners[0])<1e-6);
+        QVERIFY(resized.boxHeightMm>=5);
+        const auto heightResize=handle("resize");const auto taller=heightResize+QPointF(-canvas.selectionFrame().height(),0);
+        send(QEvent::MouseButtonPress,heightResize);send(QEvent::MouseMove,taller);send(QEvent::MouseButtonRelease,taller);
+        const auto expanded=controller.page()->texts[0];QCOMPARE(expanded.fontSizePt,text.fontSizePt);QVERIFY(std::abs(expanded.boxWidthMm-resized.boxWidthMm)<1e-6);QVERIFY(expanded.boxHeightMm>resized.boxHeightMm);
+        controller.undo();
+        controller.undo();QCOMPARE(controller.page()->texts[0].boxWidthMm,text.boxWidthMm);QVERIFY(std::abs(canvas.selectionRotation()-90)<1e-6);
+        controller.undo();QVERIFY(std::abs(canvas.selectionRotation())<1e-6);controller.redo();QVERIFY(std::abs(canvas.selectionRotation()-90)<1e-6);
+        canvas.setTool("pen");canvas.setTool("select");
+        StrokeObject first;first.id=newId();first.samples={{{40,180},1},{{70,180},1}};auto second=first;second.id=newId();second.samples={{{40,210},1},{{70,210},1}};controller.addStroke(first);controller.addStroke(second);
+        click({50,180});click({50,210},Qt::ShiftModifier);QCOMPARE(canvas.selectedCount(),2);
+        const auto group=canvas.selectionFrame();const auto groupRotate=handle("rotate"),groupDelta=groupRotate-group.center();const auto groupTarget=group.center()+QPointF(-groupDelta.y(),groupDelta.x());
+        send(QEvent::MouseButtonPress,groupRotate);send(QEvent::MouseMove,groupTarget);send(QEvent::MouseButtonRelease,groupTarget);QVERIFY(std::abs(canvas.selectionRotation()-90)<1e-6);
+        const auto groupResize=handle("resize");const auto doubleSize=canvas.selectionFrame().topLeft()+(groupResize-canvas.selectionFrame().topLeft())*2;
+        send(QEvent::MouseButtonPress,groupResize);send(QEvent::MouseMove,doubleSize);send(QEvent::MouseButtonRelease,doubleSize);
+        const auto& stroke=controller.page()->strokes[0];QVERIFY(std::abs(length(stroke.samples.back().position-stroke.samples.front().position)-60)<1e-6);
+        controller.undo();controller.undo();QVERIFY(std::abs(canvas.selectionRotation())<1e-6);controller.redo();QVERIFY(std::abs(canvas.selectionRotation()-90)<1e-6);QVERIFY(controller.shutdown());
+    }
+    void rotatedTextControlsAndInlineCornerResize(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        controller.upsertText({},QPointF(90,100),{{"source","Short text"},{"fontSizePt",16},{"boxWidthMm",60},{"boxHeightMm",30}});QTRY_VERIFY(!controller.textBusy());QCOMPARE(controller.page()->texts.size(),std::size_t(1));
+        const auto original=controller.page()->texts[0];const auto rotated=transformed(CanvasObject(original),original.corners[0],{},1,1,std::numbers::pi/4);controller.changeObjects({{CanvasObject(original),rotated}},CommandKind::TransformObject);
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);canvas->setTool("select");canvas->selectText(QString::fromStdString(original.id));
+        auto* controls=findVisualItem(window->contentItem(),"selectedTextControls");QVERIFY(controls);QVERIFY(controls->isVisible());QVERIFY(std::abs(controls->rotation()-45)<1e-6);
+        canvas->editSelectedText();auto* inlineEditor=window->findChild<QObject*>("inlineTextEditor");QVERIFY(inlineEditor);QTRY_VERIFY(inlineEditor->property("active").toBool());QCoreApplication::processEvents();
+        auto* selectionFrame=findVisualItem(window->contentItem(),"selectionFrame");auto* handles=window->findChild<QObject*>("selectionHandleRepeater");QVERIFY(selectionFrame);QVERIFY(handles);QVERIFY(!selectionFrame->isVisible());QCOMPARE(handles->property("count").toInt(),0);
+        auto* box=findVisualItem(window->contentItem(),"inlineTextBox");auto* inlineControls=findVisualItem(window->contentItem(),"inlineTextControls");auto* resize=findVisualItem(window->contentItem(),"inlineTextResizeHandle");QVERIFY(box);QVERIFY(inlineControls);QVERIFY(resize);QCOMPARE(inlineControls->parentItem(),box);QVERIFY(std::abs(box->rotation()-45)<1e-6);
+        const double width=inlineEditor->property("boxWidth").toDouble(),height=inlineEditor->property("boxHeight").toDouble();
+        const auto start=resize->mapToScene({resize->width()/2,resize->height()/2});const auto end=box->mapToScene({box->width()+40,box->height()+30});
+        QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,start.toPoint());QTest::mouseMove(window,end.toPoint());QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,end.toPoint());
+        QVERIFY(inlineEditor->property("boxWidth").toDouble()>width);QVERIFY(inlineEditor->property("boxHeight").toDouble()>height);QCOMPARE(inlineEditor->property("draft").toMap()["fontSizePt"].toDouble(),16.);
+        QVERIFY(!selectionFrame->isVisible());QCOMPARE(handles->property("count").toInt(),0);
+        QTest::keyClick(window,Qt::Key_Return,Qt::ControlModifier);QTRY_VERIFY(!inlineEditor->property("active").toBool());const auto updated=controller.page()->texts[0];QCOMPARE(updated.fontSizePt,16.);QVERIFY(updated.boxWidthMm>width);QVERIFY(updated.boxHeightMm>height);const auto edge=updated.corners[1]-updated.corners[0];QVERIFY(std::abs(std::atan2(edge.y,edge.x)-std::numbers::pi/4)<1e-6);
+        QTRY_VERIFY(selectionFrame->isVisible());QTRY_VERIFY(handles->property("count").toInt()>0);
+        canvas->editSelectedText();QTRY_VERIFY(inlineEditor->property("active").toBool());QCoreApplication::processEvents();
+        auto* source=findVisualItem(window->contentItem(),"textSource");QVERIFY(source);QVERIFY(QMetaObject::invokeMethod(source,"select",Q_ARG(int,0),Q_ARG(int,5)));
+        auto* swatch=findVisualItem(window->contentItem(),"inlineTextColor_3");QVERIFY(swatch);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,swatch->mapToScene({swatch->width()/2,swatch->height()/2}).toPoint());
+        QCOMPARE(source->property("selectionStart").toInt(),0);QCOMPARE(source->property("selectionEnd").toInt(),5);
+        auto* wrapper=source->property("textDocument").value<QObject*>();const auto coloredFormats=controller.textFormats(wrapper,false,false);QVERIFY(!coloredFormats.isEmpty());QCOMPARE(coloredFormats[0].toMap()["start"].toInt(),0);QCOMPARE(coloredFormats[0].toMap()["length"].toInt(),5);QVERIFY(coloredFormats[0].toMap().contains("color"));
+        auto* formatButton=findVisualItem(window->contentItem(),"textFormatButton");QVERIFY(formatButton);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,formatButton->mapToScene({formatButton->width()/2,formatButton->height()/2}).toPoint());
+        auto* dialog=window->findChild<QObject*>("textDialog");QVERIFY(dialog);QTRY_VERIFY(dialog->property("visible").toBool());auto draft=dialog->property("draft").toMap();draft["color"]="#cc5364";dialog->setProperty("draft",draft);
+        auto* apply=findVisualItem(window->contentItem(),"applyTextFormatButton");QVERIFY(apply);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,apply->mapToScene({apply->width()/2,apply->height()/2}).toPoint());QTRY_VERIFY(!dialog->property("visible").toBool());
+        const auto chosen=controller.textFormats(wrapper,false,false);QCOMPARE(QColor(chosen[0].toMap()["color"].toString()),QColor("#cc5364"));QCOMPARE(chosen[0].toMap()["length"].toInt(),5);
+        QVERIFY(window->grabWindow().save("text-editing-toolbar.png"));
+        QTest::keyClick(window,Qt::Key_Return,Qt::ControlModifier);QTRY_VERIFY(!inlineEditor->property("active").toBool());const auto coloredText=controller.page()->texts[0];QVERIFY(coloredText.formats[0].rgba);QCOMPARE(*coloredText.formats[0].rgba,std::uint32_t(0xcc5364ff));QCOMPARE(coloredText.style.rgba,updated.style.rgba);
+        const auto loaded=ProjectStore::deserialize(ProjectStore::serialize(Project{newId(),"Colors","now","now",{*controller.page()}}));QVERIFY(loaded);QCOMPARE(loaded.project.pages[0].texts[0].formats,coloredText.formats);
+        canvas->editSelectedText();QTRY_VERIFY(inlineEditor->property("active").toBool());QCoreApplication::processEvents();QVERIFY(QMetaObject::invokeMethod(source,"select",Q_ARG(int,0),Q_ARG(int,0)));
+        swatch=findVisualItem(window->contentItem(),"inlineTextColor_1");QVERIFY(swatch);const auto wholeColor=swatch->property("swatch").value<QColor>();QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,swatch->mapToScene({swatch->width()/2,swatch->height()/2}).toPoint());
+        const auto wholeFormats=controller.textFormats(wrapper,false,false);QCOMPARE(wholeFormats.size(),1);QCOMPARE(wholeFormats[0].toMap()["length"].toInt(),source->property("text").toString().size());QCOMPARE(QColor(wholeFormats[0].toMap()["color"].toString()).rgba(),wholeColor.rgba());
+        formatButton=findVisualItem(window->contentItem(),"textFormatButton");QVERIFY(formatButton);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,formatButton->mapToScene({formatButton->width()/2,formatButton->height()/2}).toPoint());QTRY_VERIFY(dialog->property("visible").toBool());draft=dialog->property("draft").toMap();draft["color"]="#397ce0";dialog->setProperty("draft",draft);
+        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,apply->mapToScene({apply->width()/2,apply->height()/2}).toPoint());QTRY_VERIFY(!dialog->property("visible").toBool());const auto all=controller.textFormats(wrapper,false,false);QCOMPARE(all.size(),1);QCOMPARE(all[0].toMap()["length"].toInt(),source->property("text").toString().size());QCOMPARE(QColor(all[0].toMap()["color"].toString()),QColor("#397ce0"));
+        QTest::keyClick(window,Qt::Key_Return,Qt::ControlModifier);QTRY_VERIFY(!inlineEditor->property("active").toBool());
+        QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
+    }
+    void mathSourceUsesMonospaceOnlyWhileEditing(){
+        QQmlEngine engine;QQmlComponent component(&engine);
+        component.setData("import QtQuick\nTextEdit { font.family: \"Lobster Two\"; font.pixelSize: 24; textFormat: TextEdit.PlainText }",QUrl());
+        std::unique_ptr<QObject> editor(component.create());QVERIFY2(editor,qPrintable(component.errorString()));
+        const auto source=QStringLiteral("Área \\$20 $x^2$ fim\n$$a+b\n=c$$ final");editor->setProperty("text",source);
+        auto* wrapper=qobject_cast<QQuickTextDocument*>(editor->property("textDocument").value<QObject*>());QVERIFY(wrapper);
+        restoreTextFormats(wrapper,{});auto* document=wrapper->textDocument();QCOMPARE(document->toPlainText(),source);
+        const auto familyAt=[&](int position){const auto block=document->findBlock(position);for(const auto& format:block.layout()->formats())
+            if(position-block.position()>=format.start&&position-block.position()<format.start+format.length)return format.format.font().families().value(0);return QString{};};
+        const auto mono=QFontDatabase::systemFont(QFontDatabase::FixedFont).family();
+        QCOMPARE(familyAt(source.indexOf("x^2")),mono);QVERIFY(familyAt(0).isEmpty());QVERIFY(familyAt(source.indexOf("20")).isEmpty());
+        QCOMPARE(familyAt(source.indexOf("a+b")),mono);QCOMPARE(familyAt(source.indexOf("=c")),mono);QVERIFY(familyAt(source.indexOf("final")).isEmpty());
+        QVERIFY(textFormats(wrapper,false,false).isEmpty());
+        const auto updated=source+" $\\int_a^b";editor->setProperty("text",updated);QCoreApplication::processEvents();
+        QCOMPARE(familyAt(updated.indexOf("\\int")),mono);QCOMPARE(document->toPlainText(),updated);
+        restoreTextFormats(wrapper,{});QCOMPARE(document->findChildren<QSyntaxHighlighter*>().size(),1);
+        const auto colored=QStringLiteral("normal $\\frac{12.5}{x_2} \\% % ignored $\n+y$ end");
+        editor->setProperty("text",colored);QCoreApplication::processEvents();
+        const auto colorAt=[&](int position){const auto block=document->findBlock(position);for(const auto& span:block.layout()->formats())
+            if(position-block.position()>=span.start&&position-block.position()<span.start+span.length)return span.format.foreground().color();return QColor{};};
+        QCOMPARE(colorAt(colored.indexOf("\\frac")),QColor("#93c5fd"));
+        QCOMPARE(colorAt(colored.indexOf("12.5")),QColor("#fcd34d"));
+        QCOMPARE(colorAt(colored.indexOf('{')),QColor("#c4b5fd"));
+        QCOMPARE(colorAt(colored.indexOf("ignored")),QColor("#94a3b8"));
+        QCOMPARE(colorAt(colored.indexOf("\\%")),QColor("#93c5fd"));
+        QCOMPARE(familyAt(colored.indexOf("+y")),mono);QVERIFY(familyAt(colored.indexOf("end")).isEmpty());
+        editor->setProperty("syntaxBackground",QColor("white"));restoreTextFormats(wrapper,{});
+        QCOMPARE(colorAt(colored.indexOf("\\frac")),QColor("#1d4ed8"));
+        QVERIFY(textFormats(wrapper,false,false).isEmpty());QCOMPARE(document->toPlainText(),colored);
+        editor->setProperty("text","Alpha Beta");restoreTextFormats(wrapper,{{QVariantMap{{"start",0},{"length",5},{"bold",true},{"italic",false}}}});
+        colorTextSelection(wrapper,6,10,QColor("#cc5364"));const auto spans=textFormats(wrapper,false,false);QCOMPARE(spans.size(),2);QVERIFY(!spans[0].toMap().contains("color"));QCOMPARE(spans[1].toMap()["start"].toInt(),6);QCOMPARE(spans[1].toMap()["length"].toInt(),4);
+        restoreTextFormats(wrapper,spans);QCOMPARE(textFormats(wrapper,false,false),spans);
+        TextObject t;t.source="Alpha Beta";t.fontFamily="Lobster Two";t.style.rgba=0x397ce0ff;t.formats={{6,4,false,false,0xcc5364ff}};
+        const auto bitmap=textBitmap(t,8);QVERIFY(!bitmap.isNull());bool red=false,blue=false;for(int y=0;y<bitmap.height();++y)for(int x=0;x<bitmap.width();++x){const auto color=bitmap.pixelColor(x,y);if(color.alpha()>220){red|=color.red()>color.blue()*1.5;blue|=color.blue()>color.red()*1.5;}}QVERIFY(red);QVERIFY(blue);
+        QImage vector(bitmap.size(),QImage::Format_ARGB32_Premultiplied);vector.fill(Qt::transparent);QPainter painter(&vector);painter.scale(8,8);QVERIFY(paintVectorText(painter,t).isEmpty());painter.end();red=false;blue=false;for(int y=0;y<vector.height();++y)for(int x=0;x<vector.width();++x){const auto color=vector.pixelColor(x,y);if(color.alpha()>220){red|=color.red()>color.blue()*1.5;blue|=color.blue()>color.red()*1.5;}}QVERIFY(red);QVERIFY(blue);
+        t.source="$x$";t.formats={{1,1,false,false,0xcc5364ff}};t.math={{"x","<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1000 1000\"><path d=\"M0 0L1000 0L0 1000Z\"/></svg>",false,0,3,1,1}};
+        const auto mathVisual=textVisual(t,8);QVERIFY(mathVisual.error.isEmpty());QVERIFY(!mathVisual.math.empty());QCOMPARE(mathVisual.mathColors.size(),std::size_t(1));QCOMPARE(mathVisual.mathColors[0].rgba,std::uint32_t(0xcc5364ff));QCOMPARE(mathVisual.mathColors[0].count,mathVisual.math.size());
     }
     void selectionMovesFromEmptyInteriorAndOffersExports(){
         QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();

@@ -83,7 +83,7 @@ QByteArray ProjectStore::serialize(const Project& p) {
             if(!image.erasedRegions.empty()){QJsonArray regions;for(const auto& e:image.erasedRegions)regions.append(QJsonArray{e.from.x,e.from.y,e.to.x,e.to.y,e.radius,e.restore});object["erasedRegions"]=regions;}strokes.append(object);
         }
         for(const auto& t:page.texts){
-            QJsonArray formats;for(const auto& f:t.formats)formats.append(QJsonObject{{"start",double(f.start)},{"length",double(f.length)},{"bold",f.bold},{"italic",f.italic}});
+            QJsonArray formats;for(const auto& f:t.formats){QJsonObject span{{"start",double(f.start)},{"length",double(f.length)},{"bold",f.bold},{"italic",f.italic}};if(f.rgba)span.insert("rgba",double(*f.rgba));formats.append(span);}
             QJsonArray corners,math;for(auto point:t.corners)corners.append(QJsonArray{point.x,point.y});
             for(const auto& f:t.math)math.append(QJsonObject{{"latex",text(f.latex)},{"svg",text(f.svg)},{"display",f.display},{"start",double(f.start)},{"length",double(f.length)},{"widthEm",f.widthEm},{"heightEm",f.heightEm}});
             strokes.append(QJsonObject{{"id",text(t.id)},{"type","text"},{"source",text(t.source)},{"fontFamily",text(t.fontFamily)},{"fontSizePt",t.fontSizePt},{"boxWidthMm",t.boxWidthMm},{"boxHeightMm",t.boxHeightMm},{"bold",t.bold},{"italic",t.italic},{"alignment",t.alignment},{"rgba",double(t.style.rgba)},{"corners",corners},{"math",math},{"formats",formats},{"zIndex",double(t.properties.zIndex)},{"locked",t.properties.locked},{"visible",t.properties.visible}});
@@ -159,7 +159,9 @@ LoadResult ProjectStore::deserialize(const QByteArray& data) {
                     for(const auto& value:s["formats"].toArray()){
                         const auto f=value.toObject();const auto start=f["start"].toDouble(),length=f["length"].toDouble();
                         if(!finite(f["start"])||!finite(f["length"])||start<previous||length<=0||start>count||length>count-start||std::floor(start)!=start||std::floor(length)!=length||!f["bold"].isBool()||!f["italic"].isBool())return fail("Formatação de texto inválida.");
-                        t.formats.push_back({std::size_t(start),std::size_t(length),f["bold"].toBool(),f["italic"].toBool()});previous=std::size_t(start+length);
+                        TextFormat span{std::size_t(start),std::size_t(length),f["bold"].toBool(),f["italic"].toBool()};
+                        if(f.contains("rgba")){const auto color=f["rgba"].toDouble(-1);if(!finite(f["rgba"])||color<0||color>4294967295.||std::floor(color)!=color)return fail("Cor de texto inválida.");span.rgba=std::uint32_t(color);}
+                        t.formats.push_back(span);previous=std::size_t(start+length);
                     }
                 }
                 const auto corners=s["corners"].toArray();if(corners.size()!=4)return fail("Texto sem quatro cantos.");

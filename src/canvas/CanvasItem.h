@@ -9,6 +9,7 @@
 #include <QQuickWindow>
 #include <QPointer>
 #include "rendering/ShapeRasterCache.h"
+#include "rendering/TextRenderer.h"
 namespace scalar {
 class CanvasItem : public QQuickItem {
     Q_OBJECT
@@ -39,6 +40,8 @@ class CanvasItem : public QQuickItem {
     Q_PROPERTY(QString selectedGuide READ selectedGuide NOTIFY geometryToolsChanged)
     Q_PROPERTY(QVariantList selectionHandles READ selectionHandles NOTIFY selectionChanged)
     Q_PROPERTY(QRectF selectionRect READ selectionRect NOTIFY selectionChanged)
+    Q_PROPERTY(QRectF selectionFrame READ selectionFrame NOTIFY selectionChanged)
+    Q_PROPERTY(double selectionRotation READ selectionRotation NOTIFY selectionChanged)
     Q_PROPERTY(QString selectionName READ selectionName NOTIFY selectionChanged)
     Q_PROPERTY(double selectedWidth READ selectedWidth NOTIFY selectionChanged)
     Q_PROPERTY(int selectedPattern READ selectedPattern NOTIFY selectionChanged)
@@ -113,6 +116,8 @@ public:
     QString selectedGuide() const {return selectedGuide_;}
     QVariantList selectionHandles() const;
     QRectF selectionRect() const;
+    QRectF selectionFrame() const;
+    double selectionRotation() const;
     QString selectionName() const;
     double selectedFill() const;
     QColor selectedFillColor() const;
@@ -255,6 +260,12 @@ private:
     std::vector<CanvasObject> editBefore_,editPreview_;
     Point dragStart_;
     Bounds editBounds_;
+    struct SelectionFrame {Point origin;double width=0,height=0,angle=0;};
+    SelectionFrame selectionFrame_,editFrame_;
+    std::vector<std::string> frameIds_;
+    double frameAngleOffset_=0;
+    QSizeF editTextSize_;
+    std::optional<TextVisual> textResizeVisual_;
     int handleIndex_=-1;
     bool marqueeAdditive_=false;
     double eraserRadius_=3;

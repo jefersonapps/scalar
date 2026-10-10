@@ -98,12 +98,13 @@ struct MathFragment {
 struct TextFormat {
     std::size_t start=0,length=0; // UTF-16 positions, matching the text editor
     bool bold=false,italic=false;
+    std::optional<std::uint32_t> rgba;
     bool operator==(const TextFormat&) const=default;
 };
 struct TextObject {
     std::string id,source,fontFamily;
     PenStyle style; // shared RGBA color, retained across text and math edits
-    double fontSizePt=18;
+    double fontSizePt=16;
     double boxWidthMm=0,boxHeightMm=0; // zero retains legacy automatic sizing
     bool bold=false,italic=false;
     int alignment=0; // left, center, right
