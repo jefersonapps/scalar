@@ -1,12 +1,12 @@
 # Runs only in the install staging directory used by CPack on Windows.
 # windeployqt copies Qt DLLs, QML imports, platform plugins, image codecs,
 # SQL drivers and the MSVC runtime beside the installed executable.
-set(_scalar_executable "\${CMAKE_INSTALL_PREFIX}/bin/scalar.exe")
-if(NOT EXISTS "\${_scalar_executable}")
+set(_scalar_executable "${CMAKE_INSTALL_PREFIX}/bin/scalar.exe")
+if(NOT EXISTS "${_scalar_executable}")
     message(FATAL_ERROR "Scalar executable was not installed before Qt deployment.")
 endif()
 execute_process(
-    COMMAND "@SCALAR_WINDEPLOYQT_EXECUTABLE@" --qmldir "@CMAKE_CURRENT_SOURCE_DIR@/qml" --compiler-runtime --no-translations "\${_scalar_executable}"
+    COMMAND "@SCALAR_WINDEPLOYQT_EXECUTABLE@" --qmldir "@CMAKE_CURRENT_SOURCE_DIR@/qml" --compiler-runtime --no-translations "${_scalar_executable}"
     RESULT_VARIABLE _scalar_windeployqt_result)
 if(NOT _scalar_windeployqt_result EQUAL 0)
     message(FATAL_ERROR "windeployqt failed while preparing the Scalar installer.")

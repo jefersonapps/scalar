@@ -18,12 +18,14 @@
 #include <QPointingDevice>
 #include <QPdfWriter>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPageSize>
 #include <QSGTransformNode>
 #include <QSGGeometryNode>
 #include <QSGSimpleTextureNode>
 #include <memory>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <numbers>
 #include "app/AppController.h"
@@ -33,6 +35,7 @@
 #include "rendering/TextRenderer.h"
 #include "rendering/PageRenderer.h"
 #include "rendering/ShapeRasterCache.h"
+#include "rendering/StrokeMesh.h"
 using namespace scalar;
 QQuickItem* findVisualItem(QQuickItem* parent,const QString& name){
     if(parent->objectName()==name)return parent;
@@ -41,27 +44,520 @@ QQuickItem* findVisualItem(QQuickItem* parent,const QString& name){
 }
 class InspectableCanvas : public CanvasItem {
 public:
+    using CanvasItem::CanvasItem;
     using CanvasItem::updatePaintNode;
     using CanvasItem::mousePressEvent;
+    using CanvasItem::mouseMoveEvent;
     using CanvasItem::mouseReleaseEvent;
+    using CanvasItem::mouseDoubleClickEvent;
+    using CanvasItem::mouseUngrabEvent;
 };
 class ZoomInspectableCanvas : public CanvasItem {
 public:
     using CanvasItem::CanvasItem;
     double tileWidth=0;
     int renderedFrames=0;
+    std::vector<std::pair<QSGTexture*,QRectF>> textures;
+    qint64 maxSyncNs=0;
 protected:
     QSGNode* updatePaintNode(QSGNode* old,UpdatePaintNodeData* data) override {
-        auto* root=CanvasItem::updatePaintNode(old,data);++renderedFrames;
+        QElapsedTimer timer;timer.start();auto* root=CanvasItem::updatePaintNode(old,data);maxSyncNs=std::max(maxSyncNs,timer.nsecsElapsed());++renderedFrames;
         auto* clip=root->firstChild()->nextSibling();
+        textures.clear();for(auto* item=clip->firstChild();item;item=item->nextSibling())for(auto* child=item->firstChild();child;child=child->nextSibling())if(auto* tile=dynamic_cast<QSGSimpleTextureNode*>(child))textures.emplace_back(tile->texture(),tile->rect());
         auto* object=clip->lastChild();
         if(object&&object->firstChild())if(auto* texture=dynamic_cast<QSGSimpleTextureNode*>(object->firstChild()))tileWidth=texture->rect().width();
         return root;
     }
 };
+class MarkerInspectableCanvas : public CanvasItem {
+public:
+    using CanvasItem::CanvasItem;
+    std::atomic<int> reusedTiles=0,tileCount=0;
+    std::atomic<int> renderedFrames=0;
+    std::atomic<qint64> maxSyncNs=0;
+protected:
+    QSGNode* updatePaintNode(QSGNode* old,UpdatePaintNodeData* data) override {
+        QElapsedTimer timer;timer.start();
+        auto* root=CanvasItem::updatePaintNode(old,data);
+        std::map<std::pair<double,double>,QSGTexture*> textures;
+        auto* live=root->firstChild()->nextSibling()->lastChild();
+        if((drawing()||tool()=="eraser")&&live)for(auto* child=live->firstChild();child;child=child->nextSibling())if(auto* tile=dynamic_cast<QSGSimpleTextureNode*>(child))textures[{tile->rect().x(),tile->rect().y()}]=tile->texture();
+        int reused=0;for(const auto& [key,texture]:textures)if(previous_.contains(key)&&previous_[key]==texture)++reused;
+        reusedTiles=reused;tileCount=int(textures.size());previous_=std::move(textures);maxSyncNs=std::max(maxSyncNs.load(),timer.nsecsElapsed());++renderedFrames;return root;
+    }
+private:
+    std::map<std::pair<double,double>,QSGTexture*> previous_;
+};
 class DesktopTests : public QObject {
     Q_OBJECT
 private slots:
+    void erasureRecoveryEndsWhenBoardCloses(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        StrokeObject marker;marker.id=newId();marker.marker=true;marker.style.minWidthMm=marker.style.maxWidthMm=6;marker.samples={{{40,60},1},{{100,60},1}};controller.addStroke(marker);
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();canvas.setTool("eraser");canvas.setEraserRadius(2);
+        const auto erase=[&](Qt::KeyboardModifiers modifiers){const auto p=canvas.screenPoint({70,60});QMouseEvent press(QEvent::MouseButtonPress,p,p,Qt::LeftButton,Qt::LeftButton,modifiers),release(QEvent::MouseButtonRelease,p,p,Qt::LeftButton,Qt::NoButton,modifiers);canvas.mousePressEvent(&press);canvas.mouseReleaseEvent(&release);};
+        erase(Qt::NoModifier);QVERIFY(!hitTest(controller.page()->strokes.front(),{70,60},0));erase(Qt::ShiftModifier);QVERIFY(hitTest(controller.page()->strokes.front(),{70,60},0));erase(Qt::NoModifier);
+        const auto path=directory.filePath("session-erase.board");controller.saveAs(QUrl::fromLocalFile(path));QTRY_VERIFY(!controller.busy());QVERIFY(!controller.page()->strokes.front().erasedRegions.empty());controller.undo();QVERIFY(hitTest(controller.page()->strokes.front(),{70,60},0));controller.redo();QVERIFY(!hitTest(controller.page()->strokes.front(),{70,60},0));
+        controller.home();controller.openPath(path);QTRY_VERIFY(!controller.loading());QVERIFY(controller.page()->strokes.front().erasedRegions.empty());QVERIFY(controller.page()->erasedInk.empty());QVERIFY(controller.page()->strokes.front().eraseMask);QVERIFY(!controller.canUndo());erase(Qt::ShiftModifier);QVERIFY(!hitTest(controller.page()->strokes.front(),{70,60},0));QVERIFY(controller.page()->strokes.front().erasedRegions.empty());QVERIFY(controller.shutdown());
+    }
+    void deletingPagesKeepsCurrentPageAndLastBlankPage(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));controller.newDefault();controller.addPage();controller.addPage();const auto currentId=controller.page()->id;
+        auto* popup=window->findChild<QObject*>("pagesPanel");QVERIFY(popup);QVERIFY(QMetaObject::invokeMethod(popup,"open"));QTest::qWait(100);auto* button=findVisualItem(window->contentItem(),"deletePageButton_1");QVERIFY(button);QVERIFY(button->isVisible());QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,button->mapToScene({button->width()/2,button->height()/2}).toPoint());QCOMPARE(controller.pageCount(),2);QCOMPARE(controller.currentPage(),1);QCOMPARE(controller.page()->id,currentId);
+        controller.deletePage(1);QCOMPARE(controller.pageCount(),1);QCOMPARE(controller.currentPage(),0);StrokeObject pen;pen.id=newId();pen.samples={{{10,10},1},{{20,20},1}};controller.addStroke(pen);controller.deletePage(0);QCOMPARE(controller.pageCount(),1);QVERIFY(controller.page()->strokes.empty());controller.deletePage(-1);controller.deletePage(10);QCOMPARE(controller.pageCount(),1);
+        const auto path=directory.filePath("deleted-pages.board");controller.saveAs(QUrl::fromLocalFile(path));QTRY_VERIFY(!controller.busy());const auto loaded=ProjectStore::load(path);QVERIFY(loaded);QCOMPARE(loaded.project.pages.size(),std::size_t(1));QVERIFY(loaded.project.pages.front().strokes.empty());QVERIFY(warnings.isEmpty());QVERIFY(controller.shutdown());
+    }
+    void erasedGeometryCannotBeSelectedAndAnglesHide(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        ShapeObject sector;sector.id=newId();sector.kind=ShapeKind::CircularSector;sector.center={80,80};sector.radiusX=sector.radiusY=12;sector.showAngle=true;sector.vertices={sector.center};for(int i=0;i<=32;++i){const double a=i*std::numbers::pi/64;sector.vertices.push_back(sector.center+Point{12*std::cos(a),12*std::sin(a)});}controller.addShape(sector);
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();canvas.setTool("select");QCOMPARE(canvas.sectorAngles().size(),1);
+        const auto send=[&](QEvent::Type type,QPointF world){const auto p=canvas.screenPoint(world);QMouseEvent event(type,p,p,type==QEvent::MouseMove?Qt::NoButton:Qt::LeftButton,type==QEvent::MouseButtonRelease?Qt::NoButton:Qt::LeftButton,Qt::NoModifier);if(type==QEvent::MouseButtonPress)canvas.mousePressEvent(&event);else if(type==QEvent::MouseMove)canvas.mouseMoveEvent(&event);else canvas.mouseReleaseEvent(&event);};
+        send(QEvent::MouseButtonPress,{84,84});send(QEvent::MouseButtonRelease,{84,84});QCOMPARE(canvas.selectedCount(),1);
+        auto hidden=sector;hidden.erasedRegions.push_back({{80,80},{80,80},30});++hidden.properties.revision;controller.changeObjects({{CanvasObject(sector),CanvasObject(hidden)}},CommandKind::ChangeStyle);QCOMPARE(canvas.selectedCount(),0);QVERIFY(canvas.sectorAngles().isEmpty());
+        // A click outside the eraser disk but within selection tolerance of the
+        // original contour must not select invisible geometry.
+        send(QEvent::MouseButtonPress,{92,80});send(QEvent::MouseButtonRelease,{92,80});QCOMPARE(canvas.selectedCount(),0);
+        send(QEvent::MouseButtonPress,{40,40});send(QEvent::MouseMove,{120,120});send(QEvent::MouseButtonRelease,{120,120});QCOMPARE(canvas.selectedCount(),0);
+        controller.undo();QCOMPARE(canvas.sectorAngles().size(),1);send(QEvent::MouseButtonPress,{84,84});send(QEvent::MouseButtonRelease,{84,84});QCOMPARE(canvas.selectedCount(),1);controller.redo();QCOMPARE(canvas.selectedCount(),0);QVERIFY(canvas.sectorAngles().isEmpty());
+        ShapeObject line;line.id=newId();line.kind=ShapeKind::Line;line.vertices={{40,140},{100,140}};line.erasedRegions={{{40,140},{70,140},2}};controller.addShape(line);
+        send(QEvent::MouseButtonPress,{50,142.2});send(QEvent::MouseButtonRelease,{50,142.2});QCOMPARE(canvas.selectedCount(),0);
+        send(QEvent::MouseButtonPress,{90,140});send(QEvent::MouseButtonRelease,{90,140});QCOMPARE(canvas.selectedCount(),1);QVERIFY(controller.shutdown());
+    }
+    void sectorAngleTogglePersistsAndFollowsView(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));controller.newDefault();QTRY_VERIFY(!controller.busy());auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);
+        ShapeObject sector;sector.id=newId();sector.kind=ShapeKind::CircularSector;sector.center={100,100};sector.radiusX=sector.radiusY=20;sector.vertices={sector.center};for(int i=0;i<=32;++i){const double a=i*std::numbers::pi/64;sector.vertices.push_back(sector.center+Point{20*std::cos(a),20*std::sin(a)});}controller.addShape(sector);canvas->setTool("select");
+        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,canvas->mapToScene(canvas->screenPoint({107,107})).toPoint());QCOMPARE(canvas->selectionName(),QString::fromUtf8("Setor circular"));auto* toggle=findVisualItem(window->contentItem(),"showSectorAngleToggle");QVERIFY(toggle);QVERIFY(toggle->isVisible());QVERIFY(!canvas->selectedShowAngle());QVERIFY(QMetaObject::invokeMethod(toggle,"toggle"));QVERIFY(QMetaObject::invokeMethod(toggle,"toggled"));QVERIFY(canvas->selectedShowAngle());QCOMPARE(canvas->sectorAngles().size(),1);QVERIFY(std::abs(canvas->sectorAngles().front().toMap()["angle"].toDouble()-90)<1e-8);
+        QTRY_VERIFY(findVisualItem(window->contentItem(),"sectorAngleLabel"));const auto position=canvas->sectorAngles().front().toMap();canvas->zoomBy(1.5);QVERIFY(canvas->sectorAngles().front().toMap()!=position);controller.undo();QVERIFY(canvas->sectorAngles().isEmpty());controller.redo();QCOMPARE(canvas->sectorAngles().size(),1);
+        const auto path=directory.filePath("angle.board");controller.saveAs(QUrl::fromLocalFile(path));QTRY_VERIFY(!controller.busy());controller.home();controller.openPath(path);QTRY_VERIFY(!controller.loading());QVERIFY(controller.page()->shapes.front().showAngle);QCOMPARE(canvas->sectorAngles().size(),1);QVERIFY(warnings.isEmpty());QVERIFY(controller.shutdown());
+    }
+    void eraserReleaseHidesBeforePositionChanges(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();canvas.setTool("eraser");
+        const auto send=[&](QEvent::Type type,QPointF world){const auto p=canvas.screenPoint(world);QMouseEvent event(type,p,p,type==QEvent::MouseMove?Qt::NoButton:Qt::LeftButton,type==QEvent::MouseButtonRelease?Qt::NoButton:Qt::LeftButton,Qt::NoModifier);if(type==QEvent::MouseButtonPress)canvas.mousePressEvent(&event);else if(type==QEvent::MouseMove)canvas.mouseMoveEvent(&event);else canvas.mouseReleaseEvent(&event);};
+        send(QEvent::MouseButtonPress,{50,50});for(int i=0;i<100;++i)send(QEvent::MouseMove,{50+i*.1,50});QVERIFY(canvas.eraserVisible());
+        bool visibleDuringRelease=false;connect(&canvas,&CanvasItem::selectionChanged,&canvas,[&]{visibleDuringRelease|=canvas.eraserVisible();});
+        send(QEvent::MouseButtonRelease,{0,0});QVERIFY(!visibleDuringRelease);QVERIFY(!canvas.eraserVisible());QVERIFY(controller.shutdown());
+    }
+    void segmentAnglesSnapAndPatternSettingsUndo(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        ShapeObject line;line.id=newId();line.kind=ShapeKind::Line;line.vertices={{50,100},{100,100}};controller.addShape(line);
+        InspectableCanvas canvas;canvas.setWidth(1200);canvas.setHeight(1000);canvas.setController(&controller);canvas.restorePageView();canvas.setTool("select");
+        const auto send=[&](QEvent::Type type,QPointF world,Qt::KeyboardModifiers modifiers=Qt::NoModifier){const auto p=canvas.screenPoint(world);QMouseEvent event(type,p,p,type==QEvent::MouseMove?Qt::NoButton:Qt::LeftButton,type==QEvent::MouseButtonRelease?Qt::NoButton:Qt::LeftButton,modifiers);if(type==QEvent::MouseButtonPress)canvas.mousePressEvent(&event);else if(type==QEvent::MouseMove)canvas.mouseMoveEvent(&event);else canvas.mouseReleaseEvent(&event);};
+        send(QEvent::MouseButtonPress,{75,100});QCOMPARE(canvas.segmentGuide()["angle"].toDouble(),0.);send(QEvent::MouseButtonRelease,{75,100});QVERIFY(canvas.segmentGuide().isEmpty());
+        const double radians=22*std::numbers::pi/180;const QPointF target(50+50*std::cos(radians),100-50*std::sin(radians));
+        send(QEvent::MouseButtonPress,{100,100});send(QEvent::MouseMove,target,Qt::ControlModifier);QVERIFY(std::abs(canvas.segmentGuide()["angle"].toDouble()-15)<1e-8);send(QEvent::MouseButtonRelease,target,Qt::ControlModifier);QVERIFY(canvas.segmentGuide().isEmpty());
+        const auto angle=[&]{const auto delta=controller.page()->shapes.front().vertices[1]-controller.page()->shapes.front().vertices[0];return std::atan2(-delta.y,delta.x)*180/std::numbers::pi;};
+        QVERIFY(std::abs(angle()-15)<1e-8);controller.undo();QVERIFY(std::abs(angle())<1e-8);controller.redo();QVERIFY(std::abs(angle()-15)<1e-8);
+        auto rotateHandle=QVariantMap{};for(const auto& handle:canvas.selectionHandles())if(handle.toMap()["type"].toString()=="rotate")rotateHandle=handle.toMap();QVERIFY(!rotateHandle.isEmpty());
+        const auto shape=controller.page()->shapes.front();const auto center=bounds(CanvasObject(shape)).center();const QPointF pivot(center.x,center.y);const auto screenOrigin=canvas.screenPoint({0,0});const double scale=canvas.screenPoint({1,0}).x()-screenOrigin.x();const auto pointer=(QPointF(rotateHandle["x"].toDouble(),rotateHandle["y"].toDouble())-screenOrigin)/scale;
+        const double turn=-17*std::numbers::pi/180;const auto offset=pointer-pivot;const QPointF rotated=pivot+QPointF(offset.x()*std::cos(turn)-offset.y()*std::sin(turn),offset.x()*std::sin(turn)+offset.y()*std::cos(turn));
+        send(QEvent::MouseButtonPress,pointer);send(QEvent::MouseMove,rotated,Qt::ControlModifier);QVERIFY(std::abs(canvas.segmentGuide()["angle"].toDouble()-30)<1e-8);send(QEvent::MouseButtonRelease,rotated,Qt::ControlModifier);QVERIFY(std::abs(angle()-30)<1e-8);
+        canvas.setSelectedPattern(1);canvas.setSelectedDashLength(2.25);canvas.setSelectedGapLength(.45);QCOMPARE(controller.page()->shapes.front().style.dashLengthMm,2.25);QCOMPARE(controller.page()->shapes.front().style.gapLengthMm,.45);controller.undo();QCOMPARE(controller.page()->shapes.front().style.gapLengthMm,PenStyle{}.gapLengthMm);controller.redo();QCOMPARE(canvas.selectedGapLength(),.45);
+        canvas.setSelectedPattern(2);canvas.setSelectedDotSpacing(.6);QCOMPARE(controller.page()->shapes.front().style.dotSpacingMm,.6);QVERIFY(PenStyle{}.dashLengthMm<3);QVERIFY(PenStyle{}.dotSpacingMm<2.5);QVERIFY(controller.shutdown());
+    }
+    void penShortcutPreservesActiveInk(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();controller.setRecognitionEnabled(false);
+        QQmlApplicationEngine engine;engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);
+        const auto screen=[&](QPointF p){return canvas->mapToScene(canvas->screenPoint(p)).toPoint();};
+        const std::vector<std::pair<int,QString>> shortcuts{{Qt::Key_P,"pen"},{Qt::Key_M,"marker"},{Qt::Key_E,"eraser"},{Qt::Key_V,"select"},{Qt::Key_T,"text"},{Qt::Key_H,"hand"}};
+        for(const auto& tool:{QString("pen"),QString("marker")})for(const auto& [key,target]:shortcuts){
+            canvas->setTool(tool);canvas->forceActiveFocus();const auto count=controller.page()->strokes.size();
+            QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,screen({30,40}));QTest::mouseMove(window,screen({50,50}),0);QVERIFY(canvas->drawing());QTest::keyPress(window,Qt::Key(key));
+            QCOMPARE(canvas->tool(),target);if(tool==target)QVERIFY(canvas->drawing());else{QVERIFY(!canvas->drawing());QCOMPARE(controller.page()->strokes.size(),count+1);QCOMPARE(controller.page()->strokes.back().marker,tool=="marker");}
+            QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,screen({70,40}),0);QCOMPARE(controller.page()->strokes.size(),count+1);QCOMPARE(controller.page()->strokes.back().marker,tool=="marker");QVERIFY(controller.page()->strokes.back().samples.size()>=2);
+            QTest::keyRelease(window,Qt::Key(key));
+            controller.undo();QCOMPARE(controller.page()->strokes.size(),count);controller.redo();QCOMPARE(controller.page()->strokes.size(),count+1);
+        }
+        QVERIFY(controller.shutdown());
+    }
+    void manyMarkersRefineAsynchronouslyAndIgnoreStaleResults(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();auto background=controller.background();background["gridType"]=int(GridType::None);controller.setBackground(background);
+        std::vector<std::string> ids;
+        for(int n=0;n<32;++n){StrokeObject marker;marker.id=newId();marker.marker=true;marker.style.rgba=0xff000059;marker.style.minWidthMm=marker.style.maxWidthMm=4;for(int i=0;i<4000;++i)marker.samples.push_back({{30+140.*i/3999,40+n*6.+std::sin(i*.008)},1});ids.push_back(marker.id);controller.addStroke(marker);}
+        QQuickWindow window;window.resize(1000,700);auto* canvas=new ZoomInspectableCanvas(window.contentItem());canvas->setWidth(1000);canvas->setHeight(700);canvas->setController(&controller);canvas->fitPage();window.show();QVERIFY(QTest::qWaitForWindowExposed(&window));QVERIFY(!window.grabWindow().isNull());const auto before=canvas->textures;QVERIFY(before.size()>32);canvas->maxSyncNs=0;
+        for(int i=0;i<4;++i){canvas->zoomBy(1.4);QVERIFY(!window.grabWindow().isNull());}
+        QTest::qWait(180);QVERIFY(!window.grabWindow().isNull());
+        // Undo while refinement may still be running. A worker owns its data;
+        // its eventual result must never resurrect the removed marker.
+        controller.undo();QCOMPARE(controller.page()->strokes.size(),std::size_t(31));
+        QTRY_VERIFY_WITH_TIMEOUT((window.grabWindow(),canvas->textures!=before),5000);
+        QTest::qWait(200);QVERIFY(!window.grabWindow().isNull());QVERIFY(!findObject(*controller.page(),ids.back()));
+        qInfo()<<"32 markers / 128,000 samples; maximum refinement CPU scene synchronization:"<<canvas->maxSyncNs/1000000.<<"ms";
+        controller.redo();QCOMPARE(controller.page()->strokes.size(),std::size_t(32));canvas->fitPage();QVERIFY(!window.grabWindow().isNull());QVERIFY(findObject(*controller.page(),ids.back()));window.hide();delete canvas;QVERIFY(controller.shutdown());
+    }
+    void selectionMovesFromEmptyInteriorAndOffersExports(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        StrokeObject first;first.id=newId();first.samples={{{85,135},1},{{105,135},1}};auto second=first;second.id=newId();second.samples={{{85,165},1},{{105,165},1}};
+        controller.addStroke(first);controller.addStroke(second);
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);QTest::qWait(50);canvas->setTool("select");canvas->setZoom(1);QTest::qWait(50);
+        const auto point=[&](Point p){return canvas->mapToScene(canvas->screenPoint({p.x,p.y})).toPoint();};
+        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,point({95,135}));QCOMPARE(canvas->selectedCount(),1);QTest::mouseClick(window,Qt::LeftButton,Qt::ShiftModifier,point({95,165}));QCOMPARE(canvas->selectedCount(),2);
+        QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,point({95,150}));QTest::mouseMove(window,point({100,155}));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,point({100,155}));
+        QCOMPARE(canvas->selectedCount(),2);QVERIFY(std::abs(controller.page()->strokes[0].samples[0].position.x-90)<.3);
+        controller.undo();QCOMPARE(controller.page()->strokes[0].samples[0].position.x,85.);
+        QTest::mouseClick(window,Qt::RightButton,Qt::NoModifier,point({95,150}));
+        auto* menu=window->findChild<QObject*>("selectionContextMenu");QVERIFY(menu);QTRY_VERIFY(menu->property("opened").toBool());QCOMPARE(canvas->selectedCount(),2);
+        QVERIFY(findVisualItem(window->contentItem(),"contextExportSelectionPdfButton"));QVERIFY(findVisualItem(window->contentItem(),"contextExportSelectionSvgButton"));
+        QVERIFY(QMetaObject::invokeMethod(menu,"close"));
+        QVERIFY(findVisualItem(window->contentItem(),"exportSelectionPdfButton"));QVERIFY(findVisualItem(window->contentItem(),"exportSelectionSvgButton"));
+        canvas->exportSelection(QUrl::fromLocalFile(directory.filePath("selected.svg")),true);QTRY_VERIFY(!controller.exporting());QVERIFY(QFileInfo::exists(directory.filePath("selected.svg")));
+        QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
+    }
+    void freehandSmoothingRemovesJitterAndKeepsLivePathStable(){
+        std::vector<PointerSample> raw;for(int i=0;i<100;++i)raw.push_back({{i*.2,std::sin(i*.07)+(i%2?.08:-.08)},.7});
+        const auto smooth=smoothStrokeSamples(raw);QVERIFY(smooth.front().position==raw.front().position);QVERIFY(smooth.back().position==raw.back().position);
+        double before=0,after=0;for(int i=3;i<97;++i){before+=std::abs(raw[i].position.y-std::sin(i*.07));
+            double nearest=1e9;Point point{};for(const auto& sample:smooth){const double distance=std::abs(sample.position.x-raw[i].position.x);if(distance<nearest){nearest=distance;point=sample.position;}}
+            after+=std::abs(point.y-std::sin(point.x*.35));}QVERIFY(after<before*.5);
+        std::vector<PointerSample> input,live{raw.front()};std::size_t stable=1;
+        for(const auto& sample:raw){input.push_back(sample);live.resize(stable);
+            if(input.size()>=5){appendSmoothStrokeSegment(input,input.size()-5,live);stable=live.size();}
+            for(std::size_t segment=input.size()>4?input.size()-4:0;segment+1<input.size();++segment)appendSmoothStrokeSegment(input,segment,live);}
+        QCOMPARE(live.size(),smooth.size());for(std::size_t i=0;i<live.size();++i)QVERIFY(length(live[i].position-smooth[i].position)<1e-9);
+        const std::vector<PointerSample> corner{{{0,0},1},{{2,0},1},{{2,2},1}};const auto result=smoothStrokeSamples(corner);
+        QVERIFY(std::any_of(result.begin(),result.end(),[](const auto& sample){return length(sample.position-Point{2,0})<1e-9;}));
+    }
+    void compactPenMeshPreservesPressureCurvesAndRoundEnds(){
+        std::vector<StrokeObject> cases;
+        StrokeObject curve;curve.style.minWidthMm=.15;curve.style.maxWidthMm=1.2;
+        for(int i=0;i<1200;++i)curve.samples.push_back({{2+36.*i/1199,10+3*std::sin(i*.01)},.5+.4*std::sin(i*.02)});cases.push_back(curve);
+        auto straight=curve;for(auto& sample:straight.samples)sample.position.y=6;cases.push_back(straight);
+        auto corners=curve;corners.samples={{{5,5},1},{{15,15},1},{{15,5},1},{{25,5},1},{{5,5},1}};cases.push_back(corners);
+        auto reversed=corners;reversed.samples={{{5,5},1},{{30,5},1},{{5,5},1},{{5,5},.3},{{30,8},1}};cases.push_back(reversed);
+        auto tap=corners;tap.samples={{{20,10},1},{{20,10},.3},{{20,10},1}};cases.push_back(tap);
+        const auto image=[](const std::vector<Point>& mesh){QImage bitmap(1344,704,QImage::Format_RGB32);bitmap.fill(Qt::white);QPainter painter(&bitmap);painter.scale(32,32);QPainterPath path;path.setFillRule(Qt::WindingFill);
+            for(std::size_t i=0;i+2<mesh.size();i+=3){auto a=mesh[i],b=mesh[i+1],c=mesh[i+2];if((b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x)<0)std::swap(b,c);path.moveTo(a.x,a.y);path.lineTo(b.x,b.y);path.lineTo(c.x,c.y);path.closeSubpath();}painter.fillPath(path,Qt::black);return bitmap;};
+        for(const auto& stroke:cases){const auto original=stroke.samples;const auto compact=strokeDisplayMesh(stroke);QVERIFY(!compact.empty());QCOMPARE(compact.size()%3,std::size_t(0));for(auto p:compact)QVERIFY(std::isfinite(p.x)&&std::isfinite(p.y));
+            const auto reference=image(strokeMesh(stroke)),actual=image(compact);int missing=0,extra=0,ink=0;
+            const auto nearby=[](const QImage& bitmap,int x,int y){for(int dy=-1;dy<=1;++dy)for(int dx=-1;dx<=1;++dx)if(qRed(bitmap.pixel(x+dx,y+dy))<128)return true;return false;};
+            for(int y=1;y+1<actual.height();++y)for(int x=1;x+1<actual.width();++x){if(qRed(reference.pixel(x,y))<128){++ink;if(!nearby(actual,x,y))++missing;}if(qRed(actual.pixel(x,y))<128&&!nearby(reference,x,y))++extra;}
+            qInfo()<<"Compact pen coverage: missing/extra/reference pixels"<<missing<<extra<<ink;
+            QVERIFY(missing<ink*.015+10);QVERIFY(extra<ink*.015+10);QCOMPARE(stroke.samples.size(),original.size());
+            for(std::size_t i=0;i<original.size();++i){QVERIFY(stroke.samples[i].position==original[i].position);QCOMPARE(stroke.samples[i].pressure,original[i].pressure);}
+        }
+        QVERIFY(strokeDisplayMesh(curve).size()<strokeMesh(curve).size()/3);
+    }
+    void densePenZoomRetainsMeshesAndCullsInvisibleInk(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();auto background=controller.background();background["gridType"]=int(GridType::None);controller.setBackground(background);
+        std::size_t legacy=0,compact=0;
+        for(int n=0;n<120;++n){StrokeObject pen;pen.id=newId();for(int i=0;i<1200;++i)pen.samples.push_back({{20+160.*i/1199,20+n*2.+std::sin(i*.015)},.5+.3*std::sin(i*.008)});legacy+=strokeMesh(pen).size();compact+=strokeDisplayMesh(pen).size();controller.addStroke(pen);}
+        StrokeObject distant;distant.id=newId();distant.samples={{{1000,1000},1},{{1100,1000},1}};controller.addStroke(distant);
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.fitPage();std::unique_ptr<QSGNode> scene(canvas.updatePaintNode(nullptr,nullptr));auto* clip=scene->firstChild()->nextSibling();
+        QVERIFY(clip->lastChild()->firstChild()->isSubtreeBlocked());std::vector<QSGNode*> nodes;for(auto* child=clip->firstChild();child;child=child->nextSibling())nodes.push_back(child);
+        QElapsedTimer timer;timer.start();for(int step=0;step<160;++step){canvas.zoomBy(step<80?1.03:1/1.03);scene.reset(canvas.updatePaintNode(scene.release(),nullptr));std::size_t index=0;for(auto* child=clip->firstChild();child;child=child->nextSibling())QCOMPARE(child,nodes[index++]);QCOMPARE(index,nodes.size());}
+        qInfo()<<"Dense pen: original/display vertices"<<legacy<<compact<<"; 160 CPU scene updates"<<timer.elapsed()<<"ms";QVERIFY(compact<legacy/3);QCOMPARE(controller.page()->strokes.front().samples.size(),std::size_t(1200));QVERIFY(controller.shutdown());
+    }
+    void densePenOnlyZoomRendersOnGpu(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();auto background=controller.background();background["gridType"]=int(GridType::None);background["color"]="#ffffff";controller.setBackground(background);
+        for(int n=0;n<120;++n){StrokeObject pen;pen.id=newId();pen.style.rgba=0x202020ff;for(int i=0;i<1200;++i)pen.samples.push_back({{20+160.*i/1199,20+n*2.+std::sin(i*.015)},.5+.3*std::sin(i*.008)});controller.addStroke(pen);}
+        QQuickWindow window;window.resize(1000,700);auto* canvas=new ZoomInspectableCanvas(window.contentItem());canvas->setWidth(1000);canvas->setHeight(700);canvas->setController(&controller);canvas->fitPage();window.show();QVERIFY(QTest::qWaitForWindowExposed(&window));
+        if(window.rendererInterface()->graphicsApi()==QSGRendererInterface::Software)QSKIP("Custom pen meshes require the RHI backend.");
+        const auto countInk=[](const QImage& image){int count=0;for(int y=0;y<image.height();++y)for(int x=0;x<image.width();++x)if(image.pixelColor(x,y).lightness()<100)++count;return count;};
+        const auto before=window.grabWindow();QVERIFY(!before.isNull());const int initialInk=countInk(before);QVERIFY(initialInk>1000);canvas->maxSyncNs=0;
+        for(int direction:{1,-1})for(int frame=0;frame<4;++frame){for(int step=0;step<5;++step)canvas->zoomBy(direction>0?1.05:1/1.05);const auto rendered=window.grabWindow();QVERIFY(!rendered.isNull());QVERIFY(countInk(rendered)>1000);}
+        const auto after=window.grabWindow();QVERIFY(std::abs(countInk(after)-initialInk)<initialInk*.02+20);
+        qInfo()<<"Pen-only GPU zoom, 144,000 samples; maximum CPU scene synchronization:"<<canvas->maxSyncNs/1000000.<<"ms";
+        QCOMPARE(controller.page()->strokes.size(),std::size_t(120));QCOMPARE(controller.page()->strokes[0].samples.size(),std::size_t(1200));window.hide();delete canvas;QVERIFY(controller.shutdown());
+    }
+    void denseInkZoomReusesTexturesInBothDirections(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        auto background=controller.background();background["gridType"]=int(GridType::None);controller.setBackground(background);
+        for(int n=0;n<24;++n){StrokeObject marker;marker.id=newId();marker.marker=true;marker.style.rgba=0xff000059;marker.style.minWidthMm=marker.style.maxWidthMm=3;
+            for(int i=0;i<1000;++i)marker.samples.push_back({{40+100.*i/999,50+n*5.+std::sin(i*.03)},1});controller.addStroke(marker);}
+        StrokeObject pen;pen.id=newId();for(int i=0;i<3000;++i)pen.samples.push_back({{40+100.*i/2999,190+std::sin(i*.03)},.5});controller.addStroke(pen);
+        QQuickWindow window;window.resize(1000,700);auto* canvas=new ZoomInspectableCanvas(window.contentItem());canvas->setWidth(1000);canvas->setHeight(700);canvas->setController(&controller);canvas->fitPage();
+        window.show();QVERIFY(QTest::qWaitForWindowExposed(&window));QVERIFY(!window.grabWindow().isNull());
+        const auto initial=canvas->textures;QVERIFY(initial.size()>24);canvas->maxSyncNs=0;
+        // Cross several resolution bands; zooming out reveals more paper but
+        // none of these fully cached objects requires new pixels.
+        for(int i=0;i<8;++i){for(int step=0;step<4;++step)canvas->zoomBy(1/1.05);QVERIFY(!window.grabWindow().isNull());QCOMPARE(canvas->textures,initial);}
+        for(int i=0;i<8;++i){for(int step=0;step<6;++step)canvas->zoomBy(1.05);QVERIFY(!window.grabWindow().isNull());QCOMPARE(canvas->textures,initial);}
+        qInfo()<<"80 zoom steps with 24,000 marker samples and 3,000 pen samples; maximum CPU scene synchronization:"<<canvas->maxSyncNs/1000000.<<"ms";
+        QTest::qWait(200);QTRY_VERIFY_WITH_TIMEOUT((window.grabWindow(),canvas->textures!=initial),5000);
+        window.hide();delete canvas;
+        QVERIFY(controller.shutdown());
+    }
+    void externalEditsInvalidateEraserSnapshot(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        StrokeObject stroke;stroke.id=newId();stroke.samples={{{20,50},1},{{80,50},1}};controller.addStroke(stroke);
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();canvas.setTool("eraser");
+        const auto press=[&](QPointF point){const auto p=canvas.screenPoint(point);QMouseEvent event(QEvent::MouseButtonPress,p,p,Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);canvas.mousePressEvent(&event);};
+        const auto release=[&](QPointF point){const auto p=canvas.screenPoint(point);QMouseEvent event(QEvent::MouseButtonRelease,p,p,Qt::LeftButton,Qt::NoButton,Qt::NoModifier);canvas.mouseReleaseEvent(&event);};
+        press({50,50});const auto moved=transformed(stroke,{},{0,100});controller.changeObjects({{CanvasObject(stroke),moved}},CommandKind::TransformObject);release({50,50});
+        QCOMPARE(controller.page()->strokes.size(),std::size_t(1));QVERIFY(controller.page()->erasedInk.empty());QVERIFY(hitTest(controller.page()->strokes[0],{50,150},0));
+        press({50,150});release({50,150});QCOMPARE(controller.page()->strokes.size(),std::size_t(2));QVERIFY(!controller.page()->erasedInk.empty());
+        QVERIFY(controller.shutdown());
+    }
+    void fastMarkerErasingReusesRenderedTiles(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();controller.setRecognitionEnabled(false);
+        StrokeObject marker;marker.id=newId();marker.marker=true;marker.style.rgba=0xff000059;marker.style.minWidthMm=marker.style.maxWidthMm=8;
+        for(int i=0;i<10000;++i)marker.samples.push_back({{20+160.*i/9999,60+std::sin(i*.005)},1});controller.addStroke(marker);
+        QQuickWindow window;window.resize(1000,700);auto* canvas=new MarkerInspectableCanvas(window.contentItem());canvas->setWidth(1000);canvas->setHeight(700);canvas->setController(&controller);canvas->restorePageView();canvas->setTool("eraser");canvas->setEraserRadius(1.5);
+        window.show();QVERIFY(QTest::qWaitForWindowExposed(&window));const auto before=window.grabWindow();QVERIFY(!before.isNull());const auto allocated=canvas->tileCount.load();QVERIFY(allocated>1);canvas->maxSyncNs=0;
+        const auto screen=[&](QPointF p){return canvas->screenPoint(p).toPoint();};
+        const auto sample=[&](const QImage& image,QPointF p){const auto logical=canvas->screenPoint(p);return image.pixelColor(int(logical.x()*image.width()/window.width()),int(logical.y()*image.height()/window.height()));};
+        const auto untouched=sample(before,{50,60}),paper=sample(before,{125,30});
+        QTest::mousePress(&window,Qt::LeftButton,Qt::NoModifier,screen({125,60}));
+        for(int i=0;i<300;++i){QTest::mouseMove(&window,screen({125+std::sin(i*.05)*.3,60+std::cos(i*.05)*.3}),0);if(i%20==0){
+            const auto frames=canvas->renderedFrames.load();canvas->update();QTRY_VERIFY_WITH_TIMEOUT(canvas->renderedFrames.load()>frames,2500);
+            QVERIFY(!window.grabWindow().isNull());QCOMPARE(canvas->tileCount.load(),allocated);QVERIFY(canvas->reusedTiles.load()>0);
+        }}
+        QTest::mouseRelease(&window,Qt::LeftButton,Qt::NoModifier,screen({125,60}),0);const auto erased=window.grabWindow();QCOMPARE(sample(erased,{125,60}),paper);QCOMPARE(sample(erased,{50,60}),untouched);
+        qInfo()<<"300 fast marker eraser moves; maximum CPU scene synchronization:"<<canvas->maxSyncNs.load()/1000000.<<"ms";
+        controller.undo();const auto restored=window.grabWindow();QCOMPARE(sample(restored,{125,60}),sample(before,{125,60}));controller.redo();QCOMPARE(sample(window.grabWindow(),{125,60}),paper);
+        QVERIFY(controller.shutdown());
+    }
+    void mixedEraserFastSweepsPreserveRecoveryAndUnrelatedObjects(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();controller.setRecognitionEnabled(false);
+        StrokeObject pen;pen.id=newId();for(int i=0;i<5000;++i)pen.samples.push_back({{20+60.*i/4999,40},.2+.8*(i%10)/9});controller.addStroke(pen);
+        auto marker=pen;marker.id=newId();marker.marker=true;marker.style.minWidthMm=marker.style.maxWidthMm=8;marker.style.rgba=0xff000059;for(auto& sample:marker.samples)sample.position.y=60;controller.addStroke(marker);
+        ShapeObject shape;shape.id=newId();shape.kind=ShapeKind::Rectangle;shape.vertices={{35,45},{65,45},{65,70},{35,70}};controller.addShape(shape);
+        std::vector<std::string> untouched;
+        for(int object=0;object<300;++object){StrokeObject distant;distant.id=newId();for(int i=0;i<100;++i)distant.samples.push_back({{1000+object*10.+i*.05,1000+std::sin(i*.05)},1});untouched.push_back(distant.id);controller.addStroke(distant);}
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();canvas.setTool("eraser");canvas.setEraserRadius(3);canvas.setEraserShapes(true);
+        const auto send=[&](QEvent::Type type,QPointF point,Qt::KeyboardModifiers modifiers=Qt::NoModifier){const auto p=canvas.screenPoint(point);QMouseEvent event(type,p,p,type==QEvent::MouseMove?Qt::NoButton:Qt::LeftButton,type==QEvent::MouseButtonRelease?Qt::NoButton:Qt::LeftButton,modifiers);if(type==QEvent::MouseButtonPress)canvas.mousePressEvent(&event);else if(type==QEvent::MouseButtonRelease)canvas.mouseReleaseEvent(&event);else canvas.mouseMoveEvent(&event);};
+        QElapsedTimer timer;timer.start();send(QEvent::MouseButtonPress,{50,25});send(QEvent::MouseMove,{50,75});
+        for(int i=0;i<500;++i)send(QEvent::MouseMove,{50+std::sin(i*.1),60+std::cos(i*.1)});
+        send(QEvent::MouseButtonRelease,{50,75});qInfo()<<"Fast mixed erase: 500 moves, 300 unrelated objects:"<<timer.elapsed()<<"ms";
+        QVERIFY(!hitTest(controller.page()->shapes.front(),{50,60},0));
+        QVERIFY(std::none_of(controller.page()->strokes.begin(),controller.page()->strokes.end(),[&](const auto& stroke){return !stroke.marker&&hitTest(stroke,{50,40},0);}));
+        for(const auto& id:untouched){const auto object=findObject(*controller.page(),id);QVERIFY(object);QCOMPARE(properties(*object).revision,std::uint64_t(0));QCOMPARE(std::get<StrokeObject>(*object).samples.size(),std::size_t(100));}
+        controller.undo();QCOMPARE(controller.page()->strokes.size(),std::size_t(302));QVERIFY(controller.page()->shapes.front().erasedRegions.empty());controller.redo();QVERIFY(!controller.page()->erasedInk.empty());
+        send(QEvent::MouseButtonPress,{50,25},Qt::ShiftModifier);send(QEvent::MouseMove,{50,75},Qt::ShiftModifier);send(QEvent::MouseButtonRelease,{50,75},Qt::ShiftModifier);
+        QVERIFY(hitTest(controller.page()->shapes.front(),{50,60},0));QVERIFY(std::any_of(controller.page()->strokes.begin(),controller.page()->strokes.end(),[](const auto& stroke){return !stroke.marker&&hitTest(stroke,{50,40},0);}));
+        const auto filename=directory.filePath("mixed-eraser.board");controller.saveAs(QUrl::fromLocalFile(filename));QTRY_VERIFY(!controller.busy());const auto saved=ProjectStore::load(filename);QVERIFY(saved);QCOMPARE(saved.project.pages[0].strokes.size(),controller.page()->strokes.size());QCOMPARE(saved.project.pages[0].shapes.front().erasedRegions.size(),controller.page()->shapes.front().erasedRegions.size());
+        QVERIFY(controller.shutdown());
+    }
+    void longMarkerErasureStaysIncrementalAndReversible(){
+        StrokeObject marker;marker.id=newId();marker.marker=true;marker.style.rgba=0xff000059;marker.style.minWidthMm=marker.style.maxWidthMm=10;
+        for(int i=0;i<5000;++i)marker.samples.push_back({{20+60.*i/4999,40+4*std::sin(i*.01)},1});
+        // Retracing must retain a single marker opacity.
+        for(int i=4999;i>=0;--i)marker.samples.push_back(marker.samples[std::size_t(i)]);
+        ShapeRasterCache raster;const QRectF visible(0,20,100,40);QElapsedTimer timer;timer.start();raster.update(marker,8,visible);const auto initialMs=timer.elapsed();
+        const auto alphaAt=[&](Point point){for(const auto& [key,tile]:raster.tiles())if(tile.worldRect.contains(QPointF(point.x,point.y)))return tile.image.pixelColor(int((point.x-tile.worldRect.left())*8)+1,int((point.y-tile.worldRect.top())*8)+1).alpha();return -1;};
+        QCOMPARE(alphaAt({50,40}),89);const auto allocated=raster.tiles().size();std::map<ShapeRasterCache::Key,qint64> originals;for(const auto& [key,tile]:raster.tiles())originals[key]=tile.original.cacheKey();timer.restart();
+        Page exported;exported.id=newId();exported.size=PageSize{100,80};exported.background=0x00000000;exported.backgroundStyle.gridType=GridType::None;exported.strokes={marker};
+        QImage bitmap(800,640,QImage::Format_ARGB32_Premultiplied);bitmap.fill(Qt::transparent);QPainter painter(&bitmap);painter.scale(8,8);QVERIFY(paintPage(painter,exported,8).isEmpty());painter.end();QCOMPARE(bitmap.pixelColor(400,320).alpha(),89);
+        timer.restart();
+        for(int i=0;i<200;++i){const Point a{45+(i%20)*.5,37},b{a.x+.5,43};marker.erasedRegions.push_back({a,b,1.5,i>=100});raster.update(marker,8,visible);QVERIFY(raster.updatedTiles()<=4);QCOMPARE(raster.tiles().size(),allocated);}
+        qInfo()<<"10,000-point marker: initial raster"<<initialMs<<"ms; 200 erase/restore updates"<<timer.elapsed()<<"ms";
+        QCOMPARE(alphaAt({50,40}),89);
+        ShapeRasterCache reloaded;reloaded.update(marker,8,visible);for(const auto& [key,tile]:raster.tiles())QCOMPARE(tile.image,reloaded.tiles().at(key).image);
+        marker.erasedRegions.push_back({{20,40},{80,40},20});raster.update(marker,8,visible);QCOMPARE(alphaAt({50,40}),0);
+        marker.erasedRegions.pop_back();raster.update(marker,8,visible);QCOMPARE(alphaAt({50,40}),89);
+        for(const auto& [key,tile]:raster.tiles())QCOMPARE(tile.original.cacheKey(),originals.at(key));
+    }
+    void largePenMeshesKeepEveryTriangleAndPersist(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();controller.setRecognitionEnabled(false);
+        auto background=controller.background();background["gridType"]=int(GridType::None);controller.setBackground(background);
+        StrokeObject stroke;stroke.id=newId();
+        for(int i=0;i<25000;++i)stroke.samples.push_back({{20+170.*i/24999,60+10*std::sin(i*.03)},.2+.8*(i%10)/9});
+        controller.addStroke(stroke);
+        const auto expected=strokeDisplayMesh(stroke);QVERIFY(expected.size()>65535);
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();
+        std::unique_ptr<QSGNode> scene(canvas.updatePaintNode(nullptr,nullptr));auto* object=scene->firstChild()->nextSibling()->firstChild();QVERIFY(object);QVERIFY(object->childCount()>1);
+        std::size_t offset=0;
+        for(auto* child=object->firstChild();child;child=child->nextSibling()){
+            auto* node=dynamic_cast<QSGGeometryNode*>(child);QVERIFY(node);const auto* geometry=node->geometry();QVERIFY(geometry->vertexCount()<=60000);QCOMPARE(geometry->vertexCount()%3,0);
+            const auto* points=geometry->vertexDataAsPoint2D();
+            for(int i=0;i<geometry->vertexCount();++i){QCOMPARE(points[i].x,float(expected[offset].x));QCOMPARE(points[i].y,float(expected[offset].y));++offset;}
+        }
+        QCOMPARE(offset,expected.size());
+        controller.undo();QVERIFY(controller.page()->strokes.empty());controller.redo();QCOMPARE(controller.page()->strokes.size(),std::size_t(1));
+        const auto filename=directory.filePath("large-fast-pen.board");controller.saveAs(QUrl::fromLocalFile(filename));QTRY_VERIFY(!controller.busy());const auto saved=ProjectStore::load(filename);QVERIFY(saved);
+        QCOMPARE(saved.project.pages[0].strokes[0].samples.size(),stroke.samples.size());QVERIFY(saved.project.pages[0].strokes[0].samples.back().position==stroke.samples.back().position);
+        QVERIFY(controller.shutdown());
+    }
+    void fastPenRemainsVisibleAfterRelease(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();controller.setRecognitionEnabled(false);
+        auto background=controller.background();background["gridType"]=int(GridType::None);controller.setBackground(background);
+        QQuickWindow window;window.resize(1000,700);
+        auto* canvas=new CanvasItem(window.contentItem());canvas->setWidth(1000);canvas->setHeight(700);canvas->setController(&controller);canvas->restorePageView();canvas->setPenColor(Qt::red);canvas->setPenWidth(2);
+        window.show();QVERIFY(QTest::qWaitForWindowExposed(&window));
+        if(window.rendererInterface()->graphicsApi()==QSGRendererInterface::Software)QSKIP("Run with the RHI backend to verify GPU geometry; software rendering does not support this custom mesh.");
+        const auto screen=[&](QPointF point){return canvas->screenPoint(point).toPoint();};
+        QTest::mousePress(&window,Qt::LeftButton,Qt::NoModifier,screen({20,60}));
+        for(int i=1;i<=40;++i)QTest::mouseMove(&window,screen({i%2?190.:20.,60+i*.7}),0);
+        const auto countInk=[&](const QImage& image){int count=0;for(int y=0;y<image.height();++y)for(int x=0;x<image.width();++x){const auto c=image.pixelColor(x,y);if(c.red()>200&&c.green()<150&&c.blue()<150)++count;}return count;};
+        const auto preview=window.grabWindow();QVERIFY(!preview.isNull());const int before=countInk(preview);QVERIFY(before>1000);
+        QTest::mouseRelease(&window,Qt::LeftButton,Qt::NoModifier,screen({20,88}),0);
+        QCOMPARE(controller.page()->strokes.size(),std::size_t(1));QVERIFY(!canvas->drawing());
+        const auto vertices=strokeDisplayMesh(controller.page()->strokes.back()).size();QVERIFY(vertices>0);qInfo()<<"Fast pen completed compact mesh vertices:"<<vertices;
+        const auto finished=window.grabWindow();QVERIFY(!finished.isNull());const int after=countInk(finished);qInfo()<<"Ink pixels before/after release:"<<before<<after;QVERIFY(after>before*.9);
+        QVERIFY(controller.shutdown());
+    }
+    void markerPreviewReusesUntouchedTiles(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();controller.setRecognitionEnabled(false);
+        QQuickWindow window;window.resize(1000,700);
+        auto* canvas=new MarkerInspectableCanvas(window.contentItem());canvas->setWidth(1000);canvas->setHeight(700);canvas->setController(&controller);canvas->restorePageView();canvas->setTool("marker");canvas->setPenColor(Qt::red);canvas->setMarkerOpacity(.35);
+        window.show();QVERIFY(QTest::qWaitForWindowExposed(&window));
+        const auto screen=[&](QPointF point){return canvas->screenPoint(point).toPoint();};
+        const auto colorAt=[&](const QImage& image,QPointF point){const auto logical=canvas->screenPoint(point);return image.pixelColor(int(logical.x()*image.width()/window.width()),int(logical.y()*image.height()/window.height()));};
+        const auto background=colorAt(window.grabWindow(),{50,40});
+        QTest::mousePress(&window,Qt::LeftButton,Qt::NoModifier,screen({20,40}));
+        QTest::mouseMove(&window,screen({160,40}));QVERIFY(!window.grabWindow().isNull());QVERIFY(canvas->tileCount.load()>1);
+        QTest::mouseMove(&window,screen({180,40}));const auto preview=window.grabWindow();QVERIFY(!preview.isNull());QVERIFY(canvas->reusedTiles.load()>0);
+        const auto ink=colorAt(preview,{50,40});qInfo()<<"Marker background/preview:"<<background<<ink;
+        const double opacity=canvas->markerOpacity();
+        QVERIFY(std::abs(ink.red()-(255*opacity+background.red()*(1-opacity)))<5);
+        QVERIFY(std::abs(ink.green()-background.green()*(1-opacity))<5);QVERIFY(std::abs(ink.blue()-background.blue()*(1-opacity))<5);
+        QTest::mouseRelease(&window,Qt::LeftButton,Qt::NoModifier,screen({180,40}));QCOMPARE(controller.page()->strokes.size(),std::size_t(1));
+        const auto finished=colorAt(window.grabWindow(),{50,40});QVERIFY(std::abs(ink.green()-finished.green())<5);
+        QVERIFY(controller.shutdown());
+    }
+    void rapidMouseStrokesAndLostGrabKeepInk(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();controller.setRecognitionEnabled(false);
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();
+        const auto start=canvas.screenPoint({30,40}),end=canvas.screenPoint({130,40});
+        for(int i=0;i<20;++i){
+            QMouseEvent press(i%2?QEvent::MouseButtonDblClick:QEvent::MouseButtonPress,start,start,Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);
+            if(i%2)canvas.mouseDoubleClickEvent(&press);else canvas.mousePressEvent(&press);
+            QVERIFY(canvas.drawing());
+            QMouseEvent release(QEvent::MouseButtonRelease,end,end,Qt::LeftButton,Qt::NoButton,Qt::NoModifier);canvas.mouseReleaseEvent(&release);
+            QCOMPARE(controller.page()->strokes.size(),std::size_t(i+1));QVERIFY(!canvas.drawing());
+            QVERIFY(length(controller.page()->strokes.back().samples.back().position-Point{130,40})<1e-6);
+        }
+        QMouseEvent press(QEvent::MouseButtonPress,start,start,Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);canvas.mousePressEvent(&press);
+        QMouseEvent move(QEvent::MouseMove,end,end,Qt::NoButton,Qt::LeftButton,Qt::NoModifier);canvas.mouseMoveEvent(&move);
+        canvas.mouseUngrabEvent();QCOMPARE(controller.page()->strokes.size(),std::size_t(21));QVERIFY(!canvas.drawing());
+        QVERIFY(controller.shutdown());
+    }
+    void mouseWheelPansVerticallyUnlessControlIsHeld(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        QQmlApplicationEngine engine;engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());
+        auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);QVERIFY(canvas->setZoom(1.5));
+        const auto position=canvas->mapToScene({canvas->width()/2+80,canvas->height()/2+35});
+        const auto wheel=[&](int angle,Qt::KeyboardModifiers modifiers=Qt::NoModifier,QPoint pixels={}){
+            QWheelEvent event(position,window->mapToGlobal(position.toPoint()),pixels,QPoint(0,angle),Qt::NoButton,modifiers,Qt::NoScrollPhase,false);QCoreApplication::sendEvent(window,&event);
+        };
+        const auto initial=canvas->viewportCenter();const double scale=canvas->zoom()*96/25.4;
+        wheel(-120);QCOMPARE(canvas->zoom(),1.5);QCOMPARE(canvas->viewportCenter().x(),initial.x());QVERIFY(std::abs(canvas->viewportCenter().y()-initial.y()-60/scale)<1e-8);
+        wheel(120);QVERIFY(QLineF(canvas->viewportCenter(),initial).length()<1e-8);
+        wheel(-60);QVERIFY(std::abs(canvas->viewportCenter().y()-initial.y()-30/scale)<1e-8);
+        const auto beforePixels=canvas->viewportCenter();wheel(0,Qt::NoModifier,{10,-20});QCOMPARE(canvas->zoom(),1.5);QCOMPARE(canvas->viewportCenter().x(),beforePixels.x());QVERIFY(std::abs(canvas->viewportCenter().y()-beforePixels.y()-20/scale)<1e-8);
+        const auto anchor=[&]{return canvas->viewportCenter()+QPointF(80,35)/(canvas->zoom()*96/25.4);};const auto beforeZoom=anchor();
+        wheel(120,Qt::ControlModifier);QVERIFY(std::abs(canvas->zoom()-1.575)<1e-8);QVERIFY(QLineF(anchor(),beforeZoom).length()<1e-8);
+        canvas->setProperty("wheelZoomEnabled",false);const auto disabledCenter=canvas->viewportCenter();wheel(120,Qt::ControlModifier);QVERIFY(std::abs(canvas->zoom()-1.575)<1e-8);QCOMPARE(canvas->viewportCenter(),disabledCenter);
+        QVERIFY(controller.shutdown());
+    }
+    void handCursorAndHoldShortcutRestorePreviousTool(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();canvas.setTool("marker");
+        const auto key=[&](QEvent::Type type,bool repeat=false){QKeyEvent event(type,Qt::Key_H,Qt::NoModifier,"h",repeat);QCoreApplication::sendEvent(&canvas,&event);};
+        key(QEvent::KeyPress);QCOMPARE(canvas.tool(),QString("hand"));QCOMPARE(canvas.cursor().shape(),Qt::OpenHandCursor);
+        key(QEvent::KeyRelease,true);key(QEvent::KeyPress,true);QCOMPARE(canvas.tool(),QString("hand"));
+        const auto before=canvas.viewportCenter();
+        QMouseEvent press(QEvent::MouseButtonPress,{400,300},{400,300},Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);canvas.mousePressEvent(&press);QCOMPARE(canvas.cursor().shape(),Qt::ClosedHandCursor);
+        QMouseEvent move(QEvent::MouseMove,{450,350},{450,350},Qt::NoButton,Qt::LeftButton,Qt::NoModifier);canvas.mouseMoveEvent(&move);QVERIFY(canvas.viewportCenter()!=before);
+        QMouseEvent release(QEvent::MouseButtonRelease,{450,350},{450,350},Qt::LeftButton,Qt::NoButton,Qt::NoModifier);canvas.mouseReleaseEvent(&release);QCOMPARE(canvas.cursor().shape(),Qt::OpenHandCursor);
+        key(QEvent::KeyRelease);QCOMPARE(canvas.tool(),QString("marker"));QCOMPARE(canvas.cursor().shape(),Qt::CrossCursor);QVERIFY(controller.page()->strokes.empty());
+        canvas.setTool("hand");key(QEvent::KeyPress);key(QEvent::KeyRelease);QCOMPARE(canvas.tool(),QString("hand"));QCOMPARE(canvas.cursor().shape(),Qt::OpenHandCursor);
+        canvas.mousePressEvent(&press);QCOMPARE(canvas.cursor().shape(),Qt::ClosedHandCursor);canvas.cancelStroke();QCOMPARE(canvas.cursor().shape(),Qt::OpenHandCursor);
+        canvas.setTool("pen");key(QEvent::KeyPress);canvas.setEnabled(false);QCOMPARE(canvas.tool(),QString("pen"));QCOMPARE(canvas.cursor().shape(),Qt::CrossCursor);
+        QVERIFY(controller.shutdown());
+    }
+    void holdHandDoesNotInterceptTextFields(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        QQmlApplicationEngine engine;engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());
+        auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);canvas->setTool("pen");canvas->forceActiveFocus();
+        QTest::keyPress(window,Qt::Key_H);QCOMPARE(canvas->tool(),QString("hand"));
+        auto* title=findVisualItem(window->contentItem(),"projectTitleArea");QVERIFY(title);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,title->mapToScene({10,10}).toPoint());
+        auto* input=findVisualItem(window->contentItem(),"projectTitleInput");QVERIFY(input);QTRY_VERIFY(input->hasActiveFocus());QCOMPARE(canvas->tool(),QString("pen"));
+        QTest::keyRelease(window,Qt::Key_H);input->setProperty("text","");QTest::keyClick(window,Qt::Key_H);QCOMPARE(input->property("text").toString().toLower(),QString("h"));QCOMPARE(canvas->tool(),QString("pen"));
+        QTest::keyClick(window,Qt::Key_Escape);canvas->forceActiveFocus();QTest::keyPress(window,Qt::Key_H);QCOMPARE(canvas->tool(),QString("hand"));
+        QEvent deactivate(QEvent::WindowDeactivate);QCoreApplication::sendEvent(window,&deactivate);QCOMPARE(canvas->tool(),QString("pen"));QTest::keyRelease(window,Qt::Key_H);
+        QVERIFY(controller.shutdown());
+    }
+    void nativeTabletEraserRestoresToolAndDoesNotEraseInHover(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();controller.setRecognitionEnabled(false);
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();canvas.setTool("marker");
+        QPointingDevice pen("Wacom pen",1,QInputDevice::DeviceType::Stylus,QPointingDevice::PointerType::Pen,QInputDevice::Capability::Position|QInputDevice::Capability::Pressure,1,3);
+        QPointingDevice eraser("Wacom eraser",2,QInputDevice::DeviceType::Stylus,QPointingDevice::PointerType::Eraser,QInputDevice::Capability::Position|QInputDevice::Capability::Pressure,1,3);
+        StrokeObject ink;ink.id=newId();ink.samples={{{50,50},1}};controller.addStroke(ink);
+        const auto position=canvas.screenPoint({50,50});
+        const auto send=[&](QEvent::Type type,const QPointingDevice& device,double pressure,Qt::MouseButton button,Qt::MouseButtons buttons){
+            QTabletEvent event(type,&device,position,position,pressure,0,0,0,0,0,Qt::NoModifier,button,buttons);QCoreApplication::sendEvent(&canvas,&event);
+        };
+        send(QEvent::TabletPress,eraser,0,Qt::RightButton,Qt::RightButton);QCOMPARE(canvas.tool(),QString("eraser"));QCOMPARE(controller.page()->strokes.size(),std::size_t(1));
+        send(QEvent::TabletMove,eraser,0,Qt::NoButton,Qt::RightButton);QCOMPARE(controller.page()->strokes.size(),std::size_t(1));
+        send(QEvent::TabletPress,eraser,.5,Qt::LeftButton,Qt::LeftButton|Qt::RightButton);
+        send(QEvent::TabletRelease,eraser,0,Qt::LeftButton,Qt::NoButton);QVERIFY(controller.page()->strokes.empty());
+        send(QEvent::TabletMove,pen,0,Qt::NoButton,Qt::NoButton);QCOMPARE(canvas.tool(),QString("marker"));
+        controller.undo();QCOMPARE(controller.page()->strokes.size(),std::size_t(1));
+        send(QEvent::TabletMove,eraser,0,Qt::NoButton,Qt::NoButton);QCOMPARE(canvas.tool(),QString("eraser"));
+        QTabletEvent leave(QEvent::TabletLeaveProximity,&eraser,position,position,0,0,0,0,0,0,Qt::NoModifier,Qt::NoButton,Qt::NoButton);QCoreApplication::sendEvent(QGuiApplication::instance(),&leave);QCOMPARE(canvas.tool(),QString("marker"));
+        canvas.setTool("eraser");send(QEvent::TabletMove,pen,0,Qt::NoButton,Qt::NoButton);QCOMPARE(canvas.tool(),QString("eraser"));
+        QVERIFY(controller.shutdown());
+    }
+    void fastTabletContactRecoversAfterZeroPressurePress(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();controller.setRecognitionEnabled(false);
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();
+        QPointingDevice pen("Pen",1,QInputDevice::DeviceType::Stylus,QPointingDevice::PointerType::Pen,QInputDevice::Capability::Position|QInputDevice::Capability::Pressure,1,3);
+        const auto send=[&](QEvent::Type type,Point point,double pressure,Qt::MouseButtons buttons){
+            const auto position=canvas.screenPoint({point.x,point.y});
+            QTabletEvent event(type,&pen,position,position,pressure,0,0,0,0,0,Qt::NoModifier,type==QEvent::TabletMove?Qt::NoButton:Qt::LeftButton,buttons);QCoreApplication::sendEvent(&canvas,&event);
+        };
+        for(const QString tool:{QString("pen"),QString("marker")}){
+            canvas.setTool(tool);
+            send(QEvent::TabletPress,{20,30},0,Qt::LeftButton);
+            send(QEvent::TabletMove,{25,30},.7,Qt::LeftButton);
+            QVERIFY(canvas.drawing());
+            for(int i=0;i<1000;++i)send(QEvent::TabletMove,{25+i*.1,30+std::sin(i*.05)},.7,Qt::LeftButton);
+            send(QEvent::TabletRelease,{130,30},0,Qt::NoButton);
+            QVERIFY(!canvas.drawing());QVERIFY(!controller.page()->strokes.empty());
+            const auto& stroke=controller.page()->strokes.back();QVERIFY(stroke.samples.size()>1000);QVERIFY(length(stroke.samples.back().position-Point{130,30})<1e-6);
+        }
+        QCOMPARE(controller.page()->strokes.size(),std::size_t(2));
+        // A stream whose initial press was omitted must recover as well.
+        send(QEvent::TabletMove,{40,40},.7,Qt::LeftButton);send(QEvent::TabletRelease,{100,40},0,Qt::NoButton);
+        QCOMPARE(controller.page()->strokes.size(),std::size_t(3));
+        QVERIFY(controller.shutdown());
+    }
+    void tabletEraserCanSwitchDuringContact(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();controller.setRecognitionEnabled(false);
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();
+        QPointingDevice pen("Pen",1,QInputDevice::DeviceType::Stylus,QPointingDevice::PointerType::Pen,QInputDevice::Capability::Position|QInputDevice::Capability::Pressure,1,3);
+        QPointingDevice eraser("Eraser",2,QInputDevice::DeviceType::Stylus,QPointingDevice::PointerType::Eraser,QInputDevice::Capability::Position|QInputDevice::Capability::Pressure,1,3);
+        const auto position=canvas.screenPoint({50,50});
+        const auto send=[&](QEvent::Type type,const QPointingDevice& device,double pressure){
+            QTabletEvent event(type,&device,position,position,pressure,0,0,0,0,0,Qt::NoModifier,type==QEvent::TabletMove?Qt::NoButton:Qt::LeftButton,type==QEvent::TabletRelease?Qt::NoButton:Qt::LeftButton);QCoreApplication::sendEvent(&canvas,&event);
+        };
+        send(QEvent::TabletPress,pen,.5);send(QEvent::TabletMove,eraser,.5);QCOMPARE(canvas.tool(),QString("eraser"));
+        send(QEvent::TabletMove,pen,.5);QCOMPARE(canvas.tool(),QString("pen"));QVERIFY(controller.page()->strokes.empty());
+        send(QEvent::TabletRelease,pen,0);QCOMPARE(controller.page()->strokes.size(),std::size_t(1));
+        controller.undo();QVERIFY(controller.page()->strokes.empty());controller.undo();QCOMPARE(controller.page()->strokes.size(),std::size_t(1));
+        QVERIFY(controller.shutdown());
+    }
+    void pageViewsAreIndependentAndSessionOnly(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();
+        const double initialZoom=canvas.zoom();QVERIFY(canvas.setZoom(1.7));canvas.setTool("hand");
+        QMouseEvent press(QEvent::MouseButtonPress,{400,300},{400,300},Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);canvas.mousePressEvent(&press);
+        QMouseEvent move(QEvent::MouseMove,{470,110},{470,110},Qt::NoButton,Qt::LeftButton,Qt::NoModifier);canvas.mouseMoveEvent(&move);
+        QMouseEvent release(QEvent::MouseButtonRelease,{470,110},{470,110},Qt::LeftButton,Qt::NoButton,Qt::NoModifier);canvas.mouseReleaseEvent(&release);
+        const auto firstCenter=canvas.viewportCenter();controller.addPage();QCOMPARE(controller.currentPage(),1);QCOMPARE(canvas.zoom(),1.7);
+        QVERIFY(std::abs(canvas.screenPoint({0,0}).y()-40)<1e-8);
+        QVERIFY(canvas.setZoom(2.4));const auto secondCenter=canvas.viewportCenter();
+        controller.selectPage(0);QCOMPARE(canvas.zoom(),1.7);QVERIFY(QLineF(firstCenter,canvas.viewportCenter()).length()<1e-8);
+        controller.selectPage(1);QCOMPARE(canvas.zoom(),2.4);QVERIFY(QLineF(secondCenter,canvas.viewportCenter()).length()<1e-8);
+        const auto filename=directory.filePath("views.board");controller.saveAs(QUrl::fromLocalFile(filename));QTRY_VERIFY(!controller.busy());
+        QTemporaryDir freshDirectory;AppController fresh(nullptr,freshDirectory.path());fresh.openPath(filename);QTRY_VERIFY(fresh.active());QTRY_VERIFY(!fresh.busy());
+        InspectableCanvas reopened;reopened.setWidth(1000);reopened.setHeight(700);reopened.setController(&fresh);reopened.restorePageView();QCOMPARE(reopened.zoom(),initialZoom);
+        QVERIFY(fresh.shutdown());QVERIFY(controller.shutdown());
+    }
+    void handwritingFilterReducesJitterWithoutFilteringGuides(){
+        InputManager filter;double error=0;
+        for(int i=0;i<100;++i){PointerSample sample{{i*.04,(i%2?.15:-.15)},.7};sample.timestamp=100+i*8;
+            const auto filtered=filter.filter(sample,true);if(i>20)error+=std::abs(filtered.position.y);}
+        QVERIFY(error/79<.08);
+        filter.reset();PointerSample start{{0,0},.2};start.timestamp=100;filter.filter(start,true);
+        PointerSample fast{{10,0},.8};fast.timestamp=110;const auto moved=filter.filter(fast,true);QVERIFY(moved.position.x>7.5);QVERIFY(moved.position.x<=10);
+        filter.reset();QCOMPARE(filter.filter(fast,true).position.x,10.);
+        PointerSample guide{{3,4},.5};QCOMPARE(filter.filter(guide).position.x,3.);QCOMPARE(filter.filter(guide).position.y,4.);
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());QCOMPARE(controller.holdDelay(),1000);QVERIFY(controller.shutdown());
+    }
     void highZoomRetainsVectorGeometryAndLayerOrder(){
         QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();QTRY_VERIFY(!controller.busy());
         auto background=controller.background();background["gridType"]=int(GridType::None);controller.setBackground(background);
@@ -107,6 +603,14 @@ private slots:
             QCOMPARE(canvas->selectedPattern(),pattern);QCOMPARE(int(controller.page()->shapes[0].style.pattern),pattern);
         }
         controller.undo();QCOMPARE(canvas->selectedPattern(),2);controller.redo();QCOMPARE(canvas->selectedPattern(),1);canvas->setSelectedPattern(99);QCOMPARE(canvas->selectedPattern(),1);
+        auto* dashField=findVisualItem(window->contentItem(),"selecteddashLengthField");QVERIFY(dashField);QVERIFY(dashField->isVisible());dashField->setProperty("text","2.75");QVERIFY(QMetaObject::invokeMethod(dashField,"editingFinished"));QCOMPARE(canvas->selectedDashLength(),2.75);
+        canvas->setSelectedDashLength(1.75);QCOMPARE(dashField->property("text").toString(),QString("1.75"));
+        for(const auto& input:std::vector<std::pair<QString,double>>{{"2.2",2.2},{"2,2",2.2},{"0.5",.5},{"0,5",.5}}){
+            dashField->forceActiveFocus();QTest::keyClick(window,Qt::Key_A,Qt::ControlModifier);for(const auto character:input.first)QTest::keyClick(window,character.toLatin1());QTest::keyClick(window,Qt::Key_Return);
+            QCOMPARE(canvas->selectedDashLength(),input.second);QCOMPARE(dashField->property("text").toString(),QString::number(input.second,'f',2));
+        }
+        canvas->setSelectedPattern(2);auto* dotField=findVisualItem(window->contentItem(),"selecteddotSpacingField");QVERIFY(dotField);QVERIFY(dotField->isVisible());QVERIFY(!dashField->isVisible());dotField->setProperty("text","0.65");QVERIFY(QMetaObject::invokeMethod(dotField,"editingFinished"));QCOMPARE(canvas->selectedDotSpacing(),.65);
+        canvas->setSelectedPattern(1);
         auto* inscribed=findVisualItem(window->contentItem(),"constructIncircleButton");QVERIFY(inscribed);QVERIFY(QMetaObject::invokeMethod(inscribed,"clicked"));
         QCOMPARE(controller.page()->shapes.size(),std::size_t(2));const auto circle=controller.page()->shapes.back();QCOMPARE(circle.kind,ShapeKind::Circle);
         for(int i=0;i<3;++i)QVERIFY(std::abs(distanceToSegment(circle.center,triangle.vertices[i],triangle.vertices[(i+1)%3])-circle.radiusX)<1e-8);
@@ -134,9 +638,9 @@ private slots:
         controller.undo();QCOMPARE(sample({105,150}),64);controller.redo();QCOMPARE(sample({105,150}),0);
         canvas->setTool("eraser");QTest::mouseClick(window,Qt::LeftButton,Qt::ShiftModifier,screen({105,150}));canvas->setTool("hand");QCOMPARE(sample({105,150}),64);QCOMPARE(sample({102,150}),0);
         for(int i=0;i<3;++i){canvas->setTool("eraser");QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,screen({105,150}));canvas->setTool("hand");QCOMPARE(sample({105,150}),0);QCOMPARE(sample({105,152}),64);}
-        const auto filename=directory.filePath("erased-fill.board");controller.saveAs(QUrl::fromLocalFile(filename));QTRY_VERIFY(!controller.busy());const auto loaded=ProjectStore::load(filename);QVERIFY2(bool(loaded),qPrintable(loaded.error));const auto& imageObject=loaded.project.pages[0].images.front();QCOMPARE(imageObject.erasedRegions.size(),controller.page()->images.front().erasedRegions.size());
+        const auto filename=directory.filePath("erased-fill.board");controller.saveAs(QUrl::fromLocalFile(filename));QTRY_VERIFY(!controller.busy());const auto loaded=ProjectStore::load(filename);QVERIFY2(bool(loaded),qPrintable(loaded.error));const auto& imageObject=loaded.project.pages[0].images.front();QVERIFY(imageObject.erasedRegions.empty());QVERIFY(imageObject.eraseMask);
         QImage exported(840,1188,QImage::Format_ARGB32_Premultiplied);exported.fill(Qt::transparent);QPainter painter(&exported);painter.scale(4,4);QVERIFY(paintPage(painter,loaded.project.pages[0],4).isEmpty());painter.end();QCOMPARE(exported.pixelColor(420,600).red(),0);QCOMPARE(exported.pixelColor(420,608).red(),64);
-        const auto moved=std::get<ImageObject>(transformed(CanvasObject(imageObject),{0,0},{5,0},1,1,.3));QVERIFY(length(moved.erasedRegions.back().from-rotatePoint(imageObject.erasedRegions.back().from,{0,0},.3)-Point{5,0})<1e-8);
+        const auto moved=std::get<ImageObject>(transformed(CanvasObject(imageObject),{0,0},{5,0},1,1,.3));QVERIFY(length(moved.eraseMask->corners.front()-rotatePoint(imageObject.eraseMask->corners.front(),{0,0},.3)-Point{5,0})<1e-8);
         // Only tiles touched by the brush are recomposed, including rotated fills.
         ShapeRasterCache cache;auto fill=imageObject;const auto bitmap=controller.image(fill.id);cache.update(fill,bitmap,16,QRectF(80,120,60,60));const auto allocated=cache.tiles().size();
         for(int i=0;i<100;++i){fill.erasedRegions.push_back({{105,150},{105.2,150},.5,bool(i%2)});cache.update(fill,bitmap,16,QRectF(80,120,60,60));QVERIFY(cache.updatedTiles()<=4);QCOMPARE(cache.tiles().size(),allocated);}
@@ -162,10 +666,10 @@ private slots:
         gesture(Qt::ControlModifier);QCOMPARE(sample({105,148.5}),0);
         const auto filename=directory.filePath("masked-marker.board");controller.saveAs(QUrl::fromLocalFile(filename));QTRY_VERIFY(!controller.busy());
         const auto loaded=ProjectStore::load(filename);QVERIFY2(bool(loaded),qPrintable(loaded.error));
-        const auto& saved=loaded.project.pages[0].strokes[0];QVERIFY(saved.marker);QCOMPARE(saved.erasedRegions.size(),controller.page()->strokes[0].erasedRegions.size());QVERIFY(std::any_of(saved.erasedRegions.begin(),saved.erasedRegions.end(),[](const auto& region){return region.restore;}));
+        const auto& saved=loaded.project.pages[0].strokes[0];QVERIFY(saved.marker);QVERIFY(saved.erasedRegions.empty());QVERIFY(saved.eraseMask);QVERIFY(!controller.page()->strokes[0].erasedRegions.empty());
         const auto& page=loaded.project.pages[0];QImage image(840,1188,QImage::Format_ARGB32_Premultiplied);image.fill(Qt::transparent);QPainter painter(&image);painter.scale(4,4);QVERIFY(paintPage(painter,page,4).isEmpty());painter.end();
         QCOMPARE(image.pixelColor(420,594).red(),0);QCOMPARE(image.pixelColor(420,604).red(),26);
-        auto moved=std::get<StrokeObject>(transformed(CanvasObject(saved),{0,0},{5,0},1,1,0));QCOMPARE(moved.erasedRegions.back().from.x,saved.erasedRegions.back().from.x+5);
+        auto moved=std::get<StrokeObject>(transformed(CanvasObject(saved),{0,0},{5,0},1,1,0));QCOMPARE(moved.eraseMask->corners.front().x,saved.eraseMask->corners.front().x+5);
         QVERIFY(controller.shutdown());
     }
     void nativeShapeMaskSceneGraph(){
@@ -354,7 +858,7 @@ private slots:
         canvas->setTool("pen");const Point sectorCenter{120,100};
         const auto first=screen({140,100});QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,first);
         for(int i=1;i<=90;++i){const double a=1.4*i/90.;QTest::mouseMove(window,screen({sectorCenter.x+20*std::cos(a),sectorCenter.y+20*std::sin(a)}));}
-        QTRY_VERIFY_WITH_TIMEOUT(canvas->interactionHint().contains("reconhecido"),2000);
+        QTRY_VERIFY_WITH_TIMEOUT(canvas->interactionHint().contains("reconhecid"),2000);
         QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,screen({sectorCenter.x+20*std::cos(1.4),sectorCenter.y+20*std::sin(1.4)}));
         QCOMPARE(controller.page()->shapes.size(),std::size_t(1));
         const auto straightened=controller.page()->shapes.back();QCOMPARE(straightened.kind,ShapeKind::Line);QCOMPARE(straightened.vertices.size(),std::size_t(2));
@@ -367,7 +871,7 @@ private slots:
         const Point shifted{121,99.3};
         QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,screen({shifted.x+20,shifted.y}));
         for(int i=1;i<=90;++i){const double a=1.4*i/90.;QTest::mouseMove(window,screen({shifted.x+20*std::cos(a),shifted.y+20*std::sin(a)}));}
-        QTRY_VERIFY_WITH_TIMEOUT(canvas->interactionHint().contains("reconhecido"),2000);
+        QTRY_VERIFY_WITH_TIMEOUT(canvas->interactionHint().contains("reconhecid"),2000);
         QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,screen({shifted.x+20*std::cos(1.4),shifted.y+20*std::sin(1.4)}));
         const auto& snapped=controller.page()->shapes.back();QCOMPARE(snapped.kind,ShapeKind::CircularSector);
         QVERIFY(length(snapped.center-corner)<1e-8);QVERIFY(distanceToSegment(snapped.vertices[1],corner,endA)<1e-8);QVERIFY(distanceToSegment(snapped.vertices.back(),corner,endB)<1e-8);QCOMPARE(snapped.fillOpacity,.10);
@@ -376,7 +880,7 @@ private slots:
         QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,screen({160,144}));
         for(int i=1;i<=20;++i)QTest::mouseMove(window,screen({160+i*.2,144}));
         for(int i=1;i<=20;++i)QTest::mouseMove(window,screen({164,144-i*.2}));
-        QTRY_VERIFY_WITH_TIMEOUT(canvas->interactionHint().contains("reconhecido"),2000);
+        QTRY_VERIFY_WITH_TIMEOUT(canvas->interactionHint().contains("reconhecid"),2000);
         QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,screen({164,140}));
         QCOMPARE(controller.page()->shapes.back().kind,ShapeKind::RightAngle);QVERIFY(length(controller.page()->shapes.back().vertices[0]-squareCorner)<1e-8);
         const auto filename=directory.filePath("marker.board");controller.saveAs(QUrl::fromLocalFile(filename));QTRY_VERIFY(!controller.busy());
@@ -415,7 +919,7 @@ private slots:
         controller.refreshTextTextures(16);controller.refreshTextTextures(30);
         QTRY_VERIFY_WITH_TIMEOUT(controller.image(text.id).width()>=std::floor(natural.width()*64),4000);
         const auto filename=directory.filePath("erased.board");controller.saveAs(QUrl::fromLocalFile(filename));QTRY_VERIFY(!controller.busy());
-        const auto saved=ProjectStore::load(filename);QVERIFY(saved);QVERIFY(!saved.project.pages[0].shapes[0].erasedRegions.empty());QVERIFY(!hitTest(saved.project.pages[0].shapes[0],{50,50},0));
+        const auto saved=ProjectStore::load(filename);QVERIFY(saved);QVERIFY(saved.project.pages[0].shapes[0].erasedRegions.empty());QVERIFY(saved.project.pages[0].shapes[0].eraseMask);QVERIFY(!hitTest(saved.project.pages[0].shapes[0],{50,50},0));
         QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
     }
     void projectNamesAndLibrarySearch(){
@@ -581,7 +1085,7 @@ private slots:
         StrokeObject active;active.id=newId();active.samples={{{30,30},1},{{40,40},1}};controller.addStroke(active);controller.duplicatePage();
         const auto path=dir.filePath("duplicate.board");controller.saveAs(QUrl::fromLocalFile(path));QTRY_VERIFY(!controller.busy());QVERIFY2(!controller.dirty(),qPrintable(controller.status()));
         const auto loaded=ProjectStore::load(path);QVERIFY2(loaded,qPrintable(loaded.error));QCOMPARE(loaded.project.pages.size(),std::size_t(3));
-        for(const auto& page:loaded.project.pages)QCOMPARE(page.erasedInk.size(),std::size_t(1));
+        for(const auto& page:loaded.project.pages)QVERIFY(page.erasedInk.empty());
         controller.home();QVERIFY(!controller.active());QVERIFY(controller.shutdown());
     }
     void currentPageSizeAndFullScreen(){
@@ -653,8 +1157,8 @@ private slots:
         auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);canvas->setTool("hand");QVERIFY(canvas->setZoom(1));
         const QPointF pointer(canvas->width()/2+80,canvas->height()/2+35);const auto wheelPosition=canvas->mapToScene(pointer);
         const auto anchoredWorld=[&](){return canvas->viewportCenter()+QPointF(80,35)/(canvas->zoom()*96/25.4);};const auto before=anchoredWorld();
-        QWheelEvent up(wheelPosition,window->mapToGlobal(wheelPosition.toPoint()),{},QPoint(0,120),Qt::NoButton,Qt::NoModifier,Qt::NoScrollPhase,false);QCoreApplication::sendEvent(window,&up);QCOMPARE(canvas->zoom(),1.05);QVERIFY(QLineF(before,anchoredWorld()).length()<1e-8);
-        QWheelEvent down(wheelPosition,window->mapToGlobal(wheelPosition.toPoint()),{},QPoint(0,-120),Qt::NoButton,Qt::NoModifier,Qt::NoScrollPhase,false);QCoreApplication::sendEvent(window,&down);QCOMPARE(canvas->zoom(),1.);
+        QWheelEvent up(wheelPosition,window->mapToGlobal(wheelPosition.toPoint()),{},QPoint(0,120),Qt::NoButton,Qt::ControlModifier,Qt::NoScrollPhase,false);QCoreApplication::sendEvent(window,&up);QCOMPARE(canvas->zoom(),1.05);QVERIFY(QLineF(before,anchoredWorld()).length()<1e-8);
+        QWheelEvent down(wheelPosition,window->mapToGlobal(wheelPosition.toPoint()),{},QPoint(0,-120),Qt::NoButton,Qt::ControlModifier,Qt::NoScrollPhase,false);QCoreApplication::sendEvent(window,&down);QCOMPARE(canvas->zoom(),1.);
         auto* value=findVisualItem(window->contentItem(),"zoomValueArea");QVERIFY(value);auto* input=findVisualItem(window->contentItem(),"zoomValueInput");QVERIFY(input);
         const auto edit=[&](const QString& text){QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,value->mapToScene({value->width()/2,value->height()/2}).toPoint());input->setProperty("text",text);};
         edit("125.5");QTest::keyClick(window,Qt::Key_Return);QCOMPARE(canvas->zoom(),1.255);QVERIFY(!input->isVisible());
@@ -775,7 +1279,7 @@ private slots:
         auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);const auto origin=canvas->mapToScene(QPointF(420,240)).toPoint();
         QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,origin);for(int i=1;i<=30;++i)QTest::mouseMove(window,origin+QPoint(i*4,0));
         for(const auto& point:std::array<QPoint,4>{QPoint(118,6),QPoint(123,-4),QPoint(119,5),QPoint(121,2)})QTest::mouseMove(window,origin+point);
-        QTRY_VERIFY_WITH_TIMEOUT(canvas->interactionHint().contains("reconhecido"),2000);
+        QTRY_VERIFY_WITH_TIMEOUT(canvas->interactionHint().contains("reconhecid"),2000);
         QTest::mouseMove(window,origin+QPoint(150,40));
         QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,origin+QPoint(150,40));QCOMPARE(controller.page()->shapes[0].kind,ShapeKind::Line);
         const auto fixedOrigin=controller.page()->shapes[0].vertices[0];
@@ -952,6 +1456,40 @@ private slots:
         const auto file=directory.filePath("m3.board");controller.saveAs(QUrl::fromLocalFile(file));QTRY_VERIFY(!controller.dirty());controller.openPath(file);QTRY_VERIFY(!controller.loading());QCOMPARE(controller.page()->texts[0].source,std::string("Texto revisado"));QCOMPARE(controller.page()->backgroundStyle.spacingX,7.);
         QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
     }
+    void toolbarBlurUpdatesWithoutSettlingDelay(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);
+        engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        if(window->rendererInterface()->graphicsApi()==QSGRendererInterface::Software)QSKIP("Backdrop blur needs the GPU renderer.");
+        auto* toolbar=findVisualItem(window->contentItem(),"floatingToolbar");QVERIFY(toolbar);
+        auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);canvas->setZoom(2);
+        auto background=controller.background();background["gridType"]=int(GridType::None);background["color"]="#000000";controller.setBackground(background);
+        const QPoint sample=toolbar->mapToScene({toolbar->width()/2,8}).toPoint();
+        const auto before=window->grabWindow();QVERIFY(!before.isNull());
+        // Grab the next rendered frame immediately: a debounce would retain black.
+        background["color"]="#ffffff";controller.setBackground(background);
+        const auto after=window->grabWindow();QVERIFY(!after.isNull());
+        QVERIFY(after.pixelColor(sample).lightness()>before.pixelColor(sample).lightness()+30);
+        auto* settings=window->findChild<QObject*>("settingsDialog");QVERIFY(settings);
+        QVERIFY(QMetaObject::invokeMethod(settings,"open"));
+        auto* toggle=findVisualItem(window->contentItem(),"disableToolbarBlurSwitch");QVERIFY(toggle);
+        toggle->setProperty("checked",true);QVERIFY(QMetaObject::invokeMethod(toggle,"toggled"));
+        QVERIFY(controller.disableToolbarBlur());QVERIFY(toolbar->property("plainAppearance").toBool());
+        QCOMPARE(toolbar->property("color").value<QColor>().alpha(),255);
+        toggle->setProperty("checked",false);QVERIFY(QMetaObject::invokeMethod(toggle,"toggled"));
+        QVERIFY(!controller.disableToolbarBlur());QVERIFY(!toolbar->property("plainAppearance").toBool());
+        QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
+    }
+    void toolbarBlurPreferencePersists(){
+        QTemporaryDir directory;
+        { AppController controller(nullptr,directory.path());QVERIFY(!controller.disableToolbarBlur());
+          controller.setDisableToolbarBlur(true);QVERIFY(!controller.reducedEffects());QVERIFY(controller.shutdown()); }
+        { AppController controller(nullptr,directory.path());QVERIFY(controller.disableToolbarBlur());
+          controller.setDisableToolbarBlur(false);QVERIFY(controller.shutdown()); }
+        { AppController controller(nullptr,directory.path());QVERIFY(!controller.disableToolbarBlur());QVERIFY(controller.shutdown()); }
+    }
     void uiAndMouseStroke(){
         QTemporaryDir dataDirectory;QVERIFY(dataDirectory.isValid());
         AppController controller(nullptr,dataDirectory.path());QQmlApplicationEngine engine;
@@ -1023,7 +1561,7 @@ private slots:
             }
             QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,points.front());
             for(std::size_t i=1;i<points.size();++i)QTest::mouseMove(window,points[i]);
-            QTRY_VERIFY_WITH_TIMEOUT(canvas->interactionHint().contains("reconhecido"),2000);
+            QTRY_VERIFY_WITH_TIMEOUT(canvas->interactionHint().contains("reconhecid"),2000);
             QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,points.back());
             QCOMPARE(controller.page()->shapes.back().kind,kind);
             if(kind==ShapeKind::Ellipse)QVERIFY(controller.page()->shapes.back().radiusX/controller.page()->shapes.back().radiusY>8);
@@ -1046,7 +1584,7 @@ private slots:
             if(edge==1)point.setX(point.x()+3*std::sin(3.141592653589793*t));
             QTest::mouseMove(window,origin+point.toPoint());
         }
-        QTRY_VERIFY_WITH_TIMEOUT(canvas->interactionHint().contains("reconhecido"),2000);
+        QTRY_VERIFY_WITH_TIMEOUT(canvas->interactionHint().contains("reconhecid"),2000);
         QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,origin+corners[0].toPoint());
         QCOMPARE(controller.page()->shapes.size(),std::size_t(1));
         QCOMPARE(controller.page()->shapes[0].kind,ShapeKind::Polygon);QCOMPARE(controller.page()->shapes[0].vertices.size(),std::size_t(5));
@@ -1089,9 +1627,14 @@ private slots:
         QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,start);
         for(int i=1;i<=20;++i)QTest::mouseMove(window,start+QPoint(i*6,0));
         QTest::keyPress(window,Qt::Key_Shift);
-        QTRY_VERIFY_WITH_TIMEOUT(canvas->interactionHint().contains("reconhecido"),2000);
+        QTRY_VERIFY_WITH_TIMEOUT(canvas->interactionHint().contains("reconhecid"),2000);
         QTest::keyRelease(window,Qt::Key_Shift);
-        QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,start+QPoint(120,0));
+        QVERIFY(!canvas->segmentGuide().isEmpty());
+        const auto endpoint=start+QPoint(120,-47);QTest::mouseMove(window,endpoint);const auto freeAngle=canvas->segmentGuide()["angle"].toDouble();QVERIFY(freeAngle>15&&freeAngle<30);
+        QTest::keyPress(window,Qt::Key_Control);QCOMPARE(canvas->segmentGuide()["angle"].toDouble(),15.);
+        QTest::keyRelease(window,Qt::Key_Control);QVERIFY(std::abs(canvas->segmentGuide()["angle"].toDouble()-freeAngle)<1e-8);
+        QTest::keyPress(window,Qt::Key_Control);QTest::mouseRelease(window,Qt::LeftButton,Qt::ControlModifier,endpoint);QTest::keyRelease(window,Qt::Key_Control);QVERIFY(canvas->segmentGuide().isEmpty());
+        const auto delta=controller.page()->shapes[0].vertices[1]-controller.page()->shapes[0].vertices[0];QVERIFY(std::abs(std::atan2(-delta.y,delta.x)*180/std::numbers::pi-15)<1e-8);
         QCOMPARE(controller.page()->shapes[0].style.pattern,LinePattern::Dashed);
         controller.undo();QCOMPARE(controller.page()->strokes[0].style.pattern,LinePattern::Solid);
         controller.redo();QCOMPARE(controller.page()->shapes[0].style.pattern,LinePattern::Dashed);
@@ -1214,7 +1757,7 @@ private slots:
                 QTest::mouseMove(window,origin+point.toPoint());
             }
         }
-        QTRY_VERIFY_WITH_TIMEOUT(canvas->interactionHint().contains("reconhecido"),2000);
+        QTRY_VERIFY_WITH_TIMEOUT(canvas->interactionHint().contains("reconhecid"),2000);
         QTest::keyPress(window,Qt::Key_Shift);QVERIFY(canvas->interactionHint().contains("tracejado"));
         QTest::keyRelease(window,Qt::Key_Shift);
         QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,origin);
@@ -1281,7 +1824,7 @@ private slots:
         const auto start=screen({canvas->width()/2-90,canvas->height()/2-90});
         QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,start);
         for(int i=1;i<=20;++i)QTest::mouseMove(window,start+QPoint(i*6,1),2);
-        QTRY_VERIFY_WITH_TIMEOUT(canvas->interactionHint().contains("reconhecido"),2000);
+        QTRY_VERIFY_WITH_TIMEOUT(canvas->interactionHint().contains("reconhecid"),2000);
         QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,start+QPoint(140,20));
         QCOMPARE(controller.page()->shapes.size(),std::size_t(1));QVERIFY(controller.page()->strokes.empty());QCOMPARE(controller.page()->shapes[0].kind,ShapeKind::Line);
         controller.undo();QCOMPARE(controller.page()->strokes.size(),std::size_t(1));QVERIFY(controller.page()->shapes.empty());

@@ -54,6 +54,28 @@ C.ModernDialog {
                     }
                 }
             }
+            RowLayout {
+                Layout.fillWidth: true; Layout.preferredHeight: Theme.controlHeight
+                Text { text: "Remover desfoque da barra de ferramentas"; color: Theme.secondary; font.pixelSize: Theme.body; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+                Switch {
+                    id: toolbarBlur
+                    objectName: "disableToolbarBlurSwitch"
+                    checked: App.disableToolbarBlur
+                    onToggled: App.disableToolbarBlur = checked
+                    Accessible.name: "Remover desfoque da barra de ferramentas"
+                    implicitWidth: Theme.touch; implicitHeight: Theme.controlHeight
+                    indicator: Rectangle {
+                        anchors.centerIn: parent; width: Theme.toggleWidth; height: Theme.toggleHeight; radius: height/2
+                        color: toolbarBlur.checked ? Theme.accent : Theme.border
+                        Rectangle {
+                            x: toolbarBlur.checked ? parent.width-width-Theme.xs/2 : Theme.xs/2
+                            y: Theme.xs/2; width: parent.height-Theme.xs; height: width; radius: width/2
+                            color: toolbarBlur.checked ? Theme.accentText : Theme.text
+                            Behavior on x { NumberAnimation { duration: Theme.fast } }
+                        }
+                    }
+                }
+            }
             Rectangle { Layout.fillWidth: true; height: Theme.hairline; color: Theme.border }
             ColumnLayout {
                 Layout.fillWidth: true; spacing: Theme.sm

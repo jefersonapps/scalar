@@ -4,9 +4,11 @@
 #include "selection/SelectionModel.h"
 #include "recognition/ShapeRecognizer.h"
 #include "tools/GeometryTools.h"
+#include "tools/EraserIndex.h"
 #include <QQuickItem>
 #include <QQuickWindow>
 #include <QPointer>
+#include "rendering/ShapeRasterCache.h"
 namespace scalar {
 class CanvasItem : public QQuickItem {
     Q_OBJECT
@@ -29,6 +31,10 @@ class CanvasItem : public QQuickItem {
     Q_PROPERTY(double eraserRadius READ eraserRadius WRITE setEraserRadius NOTIFY penChanged)
     Q_PROPERTY(bool eraserShapes READ eraserShapes WRITE setEraserShapes NOTIFY penChanged)
     Q_PROPERTY(QPointF eraserPosition READ eraserPosition NOTIFY selectionChanged)
+    Q_PROPERTY(bool eraserVisible READ eraserVisible NOTIFY selectionChanged)
+    Q_PROPERTY(QVariantMap segmentGuide READ segmentGuide NOTIFY selectionChanged)
+    Q_PROPERTY(bool selectedShowAngle READ selectedShowAngle WRITE setSelectedShowAngle NOTIFY selectionChanged)
+    Q_PROPERTY(QVariantList sectorAngles READ sectorAngles NOTIFY selectionChanged)
     Q_PROPERTY(int selectedCount READ selectedCount NOTIFY selectionChanged)
     Q_PROPERTY(QString selectedGuide READ selectedGuide NOTIFY geometryToolsChanged)
     Q_PROPERTY(QVariantList selectionHandles READ selectionHandles NOTIFY selectionChanged)
@@ -36,6 +42,9 @@ class CanvasItem : public QQuickItem {
     Q_PROPERTY(QString selectionName READ selectionName NOTIFY selectionChanged)
     Q_PROPERTY(double selectedWidth READ selectedWidth NOTIFY selectionChanged)
     Q_PROPERTY(int selectedPattern READ selectedPattern NOTIFY selectionChanged)
+    Q_PROPERTY(double selectedDashLength READ selectedDashLength WRITE setSelectedDashLength NOTIFY selectionChanged)
+    Q_PROPERTY(double selectedGapLength READ selectedGapLength WRITE setSelectedGapLength NOTIFY selectionChanged)
+    Q_PROPERTY(double selectedDotSpacing READ selectedDotSpacing WRITE setSelectedDotSpacing NOTIFY selectionChanged)
     Q_PROPERTY(QColor selectedFillColor READ selectedFillColor NOTIFY selectionChanged)
     Q_PROPERTY(QColor selectedBorderColor READ selectedBorderColor NOTIFY selectionChanged)
     Q_PROPERTY(double selectedFill READ selectedFill NOTIFY selectionChanged)
@@ -94,8 +103,13 @@ public:
         eraserRadius_=bounded;emit penChanged();update();
     }
     Q_INVOKABLE void adjustEraserSize(bool increase){setEraserRadius(eraserRadius_*(increase?1.05:1./1.05));}
-    QPointF eraserPosition() const {const auto p=view_.worldToScreen(lastPan_);return {p.x,p.y};}
+    QPointF eraserPosition() const {const auto p=view_.worldToScreen(eraserWorldPosition_);return {p.x,p.y};}
+    bool eraserVisible() const {return tool_=="eraser"&&eraserCursorVisible_;}
+    QVariantMap segmentGuide() const;
     int selectedCount() const {return int(selection_.ids().size());}
+    bool selectedShowAngle() const;
+    void setSelectedShowAngle(bool visible);
+    QVariantList sectorAngles() const;
     QString selectedGuide() const {return selectedGuide_;}
     QVariantList selectionHandles() const;
     QRectF selectionRect() const;
@@ -105,12 +119,21 @@ public:
     QColor selectedBorderColor() const;
     double selectedWidth() const;
     int selectedPattern() const;
+    double selectedPatternSpacing(const QString& field) const;
+    void setSelectedPatternSpacing(const QString& field,double value);
+    double selectedDashLength() const{return selectedPatternSpacing("dashLength");}
+    double selectedGapLength() const{return selectedPatternSpacing("gapLength");}
+    double selectedDotSpacing() const{return selectedPatternSpacing("dotSpacing");}
+    void setSelectedDashLength(double v){setSelectedPatternSpacing("dashLength",v);}
+    void setSelectedGapLength(double v){setSelectedPatternSpacing("gapLength",v);}
+    void setSelectedDotSpacing(double v){setSelectedPatternSpacing("dotSpacing",v);}
     Q_INVOKABLE void setSelectedPattern(int pattern);
     QString interactionHint() const;
     Q_INVOKABLE void editSelectedText();
     Q_INVOKABLE QString selectedTextId() const;
     Q_INVOKABLE void deleteSelection();
     Q_INVOKABLE void duplicateSelection();
+    Q_INVOKABLE void exportSelection(const QUrl& url,bool svg=false){if(controller_)controller_->exportSelection(selectedObjects(),url,svg);}
     Q_INVOKABLE void moveSelectionLayer(bool forward);
     Q_INVOKABLE void recognizeSelection();
     Q_INVOKABLE void setSelectedFill(double opacity);
@@ -123,6 +146,7 @@ public:
     Q_INVOKABLE void importImages(const QVariantList& urls){if(controller_)controller_->importImages(urls,viewportCenter());}
     Q_INVOKABLE void pasteImage(){if(controller_)controller_->pasteImage(viewportCenter());}
     Q_INVOKABLE void zoomBy(double factor);
+    Q_INVOKABLE void restorePageView();
     Q_INVOKABLE bool setZoom(double value);
     Q_INVOKABLE void cancelStroke();
     QVariantMap rulerGeometry() const;
@@ -153,6 +177,7 @@ signals:
     void viewChanged();
     void drawingChanged();
     void selectionChanged();
+    void selectionContextRequested(QPointF position);
     void textRequested(QPointF position,QString id);
     void textBoxRequested(QRectF box);
     void geometryToolsChanged();
@@ -166,12 +191,15 @@ protected:
     void mouseReleaseEvent(QMouseEvent*) override;
     void mouseUngrabEvent() override;
     void hoverMoveEvent(QHoverEvent* event) override;
+    void hoverLeaveEvent(QHoverEvent* event) override;
     void wheelEvent(QWheelEvent*) override;
     void touchEvent(QTouchEvent*) override;
     void keyPressEvent(QKeyEvent*) override;
     void keyReleaseEvent(QKeyEvent*) override;
     void geometryChange(const QRectF&,const QRectF&) override;
 private:
+    bool hasVisibleInk(const CanvasObject& object,std::optional<Point> near={}) const;
+    mutable std::map<std::string,ShapeRasterCache> visibilityCaches_;
     bool wheelZoomEnabled_=true;
     void zoomWheelAt(QPointF point,const QWheelEvent& event);
     double markerWidth_=4;
@@ -200,12 +228,22 @@ private:
     std::vector<CanvasObject> selectedObjects() const;
     void selectionUpdated();
     ShapeObject directShape(Point start,Point end) const;
+    void updateRecognizedLine(Point end);
     bool tablet(QTabletEvent* event,QPointF local);
+    void setTabletEraser(bool erasing);
+    void setTemporaryHand(bool enabled);
+    void updateCursor();
+    bool textInputFocused() const;
     void viewUpdated(bool interactive=true);
     QPointer<AppController> controller_;
     QPointer<QQuickWindow> filteredWindow_;
+    QMetaObject::Connection handFocusConnection_;
     InputManager input_;
     ViewTransform view_;
+    QString viewPageId_;
+    std::vector<PointerSample> freehandSamples_;
+    std::size_t liveCurveStableSamples_=1;
+    bool smoothFreehand_=false;
     StrokeObject current_;
     std::optional<ShapeObject> previewShape_;
     QTimer holdTimer_;
@@ -220,8 +258,11 @@ private:
     int handleIndex_=-1;
     bool marqueeAdditive_=false;
     double eraserRadius_=3;
+    Point eraserWorldPosition_;
+    bool eraserCursorVisible_=false,angleSnap_=false;
     bool eraserShapes_=false,eraserCtrl_=false;
     std::vector<StrokeObject> eraseBefore_,erasePreview_;
+    EraserIndex eraseIndex_,restoreIndex_;
     std::vector<StrokeObject> recoverableInk_;
     std::vector<ShapeObject> eraseShapesBefore_,eraseShapesPreview_;
     std::vector<ImageObject> eraseFillsBefore_,eraseFillsPreview_;
@@ -236,6 +277,8 @@ private:
     double touchDistance_=0;
     QPointF touchCenter_;
     bool space_=false,tabletActive_=false;
+    QString tabletToolBefore_;
+    QString handToolBefore_;
     QRectF toolbarExclusion_,optionsExclusion_;
     RulerGeometry ruler_;
     CompassGeometry compass_;

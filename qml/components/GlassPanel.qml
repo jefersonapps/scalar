@@ -1,7 +1,7 @@
 import QtQuick
 import "../theme"
 Rectangle {
-    color: Theme.glass
+    color: Theme.surface
     radius: Theme.radiusFloating
     border.color: Theme.border
     border.width: 1

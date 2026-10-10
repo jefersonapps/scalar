@@ -7,6 +7,7 @@ C.GlassPanel {
     id: root
     objectName: "objectPropertiesPanel"
     property var canvas
+    signal exportRequested(bool svg)
     readonly property bool imageSelected: canvas && canvas.selectionName === "Imagem"
     readonly property bool textSelected: canvas && canvas.selectionName === "Texto"
     readonly property bool contourEditable: !imageSelected && !textSelected
@@ -82,6 +83,7 @@ C.GlassPanel {
                     Text { text: "Espessura"; color: Theme.secondary; font.pixelSize: Theme.caption; Layout.fillWidth: true }
                     Text { text: root.canvas ? root.canvas.selectedWidth.toFixed(2) + " mm" : ""; color: Theme.secondary; font.pixelSize: Theme.caption }
                 }
+                PatternSettings { canvas: root.canvas; forSelection: true; Layout.fillWidth: true; visible: root.contourEditable && pattern > 0 }
                 C.ModernSlider { Layout.fillWidth: true; visible: root.contourEditable; from: 0.2; to: 3; value: root.canvas ? root.canvas.selectedWidth : 0.85; onPressedChanged: { if(!pressed) root.canvas.setSelectedWidth(value) } }
                 Rectangle { visible: root.fillEditable; Layout.fillWidth: true; implicitHeight: 1; color: Theme.border; Layout.topMargin: Theme.xs }
                 Text { visible: root.fillEditable; text: "Preenchimento"; color: Theme.text; font.pixelSize: Theme.caption; font.weight: Font.DemiBold }
@@ -100,6 +102,7 @@ C.GlassPanel {
                 }
                 C.ModernSlider { Layout.fillWidth: true; visible: root.fillEditable; from: 0; to: 1; value: root.canvas ? root.canvas.selectedFill : 0.1; onPressedChanged: { if(!pressed) root.canvas.setSelectedFill(value) } }
                 C.ActionButton { text: "Editar texto / LaTeX"; visible: root.textSelected; Layout.fillWidth: true; onClicked: root.canvas.editSelectedText() }
+                C.ModernCheckBox { objectName: "showSectorAngleToggle"; visible: root.canvas && root.canvas.selectionName === "Setor circular"; text: "Mostrar ângulo"; checked: root.canvas && root.canvas.selectedShowAngle; onToggled: root.canvas.selectedShowAngle=checked; Layout.fillWidth: true }
                 C.ActionButton { text: "Reconhecer forma"; Layout.fillWidth: true; visible: root.canvas && root.canvas.selectionName === "Traço"; onClicked: root.canvas.recognizeSelection() }
                 Rectangle { visible: root.triangleSelected || root.lineSelected; Layout.fillWidth: true; implicitHeight: 1; color: Theme.border; Layout.topMargin: Theme.xs }
                 Text { visible: root.triangleSelected || root.lineSelected; text: "Construções geométricas"; color: Theme.text; font.pixelSize: Theme.caption; font.weight: Font.DemiBold }
@@ -121,6 +124,11 @@ C.GlassPanel {
             }
         }
         Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Theme.border }
+        RowLayout {
+            Layout.fillWidth: true
+            C.ActionButton { objectName: "exportSelectionPdfButton"; text: "Exportar PDF"; Layout.fillWidth: true; enabled: !App.exporting; onClicked: root.exportRequested(false) }
+            C.ActionButton { objectName: "exportSelectionSvgButton"; text: "Exportar SVG"; Layout.fillWidth: true; enabled: !App.exporting; onClicked: root.exportRequested(true) }
+        }
         RowLayout {
             Layout.fillWidth: true
             C.ActionButton { objectName: "duplicateSelectionButton"; text: "Duplicar"; iconName: "duplicate"; Layout.fillWidth: true; onClicked: root.canvas.duplicateSelection() }

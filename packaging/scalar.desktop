@@ -5,5 +5,5 @@ Comment=Offline whiteboard for notes, geometry, PDFs and LaTeX
 Exec=scalar-whiteboard
 Icon=scalar
 Terminal=false
-Categories=Education;Graphics;
+Categories=Office;Education;Graphics;
 Keywords=whiteboard;notes;geometry;latex;pdf;

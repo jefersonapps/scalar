@@ -38,6 +38,7 @@ temporary="$artifacts_dir/.${name}.partial"
 cp "$package" "$temporary"
 dpkg-deb --contents "$temporary" >/dev/null
 mv -f "$temporary" "$artifacts_dir/$name"
+install -m 755 "$root/scripts/install-linux.sh" "$artifacts_dir/install-scalar.sh"
 
 printf 'Package ready: %s\n' "$artifacts_dir/$name"
 sha256sum "$artifacts_dir/$name"

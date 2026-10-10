@@ -1,4 +1,7 @@
 /build*/
+/dist/
+/screenshots/
+/aqtinstall.log
 *.user
 *.board
 *.board.png

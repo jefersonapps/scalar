@@ -37,7 +37,7 @@ struct PenStyle {
     std::uint32_t rgba = 0x263345ff;
     double minWidthMm = 0.15, maxWidthMm = 0.40, gamma = 1.2, sensitivity = 1;
     LinePattern pattern = LinePattern::Solid;
-    double dashLengthMm = 3, gapLengthMm = 2, dotSpacingMm = 2.5;
+    double dashLengthMm = 1.5, gapLengthMm = .8, dotSpacingMm = 1.2;
     double width(double pressure) const {
         return minWidthMm + (maxWidthMm-minWidthMm)*std::pow(std::clamp(pressure*sensitivity,0.0,1.0),gamma);
     }
@@ -48,6 +48,12 @@ struct ObjectProperties {
     std::uint64_t revision=0; // render cache generation, never serialized
 };
 struct ErasedRegion {Point from,to;double radius=1;bool restore=false;};
+struct EraseMask {
+    std::vector<Point> corners;
+    std::shared_ptr<const std::vector<std::uint8_t>> png;
+    int pixelWidth=0,pixelHeight=0;
+    std::shared_ptr<const std::vector<std::uint8_t>> alpha;
+};
 struct StrokeObject {
     std::string id;
     PenStyle style;
@@ -55,6 +61,7 @@ struct StrokeObject {
     ObjectProperties properties{};
     bool marker=false;
     std::vector<ErasedRegion> erasedRegions;
+    std::optional<EraseMask> eraseMask;
 };
 enum class ShapeKind { Line, Circle, Ellipse, Triangle, Rectangle, Square, Polygon, CircularArc, CircularSector, RightAngle };
 struct ShapeObject {
@@ -65,10 +72,12 @@ struct ShapeObject {
     Point center;
     double radiusX=1,radiusY=1,rotation=0; // rotation in radians
     double fillOpacity=0.10;
+    bool showAngle=false;
     std::optional<std::uint32_t> fillRgba; // absent in older projects: follows the border
     std::uint32_t fillColor() const { return fillRgba.value_or(style.rgba); }
     ObjectProperties properties{};
     std::vector<ErasedRegion> erasedRegions;
+    std::optional<EraseMask> eraseMask;
 };
 struct ImageObject {
     std::string id;
@@ -78,6 +87,7 @@ struct ImageObject {
     bool inkFill=false; // translucent region fill; does not shield ink from the eraser
     ObjectProperties properties{};
     std::vector<ErasedRegion> erasedRegions;
+    std::optional<EraseMask> eraseMask;
 };
 struct MathFragment {
     std::string latex,svg;

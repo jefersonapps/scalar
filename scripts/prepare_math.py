@@ -54,7 +54,7 @@ def prepare(destination):
         npm = root / ("node_modules/npm/bin/npm-cli.js" if system == "win" else "lib/node_modules/npm/bin/npm-cli.js")
         environment = dict(os.environ)
         environment["PATH"] = str(node.parent) + os.pathsep + environment.get("PATH", "")
-        subprocess.run([str(node), str(npm), "install", "--prefix", str(destination), "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"], check=True, env=environment, timeout=180)
+        subprocess.run([str(node), str(npm), "install", "--prefix", str(destination), "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"], check=True, env=environment, timeout=180, cwd=str(destination))
         version = json.loads(package.read_text())["version"]
         if version != expected["mathjax-full"]:
             raise RuntimeError("Unexpected MathJax version")

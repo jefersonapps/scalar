@@ -6,6 +6,12 @@
 #include <QBuffer>
 #include <QDateTime>
 namespace scalar {
+void AppController::exportSelection(std::vector<CanvasObject> selected,const QUrl& url,bool svg){
+    if(documentBusy()||exportPending_||selected.empty()||!url.isLocalFile())return;
+    auto path=url.toLocalFile();const QString suffix=svg?".svg":".pdf";if(!path.endsWith(suffix,Qt::CaseInsensitive))path+=suffix;
+    exportPending_=true;status_="Exportando seleção…";emit changed();
+    exportWatcher_.setFuture(QtConcurrent::run([selected=std::move(selected),path,svg]{return exportSelectedObjects(selected,path,svg);}));
+}
 void AppController::exportPdf(const QUrl& url){
     if(!active()||loading_||imageImportPending_||textPending_||pdfPending_||exportPending_||!url.isLocalFile())return;
     auto path=url.toLocalFile();if(!path.endsWith(".pdf",Qt::CaseInsensitive))path+=".pdf";
@@ -31,6 +37,19 @@ void AppController::addPage(){
     if(!page()||loading_||imageImportPending_||textPending_||pdfPending_||pageCount()>=1000)return;
     Page blank;blank.id=newId();blank.size=page()->size;blank.background=page()->background;blank.backgroundStyle=page()->backgroundStyle;
     project_.pages.push_back(std::move(blank));selectPage(pageCount()-1);mutate();emit pagesChanged();
+}
+void AppController::deletePage(int index){
+    if(index<0||index>=pageCount()||documentBusy())return;
+    const auto removedId=project_.pages[index].id;const bool selected=index==currentPage_;
+    const auto size=project_.pages[index].size;const auto background=project_.pages[index].background;const auto style=project_.pages[index].backgroundStyle;
+    histories_.erase(removedId);pageViews_.remove(QString::fromStdString(removedId));thumbnails_.remove(QString::fromStdString(removedId));dirtyThumbnails_.remove(QString::fromStdString(removedId));
+    for(const auto& object:objects(project_.pages[index])){const auto id=QString::fromStdString(objectId(object));images_.remove(id);textMeshes_.remove(id);textSizes_.remove(id);}
+    project_.pages.erase(project_.pages.begin()+index);
+    if(project_.pages.empty()){Page blank;blank.id=newId();blank.size=size;blank.background=background;blank.backgroundStyle=style;project_.pages.push_back(std::move(blank));currentPage_=0;}
+    else if(index<currentPage_)--currentPage_;else currentPage_=std::min(currentPage_,pageCount()-1);
+    latestLineId_.clear();textRasterRevision_=0;mutate();
+    if(selected){refreshTextTextures(textRasterScale_);refreshPdf(textRasterScale_);emit pageChanged();}
+    emit pagesChanged();emit changed();
 }
 bool AppController::setPageSize(const QString& preset,double width,double height,bool landscape){
     if(!page()||documentBusy())return false;

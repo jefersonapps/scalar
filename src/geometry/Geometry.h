@@ -17,6 +17,7 @@ Bounds bounds(const CanvasObject& object);
 Bounds pageRenderBounds(const Page& page,double marginMm=10);
 bool hitTest(const CanvasObject& object,Point p,double tolerance);
 bool shapeTouchesEraser(const ShapeObject& shape,Point from,Point to,double radius);
+bool strokeTouchesEraser(const StrokeObject& stroke,Point from,Point to,double radius);
 CanvasObject transformed(CanvasObject object,Point center,Point translation,double scaleX=1,double scaleY=1,double rotation=0);
 std::string objectId(const CanvasObject& object);
 ObjectProperties& properties(CanvasObject& object);

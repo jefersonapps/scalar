@@ -1,6 +1,75 @@
 #include "CanvasItem.h"
 #include <QtConcurrent>
 namespace scalar {
+bool CanvasItem::hasVisibleInk(const CanvasObject& object,std::optional<Point> near) const{
+    if(!properties(object).visible)return false;
+    if(const auto* text=std::get_if<TextObject>(&object))return (text->style.rgba&255)!=0;
+    if(const auto* stroke=std::get_if<StrokeObject>(&object)){
+        if(stroke->samples.empty()||(stroke->style.rgba&255)==0)return false;
+        // Split pen fragments already contain only surviving samples. Keep
+        // ordinary solid ink selection independent of its mesh size.
+        if(stroke->erasedRegions.empty()&&!stroke->eraseMask&&stroke->style.pattern==LinePattern::Solid)return true;
+    }
+    const auto box=bounds(object);const double tolerance=12/(view_.pixelsPerMm*view_.zoom);
+    QRectF area(box.left,box.top,box.width(),box.height());area=area.adjusted(-1,-1,1,1);
+    double scale=std::clamp(256/std::max({area.width(),area.height(),1.}),.25,4.);
+    ShapeRasterCache local;ShapeRasterCache* cache=&local;
+    if(near){area=QRectF(near->x-tolerance,near->y-tolerance,tolerance*2,tolerance*2);scale=std::clamp(view_.pixelsPerMm*view_.zoom,1.,64.);}
+    else {if(visibilityCaches_.size()>32)visibilityCaches_.clear();cache=&visibilityCaches_[objectId(object)];
+        // Bound raster work to the viewport for unusually large objects.
+        const auto a=world({0,0}),b=world({width(),height()});area=area.intersected(QRectF(a.x,a.y,b.x-a.x,b.y-a.y));if(area.isEmpty())return false;}
+    std::visit([&](const auto& item){using T=std::decay_t<decltype(item)>;if constexpr(std::is_same_v<T,ImageObject>)cache->update(item,controller_->image(item.id),scale,area);else if constexpr(!std::is_same_v<T,TextObject>)cache->update(item,scale,area);},object);
+    for(const auto& [key,tile]:cache->tiles()){
+        const auto& image=tile.image;const double pixelScale=(image.width()-2)/tile.worldRect.width();
+        for(int y=1;y+1<image.height();++y){const auto* row=reinterpret_cast<const QRgb*>(image.constScanLine(y));for(int x=1;x+1<image.width();++x){
+            if(!qAlpha(row[x]))continue;const Point point{tile.worldRect.left()+(x-.5)/pixelScale,tile.worldRect.top()+(y-.5)/pixelScale};
+            if(!area.contains(QPointF(point.x,point.y)))continue;
+            if(!near||length(point-*near)<=tolerance+.75/pixelScale)return true;
+        }}
+    }return false;
+}
+bool CanvasItem::selectedShowAngle() const{
+    const auto selected=selectedObjects();if(selected.size()!=1)return false;
+    const auto* shape=std::get_if<ShapeObject>(&selected.front());return shape&&shape->kind==ShapeKind::CircularSector&&shape->showAngle;
+}
+void CanvasItem::setSelectedShowAngle(bool visible){
+    if(!controller_)return;const auto selected=selectedObjects();if(selected.size()!=1)return;
+    auto after=selected.front();auto* shape=std::get_if<ShapeObject>(&after);
+    if(!shape||shape->kind!=ShapeKind::CircularSector||shape->showAngle==visible)return;
+    shape->showAngle=visible;++shape->properties.revision;controller_->changeObjects({{selected.front(),after}},CommandKind::ChangeStyle);selectionUpdated();
+}
+QVariantList CanvasItem::sectorAngles() const{
+    QVariantList result;if(!controller_||!controller_->page())return result;
+    for(const auto& stored:controller_->page()->shapes){
+        const ShapeObject* shape=&stored;for(const auto& object:editPreview_)if(const auto* preview=std::get_if<ShapeObject>(&object);preview&&preview->id==stored.id){shape=preview;break;}
+        for(const auto& preview:eraseShapesPreview_)if(preview.id==stored.id){shape=&preview;break;}
+        if(shape->kind!=ShapeKind::CircularSector||!shape->showAngle||!shape->properties.visible||shape->vertices.size()<4)continue;
+        if(!hasVisibleInk(CanvasObject(*shape)))continue;
+        double sweep=0;for(std::size_t i=2;i<shape->vertices.size();++i){const auto a=shape->vertices[i-1]-shape->center,b=shape->vertices[i]-shape->center;sweep+=std::atan2(a.x*b.y-a.y*b.x,a.x*b.x+a.y*b.y);}
+        const auto first=shape->vertices[1]-shape->center;const double middle=std::atan2(first.y,first.x)+sweep/2;
+        const auto point=view_.worldToScreen(shape->center+Point{std::cos(middle),std::sin(middle)}*(shape->radiusX+4));
+        result.append(QVariantMap{{"x",point.x},{"y",point.y},{"angle",std::clamp(std::abs(sweep)*180/std::numbers::pi,0.,360.)}});
+    }return result;
+}
+namespace {
+double PenStyle::* spacingField(const QString& field){if(field=="dashLength")return &PenStyle::dashLengthMm;if(field=="gapLength")return &PenStyle::gapLengthMm;if(field=="dotSpacing")return &PenStyle::dotSpacingMm;return nullptr;}
+}
+double CanvasItem::selectedPatternSpacing(const QString& field) const{
+    const auto member=spacingField(field);if(!member)return 0;const auto selected=selectedObjects();if(selected.empty())return PenStyle{}.*member;
+    return std::visit([&](const auto& object){if constexpr(std::is_same_v<std::decay_t<decltype(object)>,StrokeObject>||std::is_same_v<std::decay_t<decltype(object)>,ShapeObject>)return object.style.*member;else return PenStyle{}.*member;},selected.front());
+}
+void CanvasItem::setSelectedPatternSpacing(const QString& field,double value){
+    const auto member=spacingField(field);if(!controller_||!member||!std::isfinite(value))return;value=std::clamp(value,.1,100.);
+    std::vector<ObjectChange> changes;for(auto object:selectedObjects()){auto before=object;bool changed=false;std::visit([&](auto& item){if constexpr(std::is_same_v<std::decay_t<decltype(item)>,StrokeObject>||std::is_same_v<std::decay_t<decltype(item)>,ShapeObject>){if(item.style.*member!=value){item.style.*member=value;++item.properties.revision;changed=true;}}},object);if(changed)changes.push_back({before,object});}
+    if(!changes.empty())controller_->changeObjects(std::move(changes),CommandKind::ChangeStyle);selectionUpdated();
+}
+QVariantMap CanvasItem::segmentGuide() const{
+    if(state_!=State::Moving&&state_!=State::Rotating&&state_!=State::EditingHandle&&state_!=State::Resizing&&state_!=State::CreatingShape&&state_!=State::ShapePreview)return {};
+    const auto selected=(state_==State::CreatingShape||state_==State::ShapePreview)&&previewShape_?std::vector<CanvasObject>{*previewShape_}:selectedObjects();
+    if(selected.size()!=1)return {};const auto* line=std::get_if<ShapeObject>(&selected.front());if(!line||line->kind!=ShapeKind::Line||line->vertices.size()!=2)return {};
+    const auto delta=line->vertices[1]-line->vertices[0];if(length(delta)<1e-8)return {};double degrees=std::atan2(-delta.y,delta.x)*180/std::numbers::pi;if(degrees<0)degrees+=360;if(degrees>=360-1e-8)degrees=0;
+    const auto origin=view_.worldToScreen(line->vertices[0]);return {{"x",origin.x},{"y",origin.y},{"angle",degrees},{"snapped",angleSnap_&&(state_==State::Rotating||state_==State::EditingHandle||state_==State::CreatingShape)}};
+}
 std::vector<CanvasObject> CanvasItem::selectedObjects() const{
     if(!editPreview_.empty())return editPreview_;
     std::vector<CanvasObject> result;if(controller_&&controller_->page())for(const auto& id:selection_.ids())if(auto o=findObject(*controller_->page(),id))result.push_back(*o);return result;
@@ -58,17 +127,25 @@ QColor CanvasItem::selectedBorderColor() const{
 QString CanvasItem::interactionHint() const{
     if(state_==State::DrawingCompass)return compassComplete_?"Circunferência completa · solte para confirmar":"Compasso · gire a ponta para desenhar um arco";
     if(drawing()&&guidedEdge_)return "Snap da régua · traço alinhado";
-    if(state_==State::ShapePreview&&previewShape_)return QString::fromStdString(shapeName(previewShape_->kind))+" reconhecido"+(previewShape_->style.pattern==LinePattern::Dashed?" · tracejado":" · Shift para tracejado")+" · solte para confirmar";
+    if(state_==State::ShapePreview&&previewShape_){
+        const auto kind=previewShape_->kind;
+        const bool feminine=kind==ShapeKind::Line||kind==ShapeKind::Ellipse;
+        return QString::fromStdString(shapeName(kind))+(feminine?" reconhecida":" reconhecido")
+            +(previewShape_->style.pattern==LinePattern::Dashed?" · tracejado":" · Shift: tracejar")
+            +(kind==ShapeKind::Line?" · Ctrl: 15°":"");
+    }
     if(state_==State::CreatingShape)return "Arraste para definir a forma";
     return drawing()?"Escrevendo · segure para reconhecer uma forma":"";
 }
 void CanvasItem::selectionUpdated(){emit selectionChanged();update();}
 void CanvasItem::beginSelection(Point p,Qt::KeyboardModifiers modifiers){
+    angleSnap_=modifiers.testFlag(Qt::ControlModifier);
     if(!controller_||!controller_->page())return;
     dragStart_=p;lastPan_=p;const double tolerance=12/(view_.pixelsPerMm*view_.zoom);handleIndex_=-1;
     const auto handles=selectionHandles();for(int i=0;i<handles.size();++i){const auto h=handles[i].toMap();const auto screen=view_.worldToScreen(p);
         if(length(screen-Point{h["x"].toDouble(),h["y"].toDouble()})<12){handleIndex_=i;const auto type=h["type"].toString();state_=type=="resize"?State::Resizing:type=="rotate"?State::Rotating:State::EditingHandle;break;}}
-    if(handleIndex_<0){std::optional<CanvasObject> hit;const auto all=objects(*controller_->page());for(auto i=all.rbegin();i!=all.rend();++i)if(hitTest(*i,p,tolerance)){hit=*i;break;}
+    if(handleIndex_<0&&selectedCount()>0&&!(modifiers&Qt::ShiftModifier)&&selectedBounds().contains(p))state_=State::Moving;
+    else if(handleIndex_<0){std::optional<CanvasObject> hit;const auto all=objects(*controller_->page());for(auto i=all.rbegin();i!=all.rend();++i)if(hitTest(*i,p,tolerance)&&hasVisibleInk(*i,p)){hit=*i;break;}
         if(hit){const auto id=objectId(*hit);if(modifiers&Qt::ShiftModifier){selection_.select(id,true);state_=State::Idle;selectionUpdated();return;}if(!selection_.contains(id))selection_.select(id);state_=State::Moving;}
         else {marqueeAdditive_=bool(modifiers&Qt::ShiftModifier);if(!marqueeAdditive_)selection_.clear();state_=State::Marquee;lastPan_=p;selectionUpdated();return;}}
     editBefore_=selectedObjects();editPreview_=editBefore_;editBounds_=selectedBounds();selectionUpdated();
@@ -79,10 +156,12 @@ void CanvasItem::updateSelection(Point p){
     for(auto& o:editPreview_){
         if(state_==State::Moving)o=transformed(o,center,p-dragStart_);
         else if(state_==State::Resizing){const auto sx=std::clamp((p.x-editBounds_.left)/std::max(0.1,editBounds_.width()),0.05,20.),sy=std::clamp((p.y-editBounds_.top)/std::max(0.1,editBounds_.height()),0.05,20.);const auto scale=std::min(sx,sy);o=transformed(o,{editBounds_.left,editBounds_.top},{},scale,scale);}
-        else if(state_==State::Rotating){const auto a=dragStart_-center,b=p-center;o=transformed(o,center,{},1,1,std::atan2(b.y,b.x)-std::atan2(a.y,a.x));}
+        else if(state_==State::Rotating){const auto a=dragStart_-center,b=p-center;double rotation=std::atan2(b.y,b.x)-std::atan2(a.y,a.x);
+            if(angleSnap_)if(const auto* line=std::get_if<ShapeObject>(&o);line&&line->kind==ShapeKind::Line&&line->vertices.size()==2){const auto delta=line->vertices[1]-line->vertices[0];const double original=std::atan2(delta.y,delta.x),step=std::numbers::pi/12;rotation=std::round((original+rotation)/step)*step-original;}
+            o=transformed(o,center,{},1,1,rotation);}
         else if(state_==State::EditingHandle){auto* shape=std::get_if<ShapeObject>(&o);if(!shape)continue;
             const auto handles=selectionHandles();if(handleIndex_<0||handleIndex_>=handles.size())continue;const auto handle=handles[handleIndex_].toMap();const auto type=handle["type"].toString();
-            if(type=="vertex")shape->vertices[handle["index"].toInt()]=p;
+            if(type=="vertex"){auto point=p;const int index=handle["index"].toInt();if(angleSnap_&&shape->kind==ShapeKind::Line&&shape->vertices.size()==2){const auto anchor=shape->vertices[1-index],delta=p-anchor;const double step=std::numbers::pi/12,angle=std::round(std::atan2(delta.y,delta.x)/step)*step;point=anchor+Point{std::cos(angle),std::sin(angle)}*length(delta);}shape->vertices[index]=point;}
             else if(type=="center")shape->center=p;
             else {const auto local=rotatePoint(p,shape->center,-shape->rotation)-shape->center;if(type=="radiusX")shape->radiusX=std::clamp(std::abs(local.x),0.2,5000.);else shape->radiusY=std::clamp(std::abs(local.y),0.2,5000.);if(shape->kind==ShapeKind::Circle)shape->radiusY=shape->radiusX;}
             ++shape->properties.revision;
@@ -91,7 +170,13 @@ void CanvasItem::updateSelection(Point p){
 }
 void CanvasItem::commitSelection(){
     std::vector<ObjectChange> changes;
-    if(length(lastPan_-dragStart_)>0.01){for(std::size_t i=0;i<editBefore_.size();++i)changes.push_back({editBefore_[i],editPreview_[i]});}
+    for(std::size_t i=0;i<editBefore_.size();++i){
+        bool changed=length(lastPan_-dragStart_)>0.01;
+        // Ctrl can snap a segment even when the pointer has not moved.
+        if(const auto* before=std::get_if<ShapeObject>(&editBefore_[i]);before&&before->kind==ShapeKind::Line)
+            if(const auto* after=std::get_if<ShapeObject>(&editPreview_[i]))changed|=before->vertices!=after->vertices;
+        if(changed)changes.push_back({editBefore_[i],editPreview_[i]});
+    }
     state_=State::Idle;editBefore_.clear();editPreview_.clear();if(controller_)controller_->changeObjects(std::move(changes),CommandKind::TransformObject);selectionUpdated();
 }
 QString CanvasItem::selectedTextId() const {const auto selected=selectedObjects();if(selected.size()==1&&std::holds_alternative<TextObject>(selected[0]))return QString::fromStdString(objectId(selected[0]));return {};}

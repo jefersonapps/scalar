@@ -5,9 +5,10 @@
 #include <QHash>
 #include <QImage>
 namespace scalar {
-struct LoadResult { Project project; QString error; QHash<QString,QImage> images{}; explicit operator bool() const { return error.isEmpty(); } };
+struct LoadResult { Project project; QString error; QHash<QString,QImage> images{}; bool compacted=false; explicit operator bool() const { return error.isEmpty(); } };
 class ProjectStore {
 public:
+    static QString discardErasureHistory(Project& project);
     static QByteArray serialize(const Project& project);
     static LoadResult deserialize(const QByteArray& json);
     static QString save(const QString& path,const Project& project);

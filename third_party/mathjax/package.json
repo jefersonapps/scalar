@@ -2,5 +2,8 @@
   "name": "scalar-offline-math",
   "version": "0.3.0",
   "private": true,
-  "dependencies": {"mathjax-full": "3.2.2"}
+  "dependencies": {
+    "mathjax-full": "3.2.2",
+    "scalar-offline-math": "file:"
+  }
 }

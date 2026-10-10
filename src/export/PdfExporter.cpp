@@ -10,7 +10,32 @@
 #include <QDir>
 #include <QSaveFile>
 #include <cmath>
+#ifdef SCALAR_HAVE_QT_SVG
+#include <QSvgGenerator>
+#endif
 namespace scalar {
+QString exportSelectedObjects(const std::vector<CanvasObject>& selected,const QString& path,bool svg){
+    Page page;page.id=newId();page.background=0;page.size.infinite=true;
+    for(const auto& object:selected)if(properties(object).visible)replaceObject(page,objectId(object),object);
+    if(objects(page).empty())return "A seleção não possui objetos visíveis.";
+    // Crop in physical units, with a tiny allowance for antialiasing.
+    const auto area=pageRenderBounds(page,.5);
+    page.size={std::max(1.,area.width()),std::max(1.,area.height())};
+    const auto source=objects(page);for(const auto& object:source)replaceObject(page,objectId(object),transformed(object,{}, {-area.left,-area.top}));
+    if(!svg){Project project;project.id=newId();project.name="Seleção Scalar";project.pages.push_back(std::move(page));return exportProjectPdf(project,path);}
+#ifdef SCALAR_HAVE_QT_SVG
+    QSaveFile output(path);output.setDirectWriteFallback(false);if(!output.open(QIODevice::WriteOnly))return output.errorString();
+    QSvgGenerator generator;generator.setOutputDevice(&output);generator.setResolution(96);
+    generator.setSize(QSize(std::max(1,int(std::ceil(page.size.widthMm*96/25.4))),std::max(1,int(std::ceil(page.size.heightMm*96/25.4)))));
+    generator.setViewBox(QRectF(0,0,page.size.widthMm,page.size.heightMm));generator.setTitle("Seleção Scalar");
+    QPainter painter(&generator);if(!painter.isActive())return "Não foi possível iniciar a exportação SVG.";
+    const auto error=paintPage(painter,page,96/25.4);const bool ended=painter.end();if(!error.isEmpty())return error;
+    if(!ended)return "Não foi possível finalizar o SVG.";
+    if(!output.commit())return output.errorString();return {};
+#else
+    return "Esta instalação não possui suporte à exportação SVG.";
+#endif
+}
 QString exportProjectPdf(const Project& project,const QString& path){
     if(project.pages.empty())return "O quadro não possui páginas.";
     std::vector<Bounds> areas;std::vector<PageSize> sizes;std::vector<double> factors;

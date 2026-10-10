@@ -12,6 +12,7 @@ public:
     using Key=std::pair<int,int>;
     struct Tile {
         QRectF worldRect;
+        QRectF inkRect;
         QImage original,mask,image;
         std::vector<std::uint8_t> coverage; // four fixed subpixel visibility samples
         std::size_t applied=0;
@@ -27,7 +28,9 @@ private:
     std::map<Key,Tile> tiles_;
     std::vector<double> signature_;
     std::vector<ErasedRegion> applied_;
+    std::vector<PointerSample> displaySamples_;
     double scale_=0;
+    QImage permanentMask_;
     std::uint64_t generation_=0;
     std::size_t updatedTiles_=0;
 };

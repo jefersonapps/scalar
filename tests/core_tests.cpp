@@ -23,6 +23,28 @@ int main(int argc,char** argv) {
             near(view.screenToWorld({300,240}).x,w.x); near(view.screenToWorld({300,240}).y,w.y);
         }
         PenStyle style; near(style.maxWidthMm,0.40); near(style.width(0),style.minWidthMm); near(style.width(1),style.maxWidthMm);
+        const std::vector<PointerSample> curve{{{0,0},.2},{{1,1},.6},{{2,0},.8},{{3,1},1}};
+        const auto curved=smoothStrokeSamples(curve);
+        check(curved.front().position==curve.front().position&&curved.back().position==curve.back().position,"curve endpoints moved");
+        check(curved.size()>curve.size(),"curves not interpolated");
+        for(std::size_t i=1;i+1<curved.size();++i){
+            const auto before=curved[i].position-curved[i-1].position,after=curved[i+1].position-curved[i].position;
+            if(length(before)>1e-8&&length(after)>1e-8)check((before.x*after.x+before.y*after.y)/(length(before)*length(after))>.85,"interpolated handwriting has abrupt corners");
+        }
+        for(const auto& sample:curved){check(std::isfinite(sample.position.x)&&std::isfinite(sample.position.y),"invalid curve coordinate");check(sample.pressure>=.2&&sample.pressure<=1,"curve pressure overshoot");}
+        const auto line=smoothStrokeSamples({{{0,0},1},{{1,0},1},{{2,0},1}});
+        for(const auto& sample:line)near(sample.position.y,0);
+        check(smoothStrokeSamples({{{1,2},1}}).size()==1,"smoothing lost tap");
+        const std::vector<PointerSample> sparse{{{0,0},.1},{{50,40},.9},{{100,0},.3},{{150,40},.7}};
+        const auto adaptive=smoothStrokeSamples(sparse);check(adaptive.size()>200,"large curved strokes were left as coarse segments");
+        for(const auto& sample:adaptive){check(std::isfinite(sample.position.x)&&std::isfinite(sample.position.y),"adaptive curve invalid");check(sample.pressure>=.1&&sample.pressure<=.9,"adaptive pressure overshoot");}
+        // Replacing only the provisional tip must match full materialization.
+        std::vector<PointerSample> incremental{sparse.front()},prefix{sparse.front()};std::size_t stable=1;
+        for(std::size_t i=1;i<sparse.size();++i){prefix.push_back(sparse[i]);incremental.resize(stable);if(prefix.size()>=3){appendSmoothStrokeSegment(prefix,prefix.size()-3,incremental);stable=incremental.size();}appendSmoothStrokeSegment(prefix,prefix.size()-2,incremental);}
+        check(incremental.size()==adaptive.size(),"incremental curve differs from final curve");for(std::size_t i=0;i<adaptive.size();++i){near(length(incremental[i].position-adaptive[i].position),0);near(incremental[i].pressure,adaptive[i].pressure);}
+        const auto flowing=smoothStrokeSamples({{{0,0},.1},{{10,0},.5},{{20,0},.9},{{30,0},.5}});bool curvedPressure=false;
+        for(const auto& sample:flowing)if(sample.position.x>10&&sample.position.x<20){const double linear=.5+.4*(sample.position.x-10)/10;if(std::abs(sample.pressure-linear)>.01)curvedPressure=true;}
+        check(curvedPressure,"pressure transitions remained angular");
         check(style.width(0.3)<style.width(0.8),"pressure not monotonic");
         StrokeObject stroke{newId(),style,{{{0,0},0.2},{{10,0},0.8},{{10,0},1}}};
         const auto mesh=strokeMesh(stroke); check(!mesh.empty() && mesh.size()%3==0,"invalid mesh");

@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Dialogs
 import QtQuick.Layouts
 import Scalar 1.0
 import "../components" as C
@@ -10,6 +11,32 @@ import "../dialogs"
 Item {
     id: root
     property bool overlaysOpen: false
+    function exportSelection(svg) {
+        selectionMenu.close()
+        selectionExport.svg = svg
+        selectionExport.open()
+    }
+    FileDialog {
+        id: selectionExport
+        objectName: "selectionExportFileDialog"
+        property bool svg: false
+        title: svg ? "Exportar seleção como SVG" : "Exportar seleção como PDF"
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: svg ? "svg" : "pdf"
+        nameFilters: svg ? ["SVG (*.svg)"] : ["PDF (*.pdf)"]
+        onAccepted: board.exportSelection(selectedFile, svg)
+    }
+    C.GlassPopover {
+        id: selectionMenu
+        objectName: "selectionContextMenu"
+        width: 240
+        contentItem: ColumnLayout {
+            spacing: Theme.sm
+            Text { text: "Exportar seleção"; color: Theme.secondary; font.pixelSize: Theme.caption }
+            C.ActionButton { objectName: "contextExportSelectionPdfButton"; text: "Exportar como PDF"; Layout.fillWidth: true; enabled: !App.exporting; onClicked: root.exportSelection(false) }
+            C.ActionButton { objectName: "contextExportSelectionSvgButton"; text: "Exportar como SVG"; Layout.fillWidth: true; enabled: !App.exporting; onClicked: root.exportSelection(true) }
+        }
+    }
     property var pressedTogglePanel: null
     function rememberPanelTrigger(position) {
         pressedTogglePanel=null
@@ -72,39 +99,72 @@ Item {
         onWindowPointerPressed: position => root.rememberPanelTrigger(position)
         onWindowPointerReleased: Qt.callLater(function(){root.pressedTogglePanel=null})
         controller: App
-        wheelZoomEnabled: !root.overlaysOpen && !inlineText.active && !App.loading
-        enabled: !root.overlaysOpen && !inlineText.active && !App.loading && !fileOptions.visible && !pagesPanel.visible && !geometryOptions.visible && !penOptions.visible && !penOptions.colorDialogOpen && !shapeOptions.visible && !eraserOptions.visible && !backgroundOptions.visible && !backgroundOptions.colorDialogOpen
+        wheelZoomEnabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && !App.loading
+        enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && !App.loading && !fileOptions.visible && !pagesPanel.visible && !geometryOptions.visible && !penOptions.visible && !penOptions.colorDialogOpen && !shapeOptions.visible && !eraserOptions.visible && !backgroundOptions.visible && !backgroundOptions.colorDialogOpen
         toolbarExclusion: Qt.rect(toolbar.x, toolbar.y-y, toolbar.width, toolbar.height)
         optionsExclusion: properties.visible ? Qt.rect(properties.x,properties.y-y,properties.width,properties.height) : Qt.rect(0,0,0,0)
         onTextRequested: (position, id) => inlineText.begin(Qt.rect(position.x,position.y,60,18),id)
         onTextBoxRequested: box => inlineText.begin(box,"")
-        Component.onCompleted: Qt.callLater(fitPage)
+        onSelectionContextRequested: position => {
+            const point = board.mapToItem(root, position.x, position.y)
+            selectionMenu.x = Math.max(Theme.sm, Math.min(point.x, root.width - selectionMenu.width - Theme.sm))
+            selectionMenu.y = Math.max(Theme.sm, Math.min(point.y, root.height - selectionMenu.implicitHeight - Theme.sm))
+            selectionMenu.open()
+        }
+        Component.onCompleted: Qt.callLater(restorePageView)
     }
     Item {
         anchors.fill: board
         clip: true
         C.RulerGuide { canvas: board }
         C.CompassGuide { canvas: board }
-        Rectangle { x: board.selectionRect.x; y: board.selectionRect.y; width: board.selectionRect.width; height: board.selectionRect.height; visible: width > 0 || height > 0; color: "transparent"; border.color: Theme.accent; border.width: Theme.hairline }
+        C.SegmentAngleGuide { canvas: board; anchors.fill: parent }
+        Repeater {
+            id: sectorLabels
+            model: board.sectorAngles
+            C.AngleLabel {
+                required property var modelData
+                objectName: "sectorAngleLabel"
+                angle: modelData.angle
+                x: modelData.x - width / 2; y: modelData.y - height / 2
+            }
+        }
+        Connections { target: board; function onViewChanged() { sectorLabels.model = Qt.binding(() => board.sectorAngles) } }
+        Rectangle {
+            x: board.selectionRect.x; y: board.selectionRect.y
+            width: board.selectionRect.width; height: board.selectionRect.height
+            visible: width > 0 || height > 0
+            radius: 3
+            color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.035)
+            border.color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.8)
+            border.width: 1.5
+        }
+        Rectangle {
+            visible: board.selectedCount > 0
+            x: board.selectionRect.x + board.selectionRect.width / 2
+            y: board.selectionRect.y - 23
+            width: 1; height: 23; color: Theme.accent
+        }
         Repeater {
             model: board.selectionHandles
             Rectangle {
                 required property var modelData
                 x: modelData.x-Theme.handleSize/2; y: modelData.y-Theme.handleSize/2
                 width: Theme.handleSize; height: Theme.handleSize
-                radius: modelData.type === "rotate" || modelData.type === "center" ? Theme.handleSize/2 : Theme.xs/2
+                radius: modelData.type === "rotate" || modelData.type === "center" ? Theme.handleSize/2 : 3
                 color: Theme.surface; border.color: Theme.accent; border.width: Theme.focusBorder
             }
         }
     }
     Rectangle {
+        objectName: "eraserIndicator"
         x: board.x+board.eraserPosition.x-width/2; y: board.y+board.eraserPosition.y-height/2
         width: board.eraserRadius*2*board.zoom*96/25.4; height: width; radius: width/2
-        visible: board.tool === "eraser"
+        visible: board.eraserVisible
         color: "#20ffffff"; border.color: Theme.accent; border.width: Theme.hairline
     }
     DropArea {
-        anchors.fill: board; enabled: !root.overlaysOpen && !inlineText.active
+        anchors.fill: board; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active
         onDropped: drop => {
             if(drop.hasUrls && drop.urls.length > 0) {
                 if(drop.urls[0].toString().toLowerCase().endsWith(".pdf")) App.inspectPdfFile(drop.urls[0])
@@ -113,7 +173,7 @@ Item {
             }
         }
     }
-    PropertiesPanel { id: properties; canvas: board; visible: board.selectedCount > 0 && board.tool === "select" && !inlineText.active; anchors.top: parent.top; anchors.right: parent.right; anchors.topMargin: root.headerHeight+Theme.lg; anchors.rightMargin: Theme.lg }
+    PropertiesPanel { id: properties; canvas: board; onExportRequested: svg => root.exportSelection(svg); visible: board.selectedCount > 0 && board.tool === "select" && !inlineText.active; anchors.top: parent.top; anchors.right: parent.right; anchors.topMargin: root.headerHeight+Theme.lg; anchors.rightMargin: Theme.lg }
     RowLayout {
         id: topbar
         anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
@@ -188,6 +248,7 @@ Item {
     }
     FloatingToolbar {
         id: toolbar
+        backdropSource: board
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.bottom: parent.bottom; anchors.bottomMargin: Theme.xxl
         activeTool: board.tool
@@ -263,25 +324,24 @@ Item {
         text: board.drawing ? board.interactionHint : App.status
         color: Theme.secondary; font.pixelSize: Theme.caption; elide: Text.ElideRight
     }
-    Text { anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.margins: Theme.lg; visible: root.width > Theme.hintBreakpoint; text: "Espaço + arraste para mover · rolagem para zoom"; color: Theme.secondary; font.pixelSize: Theme.caption }
-    Shortcut { sequence: "E"; enabled: !root.overlaysOpen && !inlineText.active; onActivated: board.tool = "eraser" }
-    readonly property bool eraserSizeShortcutsEnabled: board.tool === "eraser" && (board.enabled || eraserOptions.visible) && !root.overlaysOpen && !inlineText.active && !projectTitle.editing && !zoomControl.editing
+    Text { anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.margins: Theme.lg; visible: root.width > Theme.hintBreakpoint; text: "Rolagem para mover · Ctrl + rolagem para zoom"; color: Theme.secondary; font.pixelSize: Theme.caption }
+    Shortcut { sequence: "E"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.tool = "eraser" }
+    readonly property bool eraserSizeShortcutsEnabled: board.tool === "eraser" && (board.enabled || eraserOptions.visible) && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && !projectTitle.editing && !zoomControl.editing
     Shortcut { sequences: ["+", "]"]; enabled: root.eraserSizeShortcutsEnabled; autoRepeat: true; onActivated: board.adjustEraserSize(true) }
     Shortcut { sequences: ["-", "["]; enabled: root.eraserSizeShortcutsEnabled; autoRepeat: true; onActivated: board.adjustEraserSize(false) }
-    Shortcut { sequence: "Ctrl+V"; enabled: !root.overlaysOpen && !inlineText.active; onActivated: board.pasteImage() }
-    Shortcut { sequence: "V"; enabled: !root.overlaysOpen && !inlineText.active; onActivated: board.tool = "select" }
-    Shortcut { sequence: "Delete"; enabled: !root.overlaysOpen && !inlineText.active && (board.selectedCount > 0 || board.selectedGuide !== ""); onActivated: board.deleteSelection() }
-    Shortcut { sequence: "Ctrl+D"; enabled: !root.overlaysOpen && !inlineText.active && board.selectedCount > 0; onActivated: board.duplicateSelection() }
-    Shortcut { sequence: "Ctrl+Up"; enabled: !root.overlaysOpen && !inlineText.active && board.selectedCount > 0; onActivated: board.moveSelectionLayer(true) }
-    Shortcut { sequence: "Ctrl+Down"; enabled: !root.overlaysOpen && !inlineText.active && board.selectedCount > 0; onActivated: board.moveSelectionLayer(false) }
-    Shortcut { sequence: "T"; enabled: !root.overlaysOpen && !inlineText.active; onActivated: board.tool = "text" }
-    Shortcut { sequence: "P"; enabled: !root.overlaysOpen && !inlineText.active; onActivated: board.tool = "pen" }
-    Shortcut { sequence: "M"; enabled: !root.overlaysOpen && !inlineText.active; onActivated: board.tool = "marker" }
-    Shortcut { sequence: "H"; enabled: !root.overlaysOpen && !inlineText.active; onActivated: board.tool = "hand" }
-    Shortcut { sequence: "Ctrl+Z"; enabled: !root.overlaysOpen && !inlineText.active && !board.drawing; onActivated: App.undo() }
-    Shortcut { sequence: "Ctrl+Shift+Z"; enabled: !root.overlaysOpen && !inlineText.active && !board.drawing; onActivated: App.redo() }
-    Shortcut { sequence: "Ctrl+S"; enabled: !root.overlaysOpen; onActivated: root.finishTextThen(function(){App.save()}) }
-    Shortcut { sequence: "Ctrl+Shift+S"; enabled: !root.overlaysOpen && !inlineText.active; onActivated: root.saveAsRequested() }
-    Shortcut { sequence: "Ctrl+PgDown"; enabled: !root.overlaysOpen && !inlineText.active; onActivated: { board.cancelStroke(); App.selectPage(App.currentPage+1) } }
-    Shortcut { sequence: "Ctrl+PgUp"; enabled: !root.overlaysOpen && !inlineText.active; onActivated: { board.cancelStroke(); App.selectPage(App.currentPage-1) } }
+    Shortcut { sequence: "Ctrl+V"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.pasteImage() }
+    Shortcut { sequence: "V"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.tool = "select" }
+    Shortcut { sequence: "Delete"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && (board.selectedCount > 0 || board.selectedGuide !== ""); onActivated: board.deleteSelection() }
+    Shortcut { sequence: "Ctrl+D"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && board.selectedCount > 0; onActivated: board.duplicateSelection() }
+    Shortcut { sequence: "Ctrl+Up"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && board.selectedCount > 0; onActivated: board.moveSelectionLayer(true) }
+    Shortcut { sequence: "Ctrl+Down"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && board.selectedCount > 0; onActivated: board.moveSelectionLayer(false) }
+    Shortcut { sequence: "T"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.tool = "text" }
+    Shortcut { sequence: "P"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.tool = "pen" }
+    Shortcut { sequence: "M"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.tool = "marker" }
+    Shortcut { sequence: "Ctrl+Z"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && !board.drawing; onActivated: App.undo() }
+    Shortcut { sequence: "Ctrl+Shift+Z"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && !board.drawing; onActivated: App.redo() }
+    Shortcut { sequence: "Ctrl+S"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible; onActivated: root.finishTextThen(function(){App.save()}) }
+    Shortcut { sequence: "Ctrl+Shift+S"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: root.saveAsRequested() }
+    Shortcut { sequence: "Ctrl+PgDown"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: { board.cancelStroke(); App.selectPage(App.currentPage+1) } }
+    Shortcut { sequence: "Ctrl+PgUp"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: { board.cancelStroke(); App.selectPage(App.currentPage-1) } }
 }

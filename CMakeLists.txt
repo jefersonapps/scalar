@@ -23,7 +23,7 @@ if(BUILD_TESTING)
 endif()
 option(SCALAR_BUILD_DESKTOP "Build the Qt desktop application" ON)
 if(SCALAR_BUILD_DESKTOP)
-    find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Quick QuickControls2 Sql Concurrent Pdf)
+    find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Quick QuickControls2 Sql Concurrent Pdf Svg)
     qt_standard_project_setup()
     add_library(scalar_desktop STATIC src/app/AppController.cpp src/app/AppController.h
         src/canvas/CanvasItem.cpp src/canvas/CanvasItem.h src/canvas/CanvasSelection.cpp src/rendering/CanvasScene.cpp src/input/InputManager.cpp src/input/InputManager.h
@@ -53,6 +53,17 @@ if(SCALAR_BUILD_DESKTOP)
         target_compile_definitions(scalar_desktop PRIVATE SCALAR_HAVE_WEBP=1)
     endif()
     qt_add_executable(scalar src/app/main.cpp)
+    if(WIN32)
+        enable_language(RC)
+        configure_file(packaging/scalar.rc.in scalar.rc @ONLY)
+        target_sources(scalar PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/scalar.rc")
+        get_target_property(_scalar_qt_core_type Qt6::Core TYPE)
+        if(_scalar_qt_core_type STREQUAL "SHARED_LIBRARY")
+            # Shared QML plugins are deployed by windeployqt from qml/.
+            # Avoid scanning the bundled MathJax JavaScript at configure time.
+            set_target_properties(scalar PROPERTIES QT_QML_MODULE_NO_IMPORT_SCAN TRUE)
+        endif()
+    endif()
     qt_add_resources(scalar_desktop text_fonts PREFIX "/" BASE "${CMAKE_CURRENT_SOURCE_DIR}" FILES
         assets/fonts/LobsterTwo-Regular.otf assets/fonts/LobsterTwo-Italic.otf
         assets/fonts/LobsterTwo-Bold.otf assets/fonts/LobsterTwo-OFL.txt)
@@ -84,7 +95,12 @@ if(SCALAR_BUILD_DESKTOP)
         configure_file(cmake/InstallMath.cmake.in InstallMath.cmake @ONLY)
         install(SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/InstallMath.cmake")
         install(DIRECTORY third_party/mathjax/ DESTINATION share/scalar/math USE_SOURCE_PERMISSIONS
-            PATTERN "package-lock.json" EXCLUDE)
+            PATTERN "package-lock.json" EXCLUDE
+            PATTERN "scalar-offline-math" EXCLUDE
+            # MathJax's build sources are unused by the bundled JS runtime and
+            # exceed NSIS's Windows path limit when staged inside the project.
+            PATTERN "mathjax-full/components" EXCLUDE
+            PATTERN "mathjax-full/ts" EXCLUDE)
     else()
         install(CODE "message(FATAL_ERROR \"Python 3.12 is required on the packaging machine to prepare the offline math runtime.\")")
     endif()
@@ -92,6 +108,9 @@ if(SCALAR_BUILD_DESKTOP)
     # also either resolve the platform runtimes (DEB) or deploy them beside the
     # executable (Windows), so no development dependencies are needed after install.
     if(WIN32)
+        set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION bin)
+        set(CMAKE_INSTALL_UCRT_LIBRARIES TRUE)
+        include(InstallRequiredSystemLibraries)
         get_target_property(_scalar_qmake Qt6::qmake IMPORTED_LOCATION)
         if(_scalar_qmake)
             get_filename_component(_scalar_qt_bin "${_scalar_qmake}" DIRECTORY)
@@ -105,6 +124,8 @@ if(SCALAR_BUILD_DESKTOP)
     endif()
 
     set(CPACK_PACKAGE_NAME "Scalar")
+    # Preserve quotes and backslashes in the custom NSIS finish-page actions.
+    set(CPACK_VERBATIM_VARIABLES TRUE)
     set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
     set(CPACK_PACKAGE_DIRECTORY "${CMAKE_BINARY_DIR}/packages")
     set(CPACK_PACKAGE_VENDOR "Scalar")
@@ -117,6 +138,23 @@ if(SCALAR_BUILD_DESKTOP)
         set(CPACK_NSIS_PACKAGE_NAME "Scalar")
         set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
         set(CPACK_NSIS_MODIFY_PATH OFF)
+        set(CPACK_NSIS_INSTALLED_ICON_NAME "bin/scalar.exe")
+        set(CPACK_NSIS_EXECUTABLES_DIRECTORY "bin")
+        # NSIS shows a checked Run Scalar option on the final installer page.
+        set(CPACK_NSIS_MUI_FINISHPAGE_RUN "scalar.exe")
+        # Use Modern UI's second finish-page checkbox for the desktop shortcut.
+        set(CPACK_NSIS_DEFINES [=[
+!define MUI_FINISHPAGE_RUN_TEXT "Executar o Scalar"
+!define MUI_FINISHPAGE_SHOWREADME ""
+!define MUI_FINISHPAGE_SHOWREADME_TEXT "Criar atalho na area de trabalho"
+!define MUI_FINISHPAGE_SHOWREADME_FUNCTION ScalarCreateDesktopShortcut
+Function ScalarCreateDesktopShortcut
+  CreateShortCut "$DESKTOP\Scalar.lnk" "$INSTDIR\bin\scalar.exe" "" "$INSTDIR\bin\scalar.exe" 0
+FunctionEnd
+]=])
+        set(CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS [=[
+  Delete "$DESKTOP\Scalar.lnk"
+]=])
     elseif(UNIX AND NOT APPLE)
         set(CPACK_GENERATOR "DEB;TGZ")
         set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Scalar maintainers")
@@ -137,6 +175,9 @@ if(SCALAR_BUILD_DESKTOP)
         target_link_libraries(persistence_tests PRIVATE scalar_core Qt6::Core Qt6::Gui Qt6::Sql Qt6::Test)
         add_test(NAME persistence COMMAND persistence_tests)
         qt_add_executable(desktop_tests tests/desktop_tests.cpp)
+        if(WIN32 AND _scalar_qt_core_type STREQUAL "SHARED_LIBRARY")
+            set_target_properties(desktop_tests PROPERTIES QT_QML_MODULE_NO_IMPORT_SCAN TRUE)
+        endif()
         target_link_libraries(desktop_tests PRIVATE scalar_desktop Qt6::Test)
         qt_add_resources(desktop_tests ui PREFIX "/" BASE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${SCALAR_QML})
         qt_add_executable(trash_tests tests/trash_tests.cpp src/persistence/TrashStore.cpp src/persistence/Library.cpp)
@@ -147,6 +188,9 @@ if(SCALAR_BUILD_DESKTOP)
         target_link_libraries(math_tests PRIVATE scalar_desktop Qt6::Test)
         add_test(NAME math COMMAND math_tests)
         qt_add_executable(pdf_tests tests/pdf_tests.cpp)
+        if(WIN32 AND _scalar_qt_core_type STREQUAL "SHARED_LIBRARY")
+            set_target_properties(math_tests pdf_tests PROPERTIES QT_QML_MODULE_NO_IMPORT_SCAN TRUE)
+        endif()
         target_link_libraries(pdf_tests PRIVATE scalar_desktop Qt6::Test)
         add_test(NAME pdf COMMAND pdf_tests)
         set_tests_properties(pdf PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)

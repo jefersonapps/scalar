@@ -85,6 +85,13 @@ Bounds pageRenderBounds(const Page& page,double marginMm){
 }
 bool hitTest(const CanvasObject& o,Point p,double tolerance){
     if(!properties(o).visible||properties(o).locked)return false;
+    const bool permanentlyErased=std::visit([&](const auto& item){
+        if constexpr(requires{item.eraseMask;})if(item.eraseMask&&item.eraseMask->alpha&&item.eraseMask->corners.size()==4){
+            const auto& mask=*item.eraseMask;const auto a=mask.corners[1]-mask.corners[0],b=mask.corners[3]-mask.corners[0],v=p-mask.corners[0];const double cross=a.x*b.y-a.y*b.x;if(std::abs(cross)<1e-12)return false;
+            const double u=(v.x*b.y-v.y*b.x)/cross,w=(a.x*v.y-a.y*v.x)/cross;
+            if(u>=0&&u<1&&w>=0&&w<1){const auto x=int(u*mask.pixelWidth),y=int(w*mask.pixelHeight);return (*mask.alpha)[std::size_t(y)*mask.pixelWidth+x]>=254;}
+        }return false;
+    },o);if(permanentlyErased)return false;
 
     if(const auto* image=std::get_if<ImageObject>(&o)){
         bool erased=false;for(const auto& region:image->erasedRegions)if(distanceToSegment(p,region.from,region.to)<region.radius)erased=!region.restore;
@@ -143,6 +150,19 @@ bool shapeTouchesEraser(const ShapeObject& shape,Point from,Point to,double radi
     }
     return closed&&shape.fillOpacity>0&&(insideFrom||insideTo);
 }
+bool strokeTouchesEraser(const StrokeObject& stroke,Point from,Point to,double radius){
+    if(stroke.samples.empty())return false;
+    radius+=stroke.style.maxWidthMm*.5;
+    if(stroke.samples.size()==1)return distanceToSegment(stroke.samples.front().position,from,to)<=radius;
+    const auto cross=[](Point a,Point b){return a.x*b.y-a.y*b.x;};
+    const Bounds swept{std::min(from.x,to.x)-radius,std::min(from.y,to.y)-radius,std::max(from.x,to.x)+radius,std::max(from.y,to.y)+radius};
+    for(std::size_t i=1;i<stroke.samples.size();++i){const auto a=stroke.samples[i-1].position,b=stroke.samples[i].position;
+        if(std::max(a.x,b.x)<swept.left||std::min(a.x,b.x)>swept.right||std::max(a.y,b.y)<swept.top||std::min(a.y,b.y)>swept.bottom)continue;
+        if(std::min({distanceToSegment(from,a,b),distanceToSegment(to,a,b),distanceToSegment(a,from,to),distanceToSegment(b,from,to)})<=radius)return true;
+        if(cross(to-from,a-from)*cross(to-from,b-from)<0&&cross(b-a,from-a)*cross(b-a,to-a)<0)return true;
+    }
+    return false;
+}
 CanvasObject transformed(CanvasObject o,Point center,Point translation,double sx,double sy,double rotation){
     sx=std::max(0.01,sx);
     sy=std::max(0.01,sy);
@@ -151,6 +171,7 @@ CanvasObject transformed(CanvasObject o,Point center,Point translation,double sx
         p={p.x*sx,p.y*sy};
         return rotatePoint(center+p,center,rotation)+translation;
         };
+    std::visit([&](auto& item){if constexpr(requires{item.eraseMask;})if(item.eraseMask)for(auto& point:item.eraseMask->corners)point=move(point);},o);
 
     if(auto* s=std::get_if<StrokeObject>(&o)){for(auto& sample:s->samples)sample.position=move(sample.position);
         for(auto& region:s->erasedRegions){region.from=move(region.from);region.to=move(region.to);region.radius*=std::min(sx,sy);}

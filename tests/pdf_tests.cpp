@@ -8,6 +8,7 @@
 #include <QJsonArray>
 #include <QPdfDocument>
 #include <QPdfSelection>
+#include <QSvgRenderer>
 #include "export/PdfExporter.h"
 #include "rendering/TextRenderer.h"
 #include "rendering/PageRenderer.h"
@@ -28,6 +29,38 @@ static bool makePdf(const QString& path){
 class PdfTests : public QObject {
     Q_OBJECT
 private slots:
+    void selectionExportsCroppedTransparentVectors(){
+        QTemporaryDir directory;StrokeObject stroke;stroke.id=newId();stroke.style.rgba=0x00a0ffff;
+        stroke.style.minWidthMm=stroke.style.maxWidthMm=1;stroke.samples={{{100,120},1},{{120,130},1}};
+        const std::vector<CanvasObject> selected{stroke};const auto svg=directory.filePath("selection.svg"),pdf=directory.filePath("selection.pdf");
+        QVERIFY(exportSelectedObjects(selected,svg,true).isEmpty());QSvgRenderer renderer(svg);QVERIFY(renderer.isValid());
+        const auto box=renderer.viewBoxF();QVERIFY(box.width()<23);QVERIFY(box.height()<13);
+        QImage bitmap(440,240,QImage::Format_ARGB32_Premultiplied);bitmap.fill(Qt::transparent);
+        {QPainter painter(&bitmap);renderer.render(&painter);}
+        QCOMPARE(bitmap.pixelColor(0,0).alpha(),0);int ink=0;for(int y=0;y<bitmap.height();++y)for(int x=0;x<bitmap.width();++x)if(bitmap.pixelColor(x,y).alpha()>0)++ink;
+        QVERIFY(ink>1000);QVERIFY(ink<bitmap.width()*bitmap.height()/4);
+        QVERIFY(exportSelectedObjects(selected,pdf,false).isEmpty());QPdfDocument document(nullptr);QCOMPARE(document.load(pdf),QPdfDocument::Error::None);QCOMPARE(document.pageCount(),1);
+        const auto size=document.pagePointSize(0)*25.4/72;QVERIFY(size.width()<23);QVERIFY(size.height()<13);
+        QFile file(svg);QVERIFY(file.open(QIODevice::ReadOnly));QVERIFY(!file.readAll().contains("<image"));
+        QCOMPARE(stroke.samples.front().position.x,100.);QVERIFY(!exportSelectedObjects({},svg,true).isEmpty());
+        file.close();QVERIFY(file.open(QIODevice::ReadOnly));const auto original=file.readAll();file.close();
+        QVERIFY(!exportSelectedObjects(selected,directory.filePath("missing/selection.svg"),true).isEmpty());
+        QVERIFY(file.open(QIODevice::ReadOnly));QCOMPARE(file.readAll(),original);
+    }
+    void denseHandwritingExportsCompactVectorPdf(){
+        QTemporaryDir directory;Project project;project.id=newId();project.name="Dense handwriting";
+        for(int pageIndex=0;pageIndex<6;++pageIndex){Page page;page.id=newId();
+            for(int line=0;line<24;++line){StrokeObject stroke;stroke.id=newId();stroke.style.rgba=0x202020ff;
+                for(int i=0;i<1200;++i)stroke.samples.push_back({{20+170.*i/1199,20+line*10+2*std::sin(i*.012)},.65+.2*std::sin(i*.008)});
+                page.strokes.push_back(std::move(stroke));}project.pages.push_back(std::move(page));}
+        const auto path=directory.filePath("dense.pdf");const auto error=exportProjectPdf(project,path);QVERIFY2(error.isEmpty(),qPrintable(error));
+        QFile file(path);QVERIFY(file.open(QIODevice::ReadOnly));qInfo()<<"Six-page handwriting PDF bytes:"<<file.size();
+        QVERIFY(file.size()<6*1024*1024);QVERIFY(!file.readAll().contains("/Subtype /Image"));
+        QPdfDocument pdf(nullptr);QCOMPARE(pdf.load(path),QPdfDocument::Error::None);QCOMPARE(pdf.pageCount(),6);
+        const auto image=pdf.render(0,{840,1188});QVERIFY(!image.isNull());int ink=0;
+        for(int y=0;y<image.height();++y)for(int x=0;x<image.width();++x)if(image.pixelColor(x,y).lightness()<100)++ink;
+        QVERIFY(ink>10000);
+    }
     void exportPhysicalPagesAndVectorContent(){
         QTemporaryDir dir;Project project;project.id=newId();project.name="Physical pages";
         for(const auto size:std::vector<PageSize>{{210,297},{297,210},{215.9,279.4}}){Page page;page.id=newId();page.size=size;project.pages.push_back(page);}

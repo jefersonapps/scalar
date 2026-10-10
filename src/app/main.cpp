@@ -12,6 +12,8 @@
 #include <QDir>
 #include <QImage>
 #include <QLoggingCategory>
+#include <QTemporaryDir>
+#include <memory>
 int main(int argc,char** argv){
     QSurfaceFormat format;format.setSamples(4);QSurfaceFormat::setDefaultFormat(format);
     QGuiApplication app(argc,argv);app.setOrganizationName("Scalar");app.setApplicationName("Scalar");app.setApplicationVersion("0.5.0");
@@ -24,7 +26,10 @@ int main(int argc,char** argv){
     qmlRegisterType<scalar::CanvasItem>("Scalar",1,0,"BoardCanvas");
     qmlRegisterType<scalar::ApplicationLogo>("Scalar",1,0,"ApplicationLogo");
     qmlRegisterUncreatableType<scalar::AppController>("Scalar",1,0,"ApplicationController","Use the App singleton context.");
-    scalar::AppController controller;QQmlApplicationEngine engine;
+    // Smoke checks must not write projects/settings into the user's library.
+    std::unique_ptr<QTemporaryDir> smokeData;
+    if(parser.isSet("smoke-test")){smokeData=std::make_unique<QTemporaryDir>();if(!smokeData->isValid())return 2;}
+    scalar::AppController controller(nullptr,smokeData?smokeData->path():QString{});QQmlApplicationEngine engine;
     bool qmlWarnings=false;
     QObject::connect(&engine,&QQmlEngine::warnings,&app,[&](const QList<QQmlError>&){qmlWarnings=true;});engine.rootContext()->setContextProperty("App",&controller);
     engine.load(QUrl("qrc:/qml/Main.qml"));if(engine.rootObjects().isEmpty())return 1;

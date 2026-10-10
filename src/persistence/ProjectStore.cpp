@@ -11,14 +11,46 @@
 #include <QBuffer>
 #include <QImageReader>
 #include <limits>
+#include "geometry/Geometry.h"
+#include "rendering/EraseMask.h"
 namespace scalar {
 namespace {
 constexpr qsizetype maxBytes=128*1024*1024;
 QString text(const std::string& s) { return QString::fromStdString(s); }
 bool finite(const QJsonValue& v) { return v.isDouble()&&std::isfinite(v.toDouble()); }
 bool color(const QJsonValue& v) { return finite(v)&&v.toDouble()>=0&&v.toDouble()<=4294967295.0&&std::floor(v.toDouble())==v.toDouble(); }
+QString compactInk(CanvasObject& object){
+    return std::visit([&](auto& item)->QString{
+        if constexpr(requires{item.erasedRegions;}){
+            if(item.erasedRegions.empty())return {};
+            auto b=bounds(object);double padding=1;if constexpr(requires{item.style;})padding+=item.style.maxWidthMm;
+            QRectF limits(b.left-padding,b.top-padding,b.width()+2*padding,b.height()+2*padding),area;
+            for(const auto& region:item.erasedRegions){QRectF r(std::min(region.from.x,region.to.x)-region.radius,std::min(region.from.y,region.to.y)-region.radius,std::abs(region.to.x-region.from.x)+2*region.radius,std::abs(region.to.y-region.from.y)+2*region.radius);area=area.united(r.intersected(limits));}
+            if(item.eraseMask)for(auto p:item.eraseMask->corners)area=area.united(QRectF(p.x,p.y,1e-6,1e-6));
+            if(area.isEmpty()){item.erasedRegions.clear();return {};}
+            const double scale=std::min(16.,4094/std::max(area.width(),area.height()));area=area.adjusted(-1/scale,-1/scale,1/scale,1/scale);
+            QImage image(std::max(1,int(std::ceil(area.width()*scale))),std::max(1,int(std::ceil(area.height()*scale))),QImage::Format_ARGB32_Premultiplied);
+            if(image.isNull())return "Não foi possível consolidar os apagamentos.";image.fill(Qt::transparent);
+            QPainter painter(&image);painter.setRenderHint(QPainter::Antialiasing);painter.scale(scale,scale);painter.translate(-area.left(),-area.top());
+            for(const auto& region:item.erasedRegions){painter.setCompositionMode(region.restore?QPainter::CompositionMode_DestinationOut:QPainter::CompositionMode_SourceOver);painter.setPen(QPen(Qt::black,region.radius*2,Qt::SolidLine,Qt::RoundCap,Qt::RoundJoin));
+                if(region.from==region.to){painter.setPen(Qt::NoPen);painter.setBrush(Qt::black);painter.drawEllipse(QPointF(region.from.x,region.from.y),region.radius,region.radius);painter.setBrush(Qt::NoBrush);}else painter.drawLine(QPointF(region.from.x,region.from.y),QPointF(region.to.x,region.to.y));}
+            // A session can restore its own cuts, never the permanent mask.
+            if(item.eraseMask){painter.setCompositionMode(QPainter::CompositionMode_SourceOver);paintEraseMask(painter,*item.eraseMask,decodeEraseMask(*item.eraseMask));}painter.end();
+            QByteArray png;QBuffer buffer(&png);buffer.open(QIODevice::WriteOnly);if(!image.save(&buffer,"PNG"))return "Falha ao salvar a máscara de apagamento.";
+            const double right=area.left()+image.width()/scale,bottom=area.top()+image.height()/scale;
+            item.eraseMask=EraseMask{{{area.left(),area.top()},{right,area.top()},{right,bottom},{area.left(),bottom}},std::make_shared<const std::vector<std::uint8_t>>(png.begin(),png.end())};prepareEraseMask(*item.eraseMask,image);item.erasedRegions.clear();
+        }return {};
+    },object);
+}
+}
+QString ProjectStore::discardErasureHistory(Project& project){
+    const auto compactItems=[](auto& items)->QString{for(auto& item:items){if(item.erasedRegions.empty())continue;CanvasObject object=item;const auto error=compactInk(object);if(!error.isEmpty())return error;item=std::get<std::decay_t<decltype(item)>>(std::move(object));}return {};};
+    for(auto& page:project.pages){page.erasedInk.clear();for(const auto& error:{compactItems(page.strokes),compactItems(page.shapes),compactItems(page.images)})if(!error.isEmpty())return error;}
+    return {};
 }
 QByteArray ProjectStore::serialize(const Project& p) {
+    bool hasMasks=false;
+    const auto writeMask=[&](QJsonObject& record,const std::optional<EraseMask>& mask){if(!mask)return;hasMasks=true;QJsonArray corners;for(auto p:mask->corners)corners.append(QJsonArray{p.x,p.y});const auto png=QByteArray(reinterpret_cast<const char*>(mask->png->data()),qsizetype(mask->png->size()));record["eraseMask"]=QJsonObject{{"corners",corners},{"png",QString::fromLatin1(png.toBase64())}};};
     QJsonArray pages;QJsonObject pdfAssets;
     for(const auto& page:p.pages) {
         QJsonArray strokes;
@@ -28,7 +60,7 @@ QByteArray ProjectStore::serialize(const Project& p) {
             for(const auto& v:s.samples) points.append(QJsonArray{v.position.x,v.position.y,v.pressure,v.tiltX,v.tiltY,v.rotation,double(v.timestamp),double(v.buttons),int(v.device)});
             QJsonObject object{{"id",text(s.id)},{"type","stroke"},{"style",QJsonObject{{"rgba",double(s.style.rgba)},{"minWidthMm",s.style.minWidthMm},{"maxWidthMm",s.style.maxWidthMm},{"gamma",s.style.gamma},{"sensitivity",s.style.sensitivity},{"pattern",int(s.style.pattern)},{"dashLengthMm",s.style.dashLengthMm},{"gapLengthMm",s.style.gapLengthMm},{"dotSpacingMm",s.style.dotSpacingMm}}},{"samples",points},{"zIndex",double(s.properties.zIndex)},{"locked",s.properties.locked},{"visible",s.properties.visible}};
             if(!s.erasedRegions.empty()){QJsonArray regions;for(const auto& erased:s.erasedRegions){QJsonArray region{erased.from.x,erased.from.y,erased.to.x,erased.to.y,erased.radius};if(erased.restore)region.append(true);regions.append(region);}object["erasedRegions"]=regions;}
-            if(s.marker)object["marker"]=true;if(index>=page.strokes.size())object["type"]="erasedStroke";strokes.append(object);
+            writeMask(object,s.eraseMask);if(s.marker)object["marker"]=true;if(index>=page.strokes.size())object["type"]="erasedStroke";strokes.append(object);
         }
         for(const auto& shape:page.shapes){
             QJsonArray vertices;for(auto p:shape.vertices)vertices.append(QJsonArray{p.x,p.y});
@@ -37,6 +69,8 @@ QByteArray ProjectStore::serialize(const Project& p) {
                 {"style",QJsonObject{{"rgba",double(st.rgba)},{"minWidthMm",st.minWidthMm},{"maxWidthMm",st.maxWidthMm},{"gamma",st.gamma},{"sensitivity",st.sensitivity},{"pattern",int(st.pattern)},{"dashLengthMm",st.dashLengthMm},{"gapLengthMm",st.gapLengthMm},{"dotSpacingMm",st.dotSpacingMm}}},
                 {"vertices",vertices},{"center",QJsonArray{shape.center.x,shape.center.y}},{"radiusX",shape.radiusX},{"radiusY",shape.radiusY},{"rotation",shape.rotation},{"fillOpacity",shape.fillOpacity},{"fillRgba",shape.fillRgba?QJsonValue(double(*shape.fillRgba)):QJsonValue(QJsonValue::Null)},
                 {"zIndex",double(shape.properties.zIndex)},{"locked",shape.properties.locked},{"visible",shape.properties.visible}};
+            if(shape.showAngle)record["showAngle"]=true;
+            writeMask(record,shape.eraseMask);
             if(!shape.erasedRegions.empty()){QJsonArray regions;for(const auto& erased:shape.erasedRegions){QJsonArray region{erased.from.x,erased.from.y,erased.to.x,erased.to.y,erased.radius};if(erased.restore)region.append(true);regions.append(region);}record["erasedRegions"]=regions;}
             strokes.append(record);
         }
@@ -45,6 +79,7 @@ QByteArray ProjectStore::serialize(const Project& p) {
             const auto png=QByteArray(reinterpret_cast<const char*>(image.png->data()),qsizetype(image.png->size()));
             QJsonObject object{{"id",text(image.id)},{"type","image"},{"corners",corners},{"png",QString::fromLatin1(png.toBase64())},{"pixelWidth",image.pixelWidth},{"pixelHeight",image.pixelHeight},{"zIndex",double(image.properties.zIndex)},{"locked",image.properties.locked},{"visible",image.properties.visible}};
             if(image.inkFill)object["inkFill"]=true;
+            writeMask(object,image.eraseMask);
             if(!image.erasedRegions.empty()){QJsonArray regions;for(const auto& e:image.erasedRegions)regions.append(QJsonArray{e.from.x,e.from.y,e.to.x,e.to.y,e.radius,e.restore});object["erasedRegions"]=regions;}strokes.append(object);
         }
         for(const auto& t:page.texts){
@@ -61,7 +96,7 @@ QByteArray ProjectStore::serialize(const Project& p) {
             record.insert("pdf",QJsonObject{{"asset",text(pdf.assetId)},{"pageIndex",pdf.pageIndex},{"widthMm",size.widthMm},{"heightMm",size.heightMm}});
         }pages.append(record);
     }
-    return QJsonDocument(QJsonObject{{"format","scalar.board"},{"version",4},{"units","mm"},{"id",text(p.id)},{"name",text(p.name)},{"createdAt",text(p.createdAt)},{"updatedAt",text(p.updatedAt)},{"pages",pages},{"pdfAssets",pdfAssets}}).toJson(QJsonDocument::Compact);
+    return QJsonDocument(QJsonObject{{"format","scalar.board"},{"version",hasMasks?5:4},{"units","mm"},{"id",text(p.id)},{"name",text(p.name)},{"createdAt",text(p.createdAt)},{"updatedAt",text(p.updatedAt)},{"pages",pages},{"pdfAssets",pdfAssets}}).toJson(QJsonDocument::Compact);
 }
 LoadResult ProjectStore::deserialize(const QByteArray& data) {
     auto fail=[](const QString& reason){return LoadResult{{},reason};};
@@ -69,7 +104,7 @@ LoadResult ProjectStore::deserialize(const QByteArray& data) {
     QJsonParseError error; const auto doc=QJsonDocument::fromJson(data,&error);
     if(error.error!=QJsonParseError::NoError||!doc.isObject()) return fail("JSON inválido.");
     const auto root=doc.object();
-    if(root["format"]!="scalar.board"||(root["version"].toInt()<1||root["version"].toInt()>4)||root["units"]!="mm") return fail("Formato ou versão não suportado.");
+    if(root["format"]!="scalar.board"||(root["version"].toInt()<1||root["version"].toInt()>5)||root["units"]!="mm") return fail("Formato ou versão não suportado.");
     Project p; p.id=root["id"].toString().toStdString(); p.name=root["name"].toString().toStdString();
     p.createdAt=root["createdAt"].toString().toStdString(); p.updatedAt=root["updatedAt"].toString().toStdString();
     if(p.id.empty()||p.name.empty()||!root["pages"].isArray()) return fail("Metadados incompletos.");
@@ -106,6 +141,12 @@ LoadResult ProjectStore::deserialize(const QByteArray& data) {
         }
         for(const auto& value:o["objects"].toArray()) {
             const auto s=value.toObject();
+            std::optional<EraseMask> mask;
+            if(s.contains("eraseMask")){
+                if(root["version"].toInt()<5||!s["eraseMask"].isObject())return fail("Máscara de apagamento inválida.");const auto m=s["eraseMask"].toObject();const auto corners=m["corners"].toArray();if(corners.size()!=4||!m["png"].isString())return fail("Máscara de apagamento inválida.");EraseMask parsed;
+                for(const auto& value:corners){const auto p=value.toArray();if(p.size()!=2||!finite(p[0])||!finite(p[1])||std::abs(p[0].toDouble())>1e6||std::abs(p[1].toDouble())>1e6)return fail("Máscara fora dos limites.");parsed.corners.push_back({p[0].toDouble(),p[1].toDouble()});}
+                if(!isSimplePolygon(parsed.corners))return fail("Geometria da máscara inválida.");auto bytes=QByteArray::fromBase64(m["png"].toString().toLatin1(),QByteArray::AbortOnBase64DecodingErrors);QBuffer buffer(&bytes);buffer.open(QIODevice::ReadOnly);QImageReader reader(&buffer,"PNG");const auto size=reader.size();if(size.width()<1||size.height()<1||size.width()>4096||size.height()>4096)return fail("PNG da máscara inválido.");const auto decoded=reader.read();if(decoded.isNull())return fail("PNG da máscara inválido.");prepareEraseMask(parsed,decoded);parsed.png=std::make_shared<const std::vector<std::uint8_t>>(bytes.begin(),bytes.end());mask=std::move(parsed);
+            }
             if(s["type"]=="text"){
                 if(root["version"].toInt()<3||!claim(s["id"].toString())||!s["source"].isString()||!s["fontFamily"].isString()||!finite(s["fontSizePt"])||!color(s["rgba"])||!s["bold"].isBool()||!s["italic"].isBool()||!finite(s["alignment"])||!s["corners"].isArray()||!s["math"].isArray()||!finite(s["zIndex"])||std::abs(s["zIndex"].toDouble())>9007199254740991.0||std::floor(s["zIndex"].toDouble())!=s["zIndex"].toDouble()||!s["locked"].isBool()||!s["visible"].isBool())return fail("Texto inválido.");
                 TextObject t;t.id=s["id"].toString().toStdString();t.source=s["source"].toString().toStdString();t.fontFamily=s["fontFamily"].toString().toStdString();t.fontSizePt=s["fontSizePt"].toDouble();t.bold=s["bold"].toBool();t.italic=s["italic"].toBool();t.alignment=s["alignment"].toInt(-1);t.style.rgba=std::uint32_t(s["rgba"].toDouble());
@@ -136,6 +177,7 @@ LoadResult ProjectStore::deserialize(const QByteArray& data) {
             if(s["type"]=="image"){
                 if(root["version"].toInt()<2||!claim(s["id"].toString())||!s["corners"].isArray()||!s["png"].isString()||!finite(s["zIndex"])||std::abs(s["zIndex"].toDouble())>9007199254740991.0||std::floor(s["zIndex"].toDouble())!=s["zIndex"].toDouble()||!s["locked"].isBool()||!s["visible"].isBool())return fail("Imagem inválida.");
                 ImageObject image;image.id=s["id"].toString().toStdString();image.pixelWidth=s["pixelWidth"].toInt();image.pixelHeight=s["pixelHeight"].toInt();
+                image.eraseMask=mask;
                 if(s.contains("inkFill")){if(!s["inkFill"].isBool())return fail("Preenchimento inválido.");image.inkFill=s["inkFill"].toBool();}
             if(s.contains("erasedRegions")){
                 if(!s["erasedRegions"].isArray()||s["erasedRegions"].toArray().size()>10000)return fail("Recortes inválidos.");
@@ -188,6 +230,7 @@ LoadResult ProjectStore::deserialize(const QByteArray& data) {
             if(s["type"]=="shape"){
                 if(root["version"].toInt()<2||!finite(s["kind"])||s["kind"].toInt(-1)<0||s["kind"].toInt(-1)>9||!s["vertices"].isArray()||!s["center"].isArray())return fail("Forma inválida.");
                 ShapeObject shape;shape.id=stroke.id;shape.style=stroke.style;shape.properties=stroke.properties;shape.kind=ShapeKind(s["kind"].toInt());
+                if(s.contains("showAngle")&&!s["showAngle"].isBool())return fail("Visibilidade de ângulo inválida.");shape.showAngle=s["showAngle"].toBool(false);
                 const auto c=s["center"].toArray();if(c.size()!=2||!finite(c[0])||!finite(c[1])||std::abs(c[0].toDouble())>1e6||std::abs(c[1].toDouble())>1e6)return fail("Centro inválido.");shape.center={c[0].toDouble(),c[1].toDouble()};
                 for(const char* key:{"radiusX","radiusY","rotation","fillOpacity"})if(!finite(s[key]))return fail("Forma não numérica.");
                 shape.radiusX=s["radiusX"].toDouble();shape.radiusY=s["radiusY"].toDouble();shape.rotation=s["rotation"].toDouble();shape.fillOpacity=s["fillOpacity"].toDouble();
@@ -197,7 +240,7 @@ LoadResult ProjectStore::deserialize(const QByteArray& data) {
                 if((shape.kind==ShapeKind::Polygon||shape.kind==ShapeKind::CircularArc||shape.kind==ShapeKind::CircularSector)?(v.size()<3||v.size()>2048):(v.size()!=expected))return fail("Vértices inválidos.");
                 for(const auto& vertex:v){const auto a=vertex.toArray();if(a.size()!=2||!finite(a[0])||!finite(a[1])||std::abs(a[0].toDouble())>1e6||std::abs(a[1].toDouble())>1e6)return fail("Vértice inválido.");shape.vertices.push_back({a[0].toDouble(),a[1].toDouble()});}
                 if(shape.kind==ShapeKind::Circle&&std::abs(shape.radiusX-shape.radiusY)>1e-6)return fail("Círculo inválido.");
-                shape.erasedRegions=std::move(stroke.erasedRegions);
+                shape.erasedRegions=std::move(stroke.erasedRegions);shape.eraseMask=mask;
                 page.shapes.push_back(std::move(shape));continue;
             }
             if(!s["samples"].isArray())return fail("Traço inválido.");
@@ -209,7 +252,7 @@ LoadResult ProjectStore::deserialize(const QByteArray& data) {
                 if(std::abs(a[0].toDouble())>1e6||std::abs(a[1].toDouble())>1e6||a[2].toDouble()<0||a[2].toDouble()>1||a[6].toDouble()<0||a[6].toDouble()>9007199254740991.0||a[7].toDouble()<0||a[7].toDouble()>4294967295.0||a[8].toInt(-1)<0||a[8].toInt(-1)>2) return fail("Amostra fora dos limites.");
                 stroke.samples.push_back({{a[0].toDouble(),a[1].toDouble()},a[2].toDouble(),a[3].toDouble(),a[4].toDouble(),a[5].toDouble(),std::uint64_t(a[6].toDouble()),std::uint32_t(a[7].toDouble()),DeviceType(a[8].toInt())});
             }
-            if(s["type"]=="erasedStroke")page.erasedInk.push_back(std::move(stroke));else page.strokes.push_back(std::move(stroke));
+            stroke.eraseMask=mask;if(s["type"]=="erasedStroke")page.erasedInk.push_back(std::move(stroke));else page.strokes.push_back(std::move(stroke));
         }
         p.pages.push_back(std::move(page));
     }
@@ -225,7 +268,8 @@ QByteArray ProjectStore::unpack(const QByteArray& zip,QString& error) {
     return QByteArray(reinterpret_cast<const char*>(result.json.data()),qsizetype(result.json.size()));
 }
 QString ProjectStore::save(const QString& path,const Project& p) {
-    const auto json=serialize(p); if(json.size()+122>maxBytes)return "Projeto excede o limite de armazenamento.";
+    auto compact=p;const auto error=discardErasureHistory(compact);if(!error.isEmpty())return error;
+    const auto json=serialize(compact); if(json.size()+122>maxBytes)return "Projeto excede o limite de armazenamento.";
     const auto validation=deserialize(json); if(!validation)return validation.error;
     const auto bytes=archive(json); QSaveFile file(path); file.setDirectWriteFallback(false);
     if(!file.open(QIODevice::WriteOnly))return file.errorString();
@@ -236,6 +280,8 @@ LoadResult ProjectStore::load(const QString& path) {
     QFile file(path); if(!file.open(QIODevice::ReadOnly))return {{},file.errorString()};
     if(file.size()>maxBytes)return {{},"Arquivo excede 128 MiB."};
     QString error; const auto json=unpack(file.readAll(),error); if(!error.isEmpty())return {{},error}; auto result=deserialize(json);if(!result)return result;
+    for(const auto& page:result.project.pages){result.compacted|=!page.erasedInk.empty();for(const auto& object:objects(page))std::visit([&](const auto& item){if constexpr(requires{item.erasedRegions;})result.compacted|=!item.erasedRegions.empty();},object);}
+    if(result.compacted){result.error=discardErasureHistory(result.project);if(!result.error.isEmpty())return result;}
     for(const auto& page:result.project.pages)for(const auto& image:page.images){
         auto bytes=QByteArray(reinterpret_cast<const char*>(image.png->data()),qsizetype(image.png->size()));QBuffer buffer(&bytes);buffer.open(QIODevice::ReadOnly);QImageReader reader(&buffer,"PNG");
         if(reader.size()!=QSize(image.pixelWidth,image.pixelHeight))return {{},"Dimensões PNG não correspondem aos metadados."};

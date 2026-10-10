@@ -12,6 +12,15 @@ using namespace scalar;
 class PersistenceTests : public QObject {
     Q_OBJECT
 private slots:
+    void storedErasureContainsOnlyPermanentResult(){
+        QTemporaryDir dir;Project project{newId(),"Erase session","now","now",{{newId(),PageSize::a4(),0xffffffff,{}}}};
+        StrokeObject marker;marker.id=newId();marker.marker=true;marker.style.minWidthMm=marker.style.maxWidthMm=5;marker.samples={{{20,30},1},{{100,30},1}};marker.erasedRegions={{{50,30},{50,30},3},{{50,30},{50,30},1,true}};project.pages[0].strokes.push_back(marker);auto deleted=marker;deleted.id=newId();project.pages[0].erasedInk.push_back(deleted);
+        const auto path=dir.filePath("permanent.board");QVERIFY(ProjectStore::save(path,project).isEmpty());const auto loaded=ProjectStore::load(path);QVERIFY2(loaded,qPrintable(loaded.error));QVERIFY(loaded.project.pages[0].erasedInk.empty());const auto& saved=loaded.project.pages[0].strokes.front();QVERIFY(saved.erasedRegions.empty());QVERIFY(saved.eraseMask);QVERIFY(saved.eraseMask->alpha);QVERIFY(!loaded.compacted);
+        const auto maskJson=QJsonDocument::fromJson(ProjectStore::serialize(loaded.project)).object();QCOMPARE(maskJson["version"].toInt(),5);QVERIFY(ProjectStore::deserialize(ProjectStore::serialize(loaded.project)));
+        // Legacy files migrate once; an already consolidated save is stable.
+        QFile legacy(dir.filePath("legacy.board"));QVERIFY(legacy.open(QIODevice::WriteOnly));legacy.write(ProjectStore::archive(ProjectStore::serialize(project)));legacy.close();const auto migrated=ProjectStore::load(legacy.fileName());QVERIFY(migrated);QVERIFY(migrated.compacted);QVERIFY(migrated.project.pages[0].strokes.front().erasedRegions.empty());QVERIFY(migrated.project.pages[0].erasedInk.empty());
+        QFile file(path);QVERIFY(file.open(QIODevice::ReadOnly));const auto before=file.readAll();file.close();QVERIFY(ProjectStore::save(path,loaded.project).isEmpty());QVERIFY(file.open(QIODevice::ReadOnly));QCOMPARE(file.readAll(),before);
+    }
     void folderOrganizationPersists(){
         QTemporaryDir dir;const auto database=dir.filePath("folders.sqlite");QString folder;
         { Library library(database);QVERIFY(library.error().isEmpty());library.remember("board","Aula",dir.filePath("a.board"),"2026-10-03");folder=library.saveFolder({},"Geometria","#268fb5");QVERIFY(!folder.isEmpty());QVERIFY(library.saveFolder({},"geometria","#3ca889").isEmpty());QVERIFY(library.saveFolder({}," ","#268fb5").isEmpty());QVERIFY(library.saveFolder({},"Inválida","#ffffff").isEmpty());QVERIFY(!library.moveToFolder("missing",folder));QVERIFY(!library.moveToFolder("board","missing"));QVERIFY(library.moveToFolder("board",folder));QCOMPARE(library.folders()[0].toMap()["count"].toInt(),1);library.remember("board","Aula salva",dir.filePath("a.board"),"2026-10-04");QCOMPARE(library.recent()[0].toMap()["folderId"].toString(),folder);QCOMPARE(library.saveFolder(folder,"Matemática","#9765c5"),folder); }

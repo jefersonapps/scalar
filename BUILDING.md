@@ -1,15 +1,135 @@
-# Compilar e validar
+# Compilar, testar e gerar instaladores
 
-## Dependências
+Execute os comandos abaixo na raiz do projeto (`scalar/`).
 
-C++20, CMake >= 3.21, Qt >= 6.4 com Core, Gui, Quick, QuickControls2, Concurrent, Sql, Pdf e Test. Qt Svg é opcional e fornece importação SVG; inclua-o na distribuição completa. SQLite plugin QSQLITE precisa estar disponível. QML usa QtQuick, Controls, Layouts, Dialogs, Shapes, Templates, Window e QtQml.WorkerScript. Não precisa de Qt Widgets. O build prepara automaticamente as dependências locais de matemática quando Python >= 3.12 está disponível na máquina de desenvolvimento. O usuário final recebe essas dependências no pacote.
+## Gerar o instalador Windows
 
-### Ubuntu / Mint
+No PowerShell:
 
-Execute a instalação em uma máquina onde tenha permissão de administrar o sistema:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\package-windows.ps1
+```
+
+Esse é o comando principal para recompilar o aplicativo e gerar o instalador. O script inicializa o ambiente MSVC, configura o CMake, compila e empacota com NSIS.
+
+**Instalador para distribuir:** `build-package\packages\Scalar-0.5.0-win64.exe` (o nome acompanha a versão do projeto). O executável `build-package\scalar.exe` é uma saída de compilação; distribua o instalador em `packages/`, que inclui as dependências.
+
+### Ferramentas necessárias
+
+- Visual Studio ou Build Tools com ferramentas C++ x64 e Windows SDK.
+- CMake >= 3.21 e Ninja disponíveis no `PATH`.
+- Qt >= 6.5, kit MSVC x64, com Qt Quick, Quick Controls, Quick Effects, SQL, Concurrent, PDF, SVG e `windeployqt`.
+- Python >= 3.12 para preparar Node e MathJax durante o empacotamento.
+- NSIS instalado.
+
+O script está configurado para Qt em `C:\Qt\6.8.2\msvc2022_64`, CMake em `C:\Program Files\CMake\bin` e NSIS em `C:\NSIS\nsis-3.10`. Ajuste os caminhos em [package-windows.ps1](scripts/package-windows.ps1) se sua instalação for diferente. CMake e Ninja também podem ser encontrados pelo `PATH`.
+
+O script recria `build-package/` a cada execução. Ao terminar, execute o instalador para atualizar o app. A tela final oferece **Executar o Scalar** e **Criar atalho na área de trabalho**, ambas marcadas por padrão. Instalações silenciosas não executam essas ações.
+
+Para gerar também um pacote portátil, depois do script:
+
+```powershell
+cpack --config .\build-package\CPackConfig.cmake -G ZIP
+```
+
+O ZIP também fica em `build-package\packages\`. Extraia todo o conteúdo antes de executar o app.
+
+## Gerar o instalador Linux
+
+Em Debian, Ubuntu ou Linux Mint, com as dependências de desenvolvimento instaladas:
 
 ```sh
-sudo apt install build-essential cmake ninja-build qt6-base-dev qt6-declarative-dev qt6-pdf-dev qt6-svg-dev \
+bash scripts/package-linux.sh
+```
+
+As saídas ficam em `build-package/packages/`:
+
+- `scalar_*.deb`: pacote do aplicativo; o nome completo depende da versão e arquitetura.
+- `install-scalar.sh`: assistente de instalação para distribuir junto do `.deb`.
+
+O script valida e extrai o pacote antes de publicá-lo nessa pasta. Gere cada pacote no sistema de destino: Windows para `.exe`, Linux para `.deb`.
+
+### Instalar no Linux
+
+Para instalar e escolher as ações finais, como usuário normal:
+
+```sh
+bash ./build-package/packages/install-scalar.sh
+```
+
+O assistente solicita autorização para instalar pelo APT e, ao concluir, oferece executar o app e criar atalho na área de trabalho. Com Zenity e PolicyKit disponíveis na sessão gráfica, mostra caixas de seleção; caso contrário, pergunta no terminal. Alguns desktops ainda pedem permissão para executar o atalho.
+
+Para instalar diretamente pelo APT:
+
+```sh
+sudo apt install ./build-package/packages/scalar_*.deb
+```
+
+A instalação direta usa a interface do gerenciador de pacotes, sem as opções do assistente. O comando instalado é `scalar-whiteboard`, para evitar conflito com o comando `scalar` fornecido pelo Git. No menu, o nome é Scalar.
+
+## Organização das pastas
+
+| Pasta | Uso |
+| --- | --- |
+| `src/`, `qml/` | Código C++ e interface Qt Quick. |
+| `assets/`, `icon.png` | Fontes e imagens do aplicativo. |
+| `packaging/`, `cmake/` | Recursos e configuração dos pacotes. |
+| `scripts/` | Comandos de empacotamento, preparação e testes. |
+| `tests/`, `docs/` | Testes e documentação. |
+| `third_party/mathjax/` | Dependências de matemática offline. |
+| `build-package/` | Compilação para distribuição; instaladores em `packages/`. |
+| `build/` | Compilação de desenvolvimento e testes; criada quando necessário. |
+| `build-core/` | Compilação e testes do núcleo sem Qt; criada quando necessário. |
+
+As três pastas `build*` acima contêm saídas geradas e são ignoradas pelo Git. Não use `dist/` nem pastas `build-windows-*` para novas compilações. Capturas de validação, quando necessárias, devem ficar em `build/screenshots/`.
+
+## Desenvolvimento e testes
+
+Use `build/` para desenvolver e testar, mantendo `build-package/` para os instaladores.
+
+### Windows
+
+Para abrir a compilação de desenvolvimento que já foi gerada, sem instalar:
+
+```powershell
+.\build\Release\scalar.exe
+```
+
+Depois de alterar o código, recompile antes de abrir:
+
+```powershell
+cmake --build build --config Release --parallel
+.\build\Release\scalar.exe
+```
+
+No Developer PowerShell do Visual Studio, ajuste o caminho do Qt:
+
+```powershell
+cmake -S . -B build -G "Visual Studio 17 2022" `
+  -DCMAKE_PREFIX_PATH="C:/Qt/6.8.2/msvc2022_64" `
+  -DBUILD_TESTING=ON
+cmake --build build --config Release --parallel
+& "C:\Qt\6.8.2\msvc2022_64\bin\windeployqt.exe" --qmldir qml build/Release/scalar.exe
+ctest --test-dir build -C Release --output-on-failure
+.\build\Release\scalar.exe
+```
+
+Além dos módulos do aplicativo, os testes desktop exigem Qt Test. O deploy deve disponibilizar plataforma Windows, imports QML, SQLite e codecs de imagem.
+
+Os testes comuns usam renderização por software. Para verificar traços rápidos com a GPU no Windows (Direct3D 11), execute:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\test-rendering-windows.ps1
+```
+
+Esse teste abre janelas temporárias, compara a tinta antes e depois de soltar o pincel e verifica malhas grandes, salvamento, a prévia incremental do marcador e passadas rápidas da borracha. Também verifica o zoom em páginas densas com apenas caneta, a fidelidade das curvas e da pressão na malha compacta, o descarte de geometria fora da tela, a reutilização dos blocos de imagem e o refinamento em segundo plano de dezenas de marcadores, inclusive ao desfazer. As medidas de sincronização da cena são de CPU; não representam o tempo total de cada quadro na GPU. O resultado fica em `build/gpu-ink-tests.txt`.
+
+### Linux
+
+Instale as dependências de desenvolvimento:
+
+```sh
+sudo apt install build-essential cmake ninja-build python3 qt6-base-dev qt6-declarative-dev qt6-pdf-dev qt6-svg-dev \
   libqt6sql6-sqlite qt6-image-formats-plugins qml6-module-qtquick qml6-module-qtquick-controls \
   qml6-module-qtquick-layouts qml6-module-qtquick-dialogs qml6-module-qtquick-shapes \
   qml6-module-qtquick-templates qml6-module-qtquick-window qml6-module-qtqml qml6-module-qtqml-workerscript
@@ -19,141 +139,77 @@ ctest --test-dir build --output-on-failure
 ./build/scalar
 ```
 
-WEBP usa o plugin Qt de formatos de imagem. Se esse plugin não estiver disponível, CMake detecta opcionalmente `libwebp` (headers e biblioteca) e habilita um decoder alternativo offline. Em Ubuntu/Mint, `libwebp-dev` fornece essa alternativa. Ela é justificada para manter a importação WEBP funcional em instalações Qt mínimas, sem adicionar um subprocesso ou serviço. Em Windows, inclua o plugin WEBP no deploy do Qt ou disponibilize libwebp ao CMake.
+Use Python >= 3.12. Para Qt instalado fora do sistema, acrescente `-DCMAKE_PREFIX_PATH=/caminho/Qt/6.x/gcc_64` ao comando de configuração.
 
-Qt instalado fora do sistema: acrescente `-DCMAKE_PREFIX_PATH=/caminho/Qt/6.x/gcc_64`.
+### Núcleo sem Qt
 
-### Windows 10/11
-
-Instale Qt 6 com kit MSVC x64, módulos Qt PDF/Qt SVG e Visual Studio Build Tools com C++20. No Developer PowerShell, ajustando o caminho do Qt:
+Windows, com Visual Studio instalado:
 
 ```powershell
-cmake -S . -B build -DCMAKE_PREFIX_PATH="C:/Qt/6.8.3/msvc2022_64" -DBUILD_TESTING=ON
-cmake --build build --config Release --parallel
-ctest --test-dir build -C Release --output-on-failure
-windeployqt --qmldir qml build/Release/scalar.exe
-./build/Release/scalar.exe
+powershell -ExecutionPolicy Bypass -File .\scripts\test-core.ps1
 ```
 
-O caminho é exemplo de kit; use sua instalação. O deploy precisa incluir QSQLITE, runtime QML e plataforma Windows. Não há instalador ou assinatura de binários neste ciclo.
-
-## Núcleo sem Qt
-
-Com CMake: `cmake -S . -B build-core -DSCALAR_BUILD_DESKTOP=OFF`, seguido de build e ctest. Sem CMake, em Linux com g++:
+Linux, com compilador C++20:
 
 ```sh
-./scripts/test-core.sh
+bash scripts/test-core.sh
 ```
 
-Esse comando usa C++20, warnings e `-Werror`. Testes de integração SQLite/JSON/QML precisam de Qt.
+Alternativa com CMake em ambos os sistemas:
 
-## Smoke e screenshots reais
+```sh
+cmake -S . -B build-core -DSCALAR_BUILD_DESKTOP=OFF -DBUILD_TESTING=ON
+cmake --build build-core --config Release --parallel
+ctest --test-dir build-core -C Release --output-on-failure
+```
 
-Depois de compilar em ambiente gráfico:
+Escolha o script ou o CMake para gerar `build-core/`; não misture geradores no mesmo diretório.
+
+## Matemática offline e dependências do pacote
+
+O empacotamento inclui Node privado e MathJax. O usuário final não precisa instalar Python, Node, npm, TeX Live ou Qt separadamente no Windows; no Linux, o APT resolve as bibliotecas do sistema. A preparação inicial das dependências precisa de internet na máquina que gera o pacote.
+
+Para preparar explicitamente a matemática no build de desenvolvimento:
+
+```sh
+cmake --build build --config Release --target math_runtime
+```
+
+`-DSCALAR_PREPARE_MATH=OFF` desativa a tentativa automática durante desenvolvimento. A instalação e o CPack continuam exigindo um runtime completo. `SCALAR_MATH_RUNTIME` permite apontar para outro runtime em testes.
+
+WebP depende do plugin de formatos de imagem do Qt ou da alternativa libwebp detectada pelo CMake. SVG depende do módulo/plugin Qt SVG; inclua ambos os formatos no deploy.
+
+## Ícones e menu do sistema
+
+Depois de alterar `icon.png`, regenere o ícone nativo Windows e execute novamente o comando de empacotamento:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\update-windows-icon.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\package-windows.ps1
+```
+
+`packaging/scalar.ico` é incorporado ao executável. Após reinstalar, se o Windows mantiver o ícone antigo na barra de tarefas, desafixe o atalho e fixe novamente pelo menu Iniciar.
+
+No Linux, `packaging/scalar.desktop` informa as categorias Office, Education e Graphics. No Windows 11, a classificação automática em Produtividade ou Outros não é controlada pelo NSIS; veja as [orientações da Microsoft](https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/customize-the-windows-11-start-menu#all-section).
+
+## Validação da interface
+
+Após compilar, execute o teste rápido de abertura:
+
+```powershell
+.\build\Release\scalar.exe --smoke-test
+```
+
+No Linux:
 
 ```sh
 ./build/scalar --smoke-test
-./build/scalar --smoke-test --screenshot /tmp/scalar-home.png
-./build/scalar --editor --smoke-test --screenshot /tmp/scalar-editor.png
+mkdir -p build/screenshots
+./build/scalar --editor --smoke-test --screenshot build/screenshots/editor.png
 ```
 
-Para isolar dados e gerar imagens em Linux headless:
+Em Linux sem sessão gráfica, `QT_QPA_PLATFORM=offscreen` permite testar a inicialização. Capturas com backend software podem omitir os meshes do canvas; não comprovam renderização GPU, desempenho ou funcionamento de stylus.
 
-```sh
-XDG_DATA_HOME=/tmp/scalar-smoke QT_QPA_PLATFORM=offscreen ./build/scalar --smoke-test
-```
+Valide manualmente criação de quadros, desenho, undo/redo, salvar/reabrir, PDF, LaTeX, temas, DPI e atalhos. Na instalação, confira o ícone e cada combinação das duas opções finais.
 
-`--smoke-test` encerra após 1,8 s, verifica que não houve warnings QML e exige flush bem-sucedido. Screenshot usa `grabWindow`; offscreen pode não fornecer captura/renderização acelerada. Smoke não demonstra desempenho, qualidade visual ou stylus. No Windows, use ambiente gráfico e dados de teste separados.
-
-## Roteiro manual de aceite
-
-1. Home e criação nos temas light/dark/system. Criar A4 retrato, A4 paisagem, Carta e custom 180 × 240 mm. Verificar labels e tamanho persistido.
-2. Desenhar taps, linhas rápidas, curvas e traços longos com mouse e stylus física. Variar pressão; confirmar diferenças de largura e ausência de traços duplicados.
-3. Desenhar com autosave em andamento, monitorar pausas e latency. Verificar release fora da área, Escape, perda de foco e troca de ferramenta.
-4. Wheel zoom ancorado, mão, Space drag, touch pan/pinch e trackpad. Fazer undo/redo antes e após zoom; geometria não deve mudar.
-5. Salvar como, reabrir `.board`, conferir cor/espessura/amostras. Conferir recentes e thumbnail. Testar path sem permissão de escrita: status deve mostrar erro e fechamento não deve perder alterações.
-6. Com um quadro dirty após salvar pelo menos uma vez, encerrar o processo de maneira anormal em ambiente de teste. Reabrir, recuperar e confirmar persistência após fechamento normal.
-7. DPI 100%, 125%, 150%, 200%, dois monitores com DPI diferente, Windows e Ubuntu/Mint. Verificar flicker, recortes, labels, fontes, ícones e foco.
-
-Logging usa categorias `scalar.app` e `scalar.persistence.sqlite`, níveis info/warning do Qt e timestamps do handler padrão. `QT_LOGGING_RULES='scalar.*.debug=true'` habilita debug das categorias. Ainda não há log estruturado JSON, profiler ou medição de FPS.
-
-## Resultado neste ambiente
-
-Linux Mint 22.3, GCC 13.3, Qt 6.4.2. Após a instalação das dependências pelo usuário, CMake configurou e o aplicativo compilou. O caminho dos recursos QML foi corrigido com BASE explícito; ApplicationPaletteChange substituiu o sinal deprecated paletteChanged.
-
-`ctest --test-dir build --output-on-failure`: **7/7 passaram** — core, recognition, eraser, persistence, desktop, smoke_home e smoke_editor. O teste desktop abre Home, cria quadro pela UI, desenha com eventos de mouse, verifica undo/redo, zoom sem mutação, tema dark com página branca, save/load e ausência de warnings QML. Popovers e configurações também foram abertos. Cada teste desktop usa diretório temporário próprio, sem tocar nos projetos do usuário.
-
-Screenshots reais de offscreen ficam em `build/screenshots/`: home-light.png, new-project.png, editor-light.png, editor-dark.png, pen-options.png e settings-dark.png. **Essas capturas usam o backend software, que neste ambiente não exibiu os meshes de traços; não comprovam renderização acelerada do canvas.** O teste valida os objetos/amostras desenhados, não a aparência do stroke na GPU.
-
-A sessão gráfica `:0` não pode ser acessada pelo sandbox (`could not connect to display`); `/dev/dri` não está disponível. Inicie `./build/scalar` no seu terminal gráfico para validar traços visíveis, MSAA, tablet e desempenho. O build ainda pode emitir aviso não bloqueante do qmlimportscanner se qml6-module-qtqml estiver ausente; ele está incluído na lista de dependências acima.
-
-## Validação 0.2
-
-Desktop test também cobre hold-to-line, ajuste antes do release, undo para stroke, borracha parcial e undo/redo, inserção de círculo, seleção/handles, mover, escala/raio e rotação, estilo/fill, duplicar/excluir, Ctrl+V de bitmap, URLs no clipboard, importação por arquivo e drag/drop. Imagens e formas são salvas/reabertas. O teste de persistência verifica v1/v2, PNG incorporado, círculo e decode real; testes de núcleo verificam fitting de formas e cortes analíticos da borracha.
-
-Captura do tema novo com imagens: `build/screenshots/milestone2-dark-images.png`. Veja `docs/MILESTONE_2.md` para uso e limites. SVG/WebP dependem de plugins de imagem Qt; o diálogo inclui extensões, mas importer retorna erro claro se o codec não estiver disponível. Nenhuma biblioteca de imagem externa foi adicionada.
-
-## Milestone 3 e pacote offline
-
-O alvo padrão tenta preparar MathJax 3.2.2 e um Node privado. Python >= 3.12 é ferramenta da máquina que compila/empacota, não dependência do usuário final. Não exige npm instalado: o preparador obtém Node, valida SHA-256, usa seu npm para instalar o pacote e executa uma conversão real antes de marcar o runtime completo. package-lock.json fixa dependências transitivas. O bootstrap só precisa de internet nessa etapa.
-
-```sh
-cmake --build build --target math_runtime
-./build/scalar
-cmake --install build --prefix /tmp/scalar-install
-QT_QPA_PLATFORM=offscreen /tmp/scalar-install/bin/scalar --smoke-test
-cmake --build build --target package
-```
-
-A instalação e o CPack recusam distribuir matemática incompleta. Incluem runtime e JS em share/scalar/math; executable descobre esse diretório relativamente. Compilar sem rede permite desenvolvimento da UI; se o runtime ainda não estiver preparado, o build informa indisponibilidade e conversão real retorna erro. `-DSCALAR_PREPARE_MATH=OFF` desativa somente a tentativa no build de desenvolvimento; install continua estrito. `SCALAR_MATH_RUNTIME` pode apontar para runtime local em testes.
-
-O pacote TGZ atual não é um instalador completo dos runtimes Qt do sistema. No Linux, as bibliotecas Qt/QML/SQLite ainda precisam estar disponíveis; no Windows, windeployqt é necessário na máquina que gera a distribuição. Node/MathJax já são incluídos e não dependem de instalação manual pelo usuário final. Assinatura e instaladores nativos Windows/Linux seguem pendentes.
-
-## Pacotes para usuários finais
-
-O alvo `package` prepara o runtime offline de LaTeX (MathJax e Node privado) e o inclui no pacote. Portanto, o computador do usuário não precisa de Node, npm, Python, TeX Live ou conexão com a internet para escrever fórmulas.
-
-### Debian, Ubuntu e Linux Mint
-
-Gere o pacote em uma máquina Debian/Ubuntu/Mint compatível com a versão que será atendida:
-
-```sh
-bash scripts/package-linux.sh
-```
-
-O script gera em diretório temporário, descompacta o `.deb` inteiro para validar sua integridade e só então o publica em `build-package/packages/`. Assim, um pacote interrompido durante a compressão não aparece como arquivo pronto para distribuição. Ele instala o aplicativo no menu do sistema, inclui a matemática offline e declara dependências de Qt, QML, SQLite e codecs de imagem. Ao abrir pelo gerenciador de pacotes ou instalar com `apt`, as bibliotecas do sistema são resolvidas automaticamente:
-
-```sh
-sudo apt install ./build-package/packages/scalar_*.deb
-```
-
-O comando instalado é `scalar-whiteboard`; o nome no menu continua Scalar. O Git já fornece `/usr/bin/scalar`, por isso o pacote usa um comando distinto para evitar conflito na instalação.
-
-### Windows 10 e 11
-
-Gere o instalador no próprio Windows, usando um kit Qt MSVC x64 que contenha Qt PDF, Qt SVG e `windeployqt`, além de NSIS instalado e disponível no `PATH`:
-
-```powershell
-cmake -S . -B build-package -G Ninja `
-  -DCMAKE_BUILD_TYPE=Release `
-  -DCMAKE_PREFIX_PATH="C:/Qt/6.8.3/msvc2022_64" `
-  -DBUILD_TESTING=OFF
-cmake --build build-package --parallel
-cpack --config build-package/CPackConfig.cmake -G NSIS
-```
-
-O `.exe` é gerado em `build-package/packages/`. Durante o empacotamento, `windeployqt` copia as DLLs do Qt, imports QML, plugins de plataforma, SQLite, codecs de imagem e o runtime do compilador para o instalador. O usuário final só executa esse `.exe`; não precisa instalar Qt, Visual C++, Node, npm, Python ou LaTeX separadamente.
-
-Para uma versão portátil, sem assistente de instalação, use `-G ZIP` no último comando. Cada pacote deve ser produzido no sistema operacional de destino: o `.deb` no Linux e o instalador NSIS no Windows.
-
-Nove entradas CTest cobrem núcleo, reconhecimento, borracha, persistência, lixeira, matemática, desktop e dois smokes. A suíte MathTests executa conversão real quando o runtime está presente; qualquer skip precisa ser reportado. Capturas da M3 ficam em build/screenshots/milestone3-*.png. Equações e grades são meshes QSG e não aparecem no backend offscreen software desta máquina; suas geometrias são verificadas pelos testes. GPU/stylus física e deploy Windows continuam exigindo validação manual.
-
-## Milestone 4
-
-Qt PDF é obrigatório no build desktop. Após instalar novos módulos, execute novamente a configuração CMake antes do build. A suíte adicional `pdf` usa documentos reais gerados temporariamente para verificar A4, A4 paisagem, Carta, intervalos, cache, incorporação e reabertura sem o arquivo original. Há dez entradas CTest; a UI também cobre miniaturas, navegação, importação e layout em janela pequena. Veja [o relatório](docs/MILESTONE_4.md) para resultados e limites.
-
-A exportação multipágina usa as mesmas dependências, sem biblioteca adicional. A suíte `pdf` também valida a saída A4/paisagem/Carta, texto selecionável, geometria vetorial, imagens, anotações sobre PDF e substituição segura do destino. A suíte desktop verifica o navegador de páginas persistente no editor. Veja [PDF_EXPORT.md](docs/PDF_EXPORT.md).
-
-## Milestone 5
-
-Régua, snap, compasso e construções usam Qt/STL, sem novas dependências. Configure e compile com os comandos do README. Há onze entradas CTest, incluindo `geometry_tools`. A suíte `desktop` simula mouse, stylus com pressão e touch para os guias, cancela gestos, verifica undo/redo e abre os painéis em janela pequena. Capturas ficam em `build/screenshots/milestone5-*.png`; veja [o relatório](docs/MILESTONE_5.md). Stylus física, renderização GPU e execução no Windows ainda precisam de validação nesses ambientes.
+Os resultados antigos estão em [Histórico de validação](docs/BUILD_HISTORY.md). Os detalhes das entregas estão em [Milestone 1](docs/MILESTONE_1.md), [Milestone 2](docs/MILESTONE_2.md), [Milestone 3](docs/MILESTONE_3.md), [Milestone 4](docs/MILESTONE_4.md), [Milestone 5](docs/MILESTONE_5.md) e [Exportação PDF](docs/PDF_EXPORT.md).

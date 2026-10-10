@@ -28,9 +28,9 @@ AppController::AppController(QObject* parent,const QString& dataDirectory):QObje
     registerTextFonts();
     dataDir_=dataDirectory.isEmpty()?QStandardPaths::writableLocation(QStandardPaths::AppDataLocation):dataDirectory;
     QDir().mkpath(dataDir_+"/projects"); library_=std::make_unique<Library>(dataDir_+"/library.sqlite");
-    recognitionEnabled_=library_->setting("recognitionEnabled",true).toBool();holdDelay_=std::clamp(library_->setting("holdDelay",500).toInt(),250,1500);
+    recognitionEnabled_=library_->setting("recognitionEnabled",true).toBool();holdDelay_=std::clamp(library_->setting("holdDelay",1000).toInt(),250,1500);
     qGuiApp->installEventFilter(this);
-    connect(&exportWatcher_,&QFutureWatcher<QString>::finished,this,[this]{exportPending_=false;const auto error=exportWatcher_.result();status_=error.isEmpty()?"PDF exportado · todas as páginas":error;emit changed();});
+    connect(&exportWatcher_,&QFutureWatcher<QString>::finished,this,[this]{exportPending_=false;const auto error=exportWatcher_.result();status_=error.isEmpty()?"Arquivo exportado":error;emit changed();});
     thumbnailsTimer_.setSingleShot(true);thumbnailsTimer_.setInterval(700);
     connect(&thumbnailsTimer_,&QTimer::timeout,this,&AppController::beginThumbnails);
     connect(&thumbnailsWatcher_,&QFutureWatcher<QHash<QString,QString>>::finished,this,[this]{
@@ -110,7 +110,7 @@ AppController::AppController(QObject* parent,const QString& dataDirectory):QObje
             const bool recovered=pendingOpenPath_==dataDir_+"/session.board";
             const auto target=recovered ? dataDir_+"/projects/"+QString::fromStdString(result.project.id)+".board" : pendingOpenPath_;
             install(result.project,target);images_=result.images;refreshTextTextures(textRasterRequestedScale_);emit documentChanged();library_->remember(QString::fromStdString(result.project.id),QString::fromStdString(result.project.name),target,QString::fromStdString(result.project.updatedAt));emit recentChanged();status_=recovered?"Quadro recuperado":"Projeto aberto";
-            if(recovered){mutate();beginSave();}
+            if(recovered||result.compacted){mutate();beginSave();}
         } else {status_=result.error;qCWarning(appLog)<<status_;}
         emit changed();
     });
@@ -132,6 +132,8 @@ QString AppController::theme() const { return library_->setting("theme","System"
 void AppController::setTheme(const QString& v){if(v!="Light"&&v!="Dark"&&v!="System")return;library_->setSetting("theme",v);emit preferencesChanged();}
 bool AppController::reducedEffects() const {return library_->setting("reducedEffects",false).toBool();}
 void AppController::setReducedEffects(bool v){library_->setSetting("reducedEffects",v);emit preferencesChanged();}
+bool AppController::disableToolbarBlur() const {return library_->setting("disableToolbarBlur",false).toBool();}
+void AppController::setDisableToolbarBlur(bool value){if(value==disableToolbarBlur())return;library_->setSetting("disableToolbarBlur",value);emit preferencesChanged();}
 QString AppController::defaultSize() const{return library_->setting("defaultSize","A4").toString();}
 void AppController::setDefaultSize(const QString& v){if(v!="A4"&&v!="Carta")return;library_->setSetting("defaultSize",v);emit preferencesChanged();}
 bool AppController::defaultLandscape() const{return library_->setting("defaultLandscape",false).toBool();}
@@ -267,8 +269,9 @@ void AppController::beginSave(){
     if(saveWatcher_.isRunning()){autosave_.start();return;}
     const auto snapshot=project_;const auto path=path_;const auto recovery=dataDir_+"/session.board";const auto rev=revision_;
     status_="Salvando…";
-    saveWatcher_.setFuture(QtConcurrent::run([snapshot,path,recovery,rev]{
-        auto error=ProjectStore::save(recovery,snapshot);
+    saveWatcher_.setFuture(QtConcurrent::run([snapshot=Project(snapshot),path,recovery,rev]() mutable {
+        auto error=ProjectStore::discardErasureHistory(snapshot);
+        if(error.isEmpty())error=ProjectStore::save(recovery,snapshot);
         if(error.isEmpty())error=ProjectStore::save(path,snapshot);
         if(error.isEmpty())saveThumbnail(snapshot,path+".png");
         return SaveResult{error,QString::fromStdString(snapshot.id),QString::fromStdString(snapshot.name),path,QString::fromStdString(snapshot.updatedAt),rev};

@@ -1,0 +1,2 @@
+// Native executable icon used by Explorer, Start menu shortcuts and pinned apps.
+IDI_ICON1 ICON "@CMAKE_CURRENT_SOURCE_DIR@/packaging/scalar.ico"

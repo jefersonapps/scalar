@@ -36,6 +36,7 @@ int main(){try{
     for(auto p:shapeBorderMesh(smooth))check(std::isfinite(p.x)&&std::isfinite(p.y),"thick narrow ellipse produces invalid border");
     ShapeObject patterned;patterned.kind=ShapeKind::Line;patterned.vertices={{0,0},{20,0}};
     patterned.style.maxWidthMm=1;patterned.style.pattern=LinePattern::Dashed;
+    patterned.style.dashLengthMm=3;patterned.style.gapLengthMm=2;patterned.style.dotSpacingMm=2.5;
     auto mesh=shapeBorderMesh(patterned);
     check(covers(mesh,{1,0})&&!covers(mesh,{4,0})&&covers(mesh,{6,0}),"vector dash/gap geometry");
     patterned.style.pattern=LinePattern::Dotted;mesh=shapeBorderMesh(patterned);
@@ -341,6 +342,22 @@ int main(){try{
     }
     const auto closed=closeConnectedLines(assembled,assembled.shapes.back().id);check(closed&&closed->lineIds.size()==4&&closed->polygon.vertices.size()==4&&closed->polygon.fillOpacity>0,"nearby lines not closed");
     auto disconnected=assembled;disconnected.shapes[0].vertices[0]={10,10};check(!closeConnectedLines(disconnected,disconnected.shapes.back().id),"disconnected lines joined");
+    Page preciseTriangle;const double rise=100*std::tan(std::numbers::pi/6);
+    for(const auto& vertices:std::vector<std::vector<Point>>{{{50,150},{150,150-rise}},{{150.4,150-rise+.4},{150.4,150.1}},{{149.5,150.3},{50.5,150.3}}}){
+        ShapeObject edge;edge.id=newId();edge.kind=ShapeKind::Line;edge.vertices=vertices;preciseTriangle.shapes.push_back(edge);
+    }
+    const auto triangle=closeConnectedLines(preciseTriangle,preciseTriangle.shapes.back().id);check(bool(triangle),"30-degree triangle did not close");
+    for(std::size_t i=0;i<triangle->polygon.vertices.size();++i){
+        const auto direction=triangle->polygon.vertices[(i+1)%3]-triangle->polygon.vertices[i];bool parallel=false;
+        for(const auto& edge:preciseTriangle.shapes){const auto original=edge.vertices[1]-edge.vertices[0];parallel|=std::abs(direction.x*original.y-direction.y*original.x)<length(direction)*length(original)*1e-10;}
+        check(parallel,"closing a polygon changed a snapped edge direction");
+    }
+    Page measured;measured.shapes={triangle->polygon};auto corner=triangle->polygon.vertices[0];for(auto vertex:triangle->polygon.vertices)if(vertex.x<corner.x)corner=vertex;
+    ShapeObject sector;sector.id=newId();sector.kind=ShapeKind::CircularSector;sector.center=corner;sector.radiusX=sector.radiusY=8;sector.vertices={corner};
+    for(int i=0;i<=32;++i){const double angle=-std::numbers::pi*i/192;sector.vertices.push_back(corner+Point{8*std::cos(angle),8*std::sin(angle)});}
+    const auto aligned=alignCircularSector(measured,sector,3);const auto firstRay=aligned.vertices[1]-aligned.center,lastRay=aligned.vertices.back()-aligned.center;
+    const double measuredAngle=std::abs(std::atan2(firstRay.x*lastRay.y-firstRay.y*lastRay.x,firstRay.x*lastRay.x+firstRay.y*lastRay.y))*180/std::numbers::pi;
+    check(std::abs(measuredAngle-30)<1e-9,"sector angle lost exact 30-degree triangle geometry");
     ShapeObject concave;concave.kind=ShapeKind::Polygon;
     concave.vertices={{0,0},{40,0},{40,40},{30,40},{30,10},{10,10},{10,40},{0,40}};
     const auto concaveMesh=shapeFillMesh(concave);

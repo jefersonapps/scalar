@@ -17,6 +17,7 @@
 #include <span>
 #include <unordered_map>
 #include <QSet>
+#include <QHash>
 namespace scalar {
 class AppController : public QObject {
     Q_OBJECT
@@ -46,6 +47,7 @@ class AppController : public QObject {
     Q_PROPERTY(QVariantList folders READ folders NOTIFY recentChanged)
     Q_PROPERTY(QString theme READ theme WRITE setTheme NOTIFY preferencesChanged)
     Q_PROPERTY(bool reducedEffects READ reducedEffects WRITE setReducedEffects NOTIFY preferencesChanged)
+    Q_PROPERTY(bool disableToolbarBlur READ disableToolbarBlur WRITE setDisableToolbarBlur NOTIFY preferencesChanged)
     Q_PROPERTY(QString defaultSize READ defaultSize WRITE setDefaultSize NOTIFY preferencesChanged)
     Q_PROPERTY(bool defaultLandscape READ defaultLandscape WRITE setDefaultLandscape NOTIFY preferencesChanged)
     Q_PROPERTY(QString defaultBackground READ defaultBackground WRITE setDefaultBackground NOTIFY preferencesChanged)
@@ -112,6 +114,8 @@ public:
     void setTheme(const QString& theme);
     bool reducedEffects() const;
     void setReducedEffects(bool value);
+    bool disableToolbarBlur() const;
+    void setDisableToolbarBlur(bool value);
     QString defaultSize() const;
     void setDefaultSize(const QString& value);
     bool defaultLandscape() const;
@@ -120,11 +124,18 @@ public:
     void setDefaultBackground(const QString& value);
     bool recoveryAvailable() const { return recovery_; }
     const Page* page() const { return active()?&project_.pages[currentPage_]:nullptr; }
+    // Session-only viewport state: deliberately excluded from Project/ProjectStore.
+    struct PageView { double zoom; Point center; };
+    std::optional<PageView> sessionPageView(const QString& id) const {
+        const auto found=pageViews_.constFind(id);return found==pageViews_.cend()?std::nullopt:std::optional<PageView>{*found};
+    }
+    void rememberPageView(const QString& id,PageView view){pageViews_.insert(id,view);}
     int currentPage() const {return currentPage_;}
     int pageCount() const {return int(project_.pages.size());}
     QVariantList pages() const;
     Q_INVOKABLE void selectPage(int index);
     Q_INVOKABLE void addPage();
+    Q_INVOKABLE void deletePage(int index);
     Q_INVOKABLE bool setPageSize(const QString& preset,double width,double height,bool landscape);
     Q_INVOKABLE void duplicatePage();
     bool pdfSupported() const {return pdfAvailable();}
@@ -137,6 +148,7 @@ public:
     Q_INVOKABLE void cancelPdfImport();
     bool exporting() const {return exportPending_;}
     Q_INVOKABLE void exportPdf(const QUrl& url);
+    void exportSelection(std::vector<CanvasObject> selected,const QUrl& url,bool svg);
     void refreshPdf(double scale){if(page())pdfCache_.request(page()->pdf,page()->size,scale);}
     QImage pdfImage() const {return pdfCache_.image();}
     quint64 pdfImageRevision() const {return pdfCache_.revision();}
@@ -207,6 +219,7 @@ private:
     Project project_;
     std::unordered_map<std::string,History> histories_;
     int currentPage_=0;
+    QHash<QString,PageView> pageViews_;
     QTimer thumbnailsTimer_;
     QFutureWatcher<QHash<QString,QString>> thumbnailsWatcher_;
     QHash<QString,QString> thumbnails_;
@@ -247,7 +260,7 @@ private:
     QHash<QString,QSizeF> textSizes_;
     quint64 revision_=0;
     bool recognitionEnabled_=true;
-    int holdDelay_=500;
+    int holdDelay_=1000;
     bool imageImportPending_=false;
     bool dirty_=false,loading_=false,recovery_=false,closed_=false;
 };

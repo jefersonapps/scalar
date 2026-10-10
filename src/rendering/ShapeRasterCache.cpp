@@ -1,4 +1,5 @@
 #include "ShapeRasterCache.h"
+#include "EraseMask.h"
 #include "geometry/Geometry.h"
 #include "rendering/StrokeMesh.h"
 #include <QPainter>
@@ -31,12 +32,13 @@ void ShapeRasterCache::update(const ShapeObject& shape,double pixelsPerMm,QRectF
     updateImpl(shape,pixelsPerMm,visible,nullptr);
 }
 void ShapeRasterCache::update(const StrokeObject& stroke,double pixelsPerMm,QRectF visible){
-    ShapeObject proxy;proxy.kind=ShapeKind::CircularArc;proxy.style=stroke.style;proxy.erasedRegions=stroke.erasedRegions;
+    ShapeObject proxy;proxy.kind=ShapeKind::CircularArc;proxy.style=stroke.style;proxy.erasedRegions=stroke.erasedRegions;proxy.eraseMask=stroke.eraseMask;
     for(const auto& sample:stroke.samples)proxy.vertices.push_back(sample.position);
     updateImpl(proxy,pixelsPerMm,visible,&stroke);
 }
 void ShapeRasterCache::update(const ImageObject& image,const QImage& bitmap,double pixelsPerMm,QRectF visible){
     ShapeObject proxy;proxy.kind=ShapeKind::Polygon;proxy.vertices=image.corners;proxy.erasedRegions=image.erasedRegions;
+    proxy.eraseMask=image.eraseMask;
     proxy.style.minWidthMm=proxy.style.maxWidthMm=0;
     updateImpl(proxy,pixelsPerMm,visible,nullptr,&bitmap);
 }
@@ -45,10 +47,15 @@ void ShapeRasterCache::updateImpl(const ShapeObject& shape,double pixelsPerMm,QR
     const auto& style=shape.style;
     std::vector<double> signature{double(shape.kind),shape.center.x,shape.center.y,shape.radiusX,shape.radiusY,shape.rotation,shape.fillOpacity,double(shape.fillColor()),double(style.rgba),style.minWidthMm,style.maxWidthMm,style.gamma,style.sensitivity,double(style.pattern),style.dashLengthMm,style.gapLengthMm,style.dotSpacingMm};
     for(auto p:shape.vertices){signature.push_back(p.x);signature.push_back(p.y);}
-    signature.push_back(stroke?1:0);if(stroke)for(const auto& sample:stroke->samples)signature.push_back(sample.pressure);
+    signature.push_back(shape.eraseMask?double(reinterpret_cast<std::uintptr_t>(shape.eraseMask->png.get())):0);
+    if(shape.eraseMask)for(auto p:shape.eraseMask->corners){signature.push_back(p.x);signature.push_back(p.y);}
+    signature.push_back(stroke?1:0);signature.push_back(stroke&&stroke->marker?1:0);if(stroke)for(const auto& sample:stroke->samples)signature.push_back(sample.pressure);
     signature.push_back(bitmap?double(bitmap->cacheKey()):0);
     const double scale=std::clamp(std::ceil(pixelsPerMm*4)/4,.25,128.);
-    bool reset=signature!=signature_||scale!=scale_||applied_.size()>shape.erasedRegions.size();
+    const bool geometryChanged=signature!=signature_||scale!=scale_;
+    if(geometryChanged)permanentMask_=shape.eraseMask?decodeEraseMask(*shape.eraseMask):QImage{};
+    if(stroke&&stroke->marker&&geometryChanged)displaySamples_=strokeDisplaySamples(*stroke,.002);
+    bool reset=geometryChanged||applied_.size()>shape.erasedRegions.size();
     std::size_t start=applied_.size();
     std::optional<ErasedRegion> extension;
     if(!reset)for(std::size_t i=0;i<applied_.size();++i)if(!same(applied_[i],shape.erasedRegions[i])){
@@ -59,7 +66,16 @@ void ShapeRasterCache::updateImpl(const ShapeObject& shape,double pixelsPerMm,QR
         else reset=true;
         break;
     }
-    if(reset){tiles_.clear();start=0;signature_=std::move(signature);scale_=scale;}
+    const bool resetMasks=reset&&!geometryChanged;
+    if(reset){
+        if(geometryChanged)tiles_.clear();
+        else for(auto& [key,tile]:tiles_){
+            // Undo changes visibility, not the original ink. Retain its expensive
+            // raster and rebuild only the small, fixed-size visibility masks.
+            tile.mask.fill(Qt::white);std::fill(tile.coverage.begin(),tile.coverage.end(),15);tile.image=tile.original;tile.applied=0;tile.revision=++generation_;
+        }
+        start=0;signature_=std::move(signature);scale_=scale;
+    }
     const auto outline=shapeOutline(shape);
     if(outline.empty()){tiles_.clear();applied_=shape.erasedRegions;return;}
     double left=outline.front().x,right=left,top=outline.front().y,bottom=top;
@@ -75,8 +91,9 @@ void ShapeRasterCache::updateImpl(const ShapeObject& shape,double pixelsPerMm,QR
         auto [entry,created]=tiles_.try_emplace({x,y});auto& tile=entry->second;
         if(created){
             tile.worldRect=QRectF(x*tilePixels/scale,y*tilePixels/scale,tilePixels/scale,tilePixels/scale);
+            tile.inkRect=tile.worldRect;
             tile.original=QImage(tilePixels+2,tilePixels+2,QImage::Format_ARGB32_Premultiplied);tile.original.fill(Qt::transparent);
-            QPainter painter(&tile.original);painter.setRenderHint(QPainter::Antialiasing);painter.scale(scale,scale);painter.translate(-tile.worldRect.left()+1/scale,-tile.worldRect.top()+1/scale);
+            QPainter painter(&tile.original);painter.setRenderHint(QPainter::Antialiasing);painter.scale(scale,scale);painter.translate(-tile.worldRect.left()+1/scale,-tile.worldRect.top()+1/scale);const auto worldTransform=painter.worldTransform();
             if(bitmap){
               if(outline.size()==4&&!bitmap->isNull()){
                 const auto origin=outline[0],a=(outline[1]-origin)*(1./bitmap->width()),b=(outline[3]-origin)*(1./bitmap->height());
@@ -85,11 +102,30 @@ void ShapeRasterCache::updateImpl(const ShapeObject& shape,double pixelsPerMm,QR
                 painter.drawImage(QPointF(0,0),*bitmap);
               }
             }else if(stroke){
+              if(stroke->marker&&stroke->style.pattern==LinePattern::Solid){
+                // A marker has constant width. Rasterize its centerline rather
+                // than unioning every overlapping triangle of the brush mesh.
+                QPainterPath centerline;const double padding=stroke->style.maxWidthMm*.5+2/scale;
+                const auto area=tile.worldRect.adjusted(-padding,-padding,padding,padding);std::size_t last=0;
+                for(std::size_t i=1;i<displaySamples_.size();++i){const auto a=displaySamples_[i-1].position,b=displaySamples_[i].position;
+                    if(std::max(a.x,b.x)<area.left()||std::min(a.x,b.x)>area.right()||std::max(a.y,b.y)<area.top()||std::min(a.y,b.y)>area.bottom())continue;
+                    if(last!=i-1||centerline.isEmpty())centerline.moveTo(a.x,a.y);
+                    centerline.lineTo(b.x,b.y);last=i;
+                }
+                auto opaque=color(stroke->style.rgba);const int alpha=opaque.alpha();opaque.setAlpha(255);
+                painter.setPen(QPen(opaque,stroke->style.maxWidthMm,Qt::SolidLine,Qt::RoundCap,Qt::RoundJoin));
+                if(stroke->samples.size()==1){const auto p=stroke->samples.front().position;painter.drawPoint(QPointF(p.x,p.y));}else painter.drawPath(centerline);
+                const auto ink=stroke->samples.size()==1?QRectF(QPointF(stroke->samples.front().position.x,stroke->samples.front().position.y),QSizeF(0,0)):centerline.boundingRect();
+                tile.inkRect=(centerline.isEmpty()&&stroke->samples.size()!=1)?QRectF{}:ink.adjusted(-padding,-padding,padding,padding).intersected(tile.worldRect);
+                painter.save();painter.resetTransform();painter.setCompositionMode(QPainter::CompositionMode_DestinationIn);painter.fillRect(tile.original.rect(),QColor(0,0,0,alpha));painter.restore();
+              }else{
                 if(!inkPath){inkPath.emplace();inkPath->setFillRule(Qt::WindingFill);const auto mesh=strokeMesh(*stroke);
                     for(std::size_t i=0;i+2<mesh.size();i+=3){auto a=mesh[i],b=mesh[i+1],c=mesh[i+2];if((b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x)<0)std::swap(b,c);
                         inkPath->moveTo(a.x,a.y);inkPath->lineTo(b.x,b.y);inkPath->lineTo(c.x,c.y);inkPath->closeSubpath();}}
                 painter.fillPath(*inkPath,color(stroke->style.rgba));
+              }
             }else paintOriginal(painter,shape,outline);
+            if(shape.eraseMask){painter.setWorldTransform(worldTransform);painter.setCompositionMode(QPainter::CompositionMode_DestinationOut);paintEraseMask(painter,*shape.eraseMask,permanentMask_);}
             painter.end();
             tile.mask=QImage(tile.original.size(),QImage::Format_ARGB32_Premultiplied);tile.mask.fill(Qt::white);tile.coverage.assign(std::size_t(tile.mask.width())*tile.mask.height(),15);tile.image=tile.original;tile.revision=++generation_;
         }
@@ -118,7 +154,7 @@ void ShapeRasterCache::updateImpl(const ShapeObject& shape,double pixelsPerMm,QR
         if(!dirty.isEmpty()){
             QPainter painter(&tile.image);painter.setCompositionMode(QPainter::CompositionMode_Source);painter.drawImage(dirty,tile.original,dirty);painter.setCompositionMode(QPainter::CompositionMode_DestinationIn);painter.drawImage(dirty,tile.mask,dirty);painter.end();tile.revision=++generation_;
         }
-        if(created||!dirty.isEmpty())++updatedTiles_;
+        if(created||resetMasks||!dirty.isEmpty())++updatedTiles_;
     }
     applied_=shape.erasedRegions;
 }

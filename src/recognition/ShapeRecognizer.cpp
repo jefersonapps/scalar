@@ -435,7 +435,23 @@ std::optional<ClosedLines> closeConnectedLines(const Page& page,const std::strin
     std::function<bool(Point)> search=[&](Point end){
         if(--budget<=0)return false;
         if(ids.size()>=3&&length(end-newest->vertices[0])<=tolerance){
-            auto polygon=vertices;polygon[0]=(end+newest->vertices[0])*.5;
+            // Join supporting lines at their intersections. Averaging nearby
+            // endpoints changes every edge's direction, including Ctrl snaps.
+            auto polygon=vertices;
+            for(std::size_t i=0;i<ids.size();++i){
+                const auto findLine=[&](const std::string& id){if(id==newestId)return newest;for(const auto* line:lines)if(line->id==id)return line;return static_cast<const ShapeObject*>(nullptr);};
+                const auto* previous=findLine(ids[(i+ids.size()-1)%ids.size()]);const auto* current=findLine(ids[i]);
+                if(!previous||!current)return false;
+                const auto a=previous->vertices[1]-previous->vertices[0],b=current->vertices[1]-current->vertices[0];
+                const double cross=a.x*b.y-a.y*b.x;
+                if(std::abs(cross)<length(a)*length(b)*1e-8)return false;
+                const auto offset=current->vertices[0]-previous->vertices[0];
+                const auto corner=previous->vertices[0]+a*((offset.x*b.y-offset.y*b.x)/cross);
+                const auto near=i==0?(end+newest->vertices[0])*.5:vertices[i];
+                // Do not turn a small endpoint gap into a distant intersection.
+                if(length(corner-near)>tolerance*4)return false;
+                polygon[i]=corner;
+            }
             if(!isSimplePolygon(polygon))return false;ShapeObject shape=*newest;shape.id=newId();shape.kind=ids.size()==3?ShapeKind::Triangle:ShapeKind::Polygon;shape.vertices=std::move(polygon);shape.fillOpacity=.10;++shape.properties.revision;
             result=ClosedLines{shape,ids};return true;
         }

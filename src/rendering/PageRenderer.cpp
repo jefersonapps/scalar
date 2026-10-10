@@ -47,12 +47,21 @@ QString paintPage(QPainter& painter,const Page& page,double scale){
         if(!object->properties.visible)return;
         using T=std::decay_t<decltype(*object)>;
         if constexpr(std::is_same_v<T,StrokeObject>){
-            if(!object->erasedRegions.empty()){paintMasked(*object);return;}
-            const auto mesh=strokeMesh(*object);QPainterPath triangles;triangles.setFillRule(Qt::WindingFill);
+            if((!object->erasedRegions.empty()||object->eraseMask.has_value())){paintMasked(*object);return;}
+            if(object->marker&&!object->samples.empty()&&object->style.pattern==LinePattern::Solid){
+                QPainterPath centerline;const auto first=object->samples.front().position;centerline.moveTo(first.x,first.y);
+                for(std::size_t i=1;i<object->samples.size();++i){const auto p=object->samples[i].position;centerline.lineTo(p.x,p.y);}
+                painter.save();painter.setPen(QPen(color(object->style.rgba),object->style.maxWidthMm,Qt::SolidLine,Qt::RoundCap,Qt::RoundJoin));
+                if(object->samples.size()==1)painter.drawPoint(QPointF(first.x,first.y));else painter.drawPath(centerline);
+                painter.restore();return;
+            }
+            // Retain vector ink while removing redundant samples and overlapping
+            // per-sample disks (the display mesh bounds error to 0.004 mm).
+            const auto mesh=strokeDisplayMesh(*object);QPainterPath triangles;triangles.setFillRule(Qt::WindingFill);
             for(std::size_t i=0;i+2<mesh.size();i+=3){auto a=mesh[i],b=mesh[i+1],c=mesh[i+2];if((b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x)<0)std::swap(b,c);triangles.moveTo(a.x,a.y);triangles.lineTo(b.x,b.y);triangles.lineTo(c.x,c.y);triangles.closeSubpath();}
             painter.fillPath(triangles,color(object->style.rgba));
         }else if constexpr(std::is_same_v<T,ShapeObject>){
-            if(!object->erasedRegions.empty()){paintMasked(*object);return;}
+            if((!object->erasedRegions.empty()||object->eraseMask.has_value())){paintMasked(*object);return;}
             const auto points=shapeOutline(*object);if(points.empty())return;QPainterPath path;path.moveTo(points[0].x,points[0].y);
             for(std::size_t i=1;i<points.size();++i)path.lineTo(points[i].x,points[i].y);
             if(object->kind!=ShapeKind::Line&&object->kind!=ShapeKind::CircularArc){
@@ -69,7 +78,7 @@ QString paintPage(QPainter& painter,const Page& page,double scale){
             painter.save();painter.translate(origin.x,origin.y);painter.rotate(std::atan2(edge.y,edge.x)*180/3.141592653589793);painter.scale(length(edge)/natural.width(),length(object->corners[3]-origin)/natural.height());
             const auto failure=paintVectorText(painter,*object);if(!failure.isEmpty())error=failure;painter.restore();
         }else {
-            if(!object->erasedRegions.empty()){paintMasked(*object);return;}
+            if((!object->erasedRegions.empty()||object->eraseMask.has_value())){paintMasked(*object);return;}
             if(object->corners.size()!=4)return;
             if(!object->png){error="A imagem não possui dados incorporados.";return;}
             const auto bitmap=QImage::fromData(reinterpret_cast<const uchar*>(object->png->data()),int(object->png->size()),"PNG");

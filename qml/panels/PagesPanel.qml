@@ -24,6 +24,20 @@ C.GlassPopover {
                 width: grid.cellWidth-Theme.sm; height: Theme.pageTileHeight
                 pageData: modelData; selected: modelData.index === App.currentPage; enabled: !App.documentBusy
                 onClicked: App.selectPage(modelData.index)
+                C.IconButton {
+                    objectName: "deletePageButton_" + modelData.index
+                    z: 2
+                    anchors.top: parent.top; anchors.right: parent.right; anchors.margins: Theme.xs
+                    compact: true; iconName: "trash"; label: "Excluir página " + (modelData.index + 1)
+                    implicitWidth: 26; implicitHeight: 26; padding: 5
+                    contentItem: C.Icon { name: "trash"; implicitWidth: 16; implicitHeight: 16; color: Theme.text }
+                    background: Rectangle {
+                        radius: Theme.radiusMedium
+                        color: parent.down ? Theme.pressed : parent.hovered ? Theme.hover : Theme.surface
+                        border.width: Theme.hairline; border.color: Theme.border
+                    }
+                    onClicked: App.deletePage(modelData.index)
+                }
             }
             ScrollBar.vertical: ScrollBar {}
         }

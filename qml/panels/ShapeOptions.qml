@@ -19,6 +19,7 @@ C.GlassPopover {
             currentIndex: root.canvas ? ["solid", "dashed", "dotted"].indexOf(root.canvas.shapeLineStyle) : 0
             onSelected: index => root.canvas.shapeLineStyle = ["solid", "dashed", "dotted"][index]
         }
+        PatternSettings { canvas: root.canvas; Layout.fillWidth: true }
         GridLayout {
             Layout.fillWidth: true; columns: 2; columnSpacing: Theme.xs; rowSpacing: Theme.xs
             Repeater {
