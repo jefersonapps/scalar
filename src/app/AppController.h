@@ -21,6 +21,7 @@
 namespace scalar {
 class AppController : public QObject {
     Q_OBJECT
+    Q_PROPERTY(bool toolbarBlurSupported READ toolbarBlurSupported NOTIFY toolbarBlurSupportChanged)
     Q_PROPERTY(QVariantList trashedProjects READ trashedProjects NOTIFY recentChanged)
     Q_PROPERTY(QVariantMap background READ background NOTIFY changed)
     Q_PROPERTY(QVariantList backgroundPresets READ backgroundPresets NOTIFY preferencesChanged)
@@ -64,6 +65,8 @@ class AppController : public QObject {
     Q_PROPERTY(QString pdfError READ pdfError NOTIFY changed)
     Q_PROPERTY(bool exporting READ exporting NOTIFY changed)
 public:
+    bool toolbarBlurSupported() const { return toolbarBlurSupported_; }
+    Q_INVOKABLE void detectToolbarBlurSupport(QObject* qmlOwner);
     explicit AppController(QObject* parent=nullptr,const QString& dataDirectory={});
     ~AppController() override;
     bool textBusy() const {return textPending_;}
@@ -189,6 +192,7 @@ public:
     Q_INVOKABLE void discardRecovery();
     Q_INVOKABLE bool shutdown();
 signals:
+    void toolbarBlurSupportChanged();
     void changed();
     void documentChanged();
     void recentChanged();
@@ -201,6 +205,8 @@ signals:
 protected:
     bool eventFilter(QObject* watched,QEvent* event) override;
 private:
+    bool toolbarBlurSupportChecked_=false;
+    bool toolbarBlurSupported_=false;
     QFutureWatcher<ImportedImage> fillWatcher_;
     bool fillPending_=false;
     quint64 fillRevision_=0;

@@ -1,13 +1,12 @@
 import QtQuick
 import QtQuick.Layouts
-import QtQuick.Effects
 import "../components" as C
 import "../theme"
 C.GlassPanel {
     id: root
     objectName: "floatingToolbar"
     property Item backdropSource: null
-    readonly property bool plainAppearance: App.reducedEffects || App.disableToolbarBlur
+    readonly property bool plainAppearance: !App.toolbarBlurSupported || App.reducedEffects || App.disableToolbarBlur
     color: plainAppearance ? Theme.surface : "transparent"
     border.width: plainAppearance ? 1 : 0
     Loader {
@@ -16,50 +15,8 @@ C.GlassPanel {
         active: root.backdropSource !== null && !root.plainAppearance
                 && root.GraphicsInfo.api !== GraphicsInfo.Software
                 && root.GraphicsInfo.api !== GraphicsInfo.Unknown
-        sourceComponent: Item {
-            ShaderEffectSource {
-                id: backdrop
-                width: root.width; height: root.height
-                visible: false
-                sourceItem: root.backdropSource
-                sourceRect: {
-                    // Explicit dependencies keep the crop aligned after window resize.
-                    const layoutX = root.x, layoutY = root.y
-                    const sourceWidth = root.backdropSource.width
-                    const sourceHeight = root.backdropSource.height
-                    const origin = root.mapToItem(root.backdropSource, 0, 0)
-                    return Qt.rect(origin.x, origin.y, root.width, root.height)
-                }
-                // Only capture the strip behind the toolbar. Live updates follow
-                // scene changes without a timer or continuous idle rendering.
-                textureSize: Qt.size(Math.max(1, Math.ceil(width / 4)), Math.max(1, Math.ceil(height / 4)))
-                live: true
-                hideSource: false
-            }
-            Rectangle {
-                id: glassMask
-                anchors.fill: parent
-                radius: root.radius
-                color: "white"
-                visible: false
-                layer.enabled: true
-                layer.textureSize: Qt.size(Math.max(1, Math.ceil(width / 4)), Math.max(1, Math.ceil(height / 4)))
-            }
-            MultiEffect {
-                // Run every blur pass at quarter resolution, then upscale once.
-                width: root.width / 4
-                height: root.height / 4
-                scale: 4
-                transformOrigin: Item.TopLeft
-                source: backdrop
-                blurEnabled: true
-                blurMax: 8
-                blur: 1
-                autoPaddingEnabled: false
-                maskEnabled: true
-                maskSource: glassMask
-            }
-        }
+        source: active ? "ToolbarBlur.qml" : ""
+        onLoaded: item.toolbar = root
     }
     Rectangle {
         anchors.fill: parent

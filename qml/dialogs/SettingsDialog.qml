@@ -55,6 +55,7 @@ C.ModernDialog {
                 }
             }
             RowLayout {
+                visible: App.toolbarBlurSupported
                 Layout.fillWidth: true; Layout.preferredHeight: Theme.controlHeight
                 Text { text: "Remover desfoque da barra de ferramentas"; color: Theme.secondary; font.pixelSize: Theme.body; Layout.fillWidth: true; wrapMode: Text.WordWrap }
                 Switch {

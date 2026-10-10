@@ -1585,6 +1585,7 @@ private slots:
         engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
         QVERIFY(!engine.rootObjects().isEmpty());auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(window);
         QVERIFY(QTest::qWaitForWindowExposed(window));
+        if(!controller.toolbarBlurSupported())QSKIP("Backdrop blur requires the Qt Quick Effects module.");
         if(window->rendererInterface()->graphicsApi()==QSGRendererInterface::Software)QSKIP("Backdrop blur needs the GPU renderer.");
         auto* toolbar=findVisualItem(window->contentItem(),"floatingToolbar");QVERIFY(toolbar);
         auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);canvas->setZoom(2);
@@ -1603,6 +1604,50 @@ private slots:
         QCOMPARE(toolbar->property("color").value<QColor>().alpha(),255);
         toggle->setProperty("checked",false);QVERIFY(QMetaObject::invokeMethod(toggle,"toggled"));
         QVERIFY(!controller.disableToolbarBlur());QVERIFY(!toolbar->property("plainAppearance").toBool());
+        QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
+    }
+    void toolbarBlurOptionFollowsSupport(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);
+        engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto* settings=window->findChild<QObject*>("settingsDialog");QVERIFY(settings);
+        QVERIFY(QMetaObject::invokeMethod(settings,"open"));QTRY_VERIFY(settings->property("opened").toBool());
+        auto* toggle=findVisualItem(window->contentItem(),"disableToolbarBlurSwitch");QVERIFY(toggle);
+        QCOMPARE(toggle->isVisible(),controller.toolbarBlurSupported());
+        QCOMPARE(toggle->parentItem()->isVisible(),controller.toolbarBlurSupported());
+        QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
+    }
+    void toolbarBlurSupportIsDetectedOnceFromImports(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);
+        QSignalSpy supportChanges(&controller,&AppController::toolbarBlurSupportChanged);
+        engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        QQmlComponent probe(&engine,QUrl("qrc:/qml/toolbars/ToolbarBlur.qml"),QQmlComponent::PreferSynchronous);
+        QCOMPARE(controller.toolbarBlurSupported(),probe.isReady());
+        const auto supported=controller.toolbarBlurSupported();const auto changes=supportChanges.count();
+        controller.detectToolbarBlurSupport(engine.rootObjects().first());
+        QCOMPARE(controller.toolbarBlurSupported(),supported);QCOMPARE(supportChanges.count(),changes);
+        QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
+    }
+    void toolbarBlurSupportAcceptsAvailableModuleOnOlderBuild(){
+        // A stand-in module exercises runtime import detection even when the
+        // build machine only has Qt 6.4. It does not test GPU blur rendering.
+        QTemporaryDir directory;const auto moduleDir=directory.filePath("imports/QtQuick/Effects");QVERIFY(QDir().mkpath(moduleDir));
+        QFile qmldir(moduleDir+"/qmldir");QVERIFY(qmldir.open(QIODevice::WriteOnly));
+        qmldir.write("module QtQuick.Effects\nMultiEffect 1.0 MultiEffect.qml\n");qmldir.close();
+        QFile effect(moduleDir+"/MultiEffect.qml");QVERIFY(effect.open(QIODevice::WriteOnly));
+        effect.write("import QtQuick\nItem { property Item source; property bool blurEnabled; property int blurMax; property real blur; property bool autoPaddingEnabled; property bool maskEnabled; property Item maskSource }\n");effect.close();
+        AppController controller(nullptr,directory.filePath("data"));QQmlApplicationEngine engine;
+        engine.addImportPath(directory.filePath("imports"));QSignalSpy warnings(&engine,&QQmlEngine::warnings);
+        engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());QVERIFY(controller.toolbarBlurSupported());
+        auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(window);QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto* settings=window->findChild<QObject*>("settingsDialog");QVERIFY(settings);
+        QVERIFY(QMetaObject::invokeMethod(settings,"open"));QTRY_VERIFY(settings->property("opened").toBool());
+        auto* toggle=findVisualItem(window->contentItem(),"disableToolbarBlurSwitch");QVERIFY(toggle);QVERIFY(toggle->isVisible());
         QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
     }
     void toolbarBlurPreferencePersists(){

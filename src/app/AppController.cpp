@@ -19,11 +19,23 @@
 #include <QFontDatabase>
 #include <QFont>
 #include <QFontInfo>
+#include <QQmlComponent>
+#include <QQmlEngine>
 #include "rendering/TextFormatting.h"
 #include <numbers>
 Q_LOGGING_CATEGORY(appLog,"scalar.app")
 namespace scalar {
 namespace { QString now(){return QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);} }
+void AppController::detectToolbarBlurSupport(QObject* qmlOwner){
+    if(toolbarBlurSupportChecked_)return;
+    auto* engine=qmlEngine(qmlOwner);if(!engine)return;
+    toolbarBlurSupportChecked_=true;
+    // Compile the optional component in the active engine, without creating
+    // an effect or allocating GPU resources. Missing imports are expected.
+    QQmlComponent component(engine,QUrl("qrc:/qml/toolbars/ToolbarBlur.qml"),QQmlComponent::PreferSynchronous);
+    toolbarBlurSupported_=component.isReady();
+    if(toolbarBlurSupported_)emit toolbarBlurSupportChanged();
+}
 AppController::AppController(QObject* parent,const QString& dataDirectory):QObject(parent) {
     registerTextFonts();
     dataDir_=dataDirectory.isEmpty()?QStandardPaths::writableLocation(QStandardPaths::AppDataLocation):dataDirectory;

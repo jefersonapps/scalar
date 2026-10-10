@@ -143,6 +143,8 @@ ctest --test-dir build --output-on-failure
 
 Use Python >= 3.12. Para Qt instalado fora do sistema, acrescente `-DCMAKE_PREFIX_PATH=/caminho/Qt/6.x/gcc_64` ao comando de configuração.
 
+Qt 6.4 é suportado no Linux Mint. Na abertura da interface, o app verifica uma única vez se o componente de desfoque pode ser carregado no Qt instalado. Com Qt >= 6.5 e Qt Quick Effects disponível, habilita o desfoque e sua opção nas configurações; caso contrário, usa fundo sólido e oculta a opção. Um build Linux com Qt 6.4 também pode aproveitar o efeito ao executar com Qt mais recente. `qml6-module-qtquick-effects` é opcional e não bloqueia a instalação do `.deb` em distribuições que não oferecem esse pacote.
+
 ### Núcleo sem Qt
 
 Windows, com Visual Studio instalado:

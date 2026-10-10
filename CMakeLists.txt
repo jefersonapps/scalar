@@ -23,7 +23,12 @@ if(BUILD_TESTING)
 endif()
 option(SCALAR_BUILD_DESKTOP "Build the Qt desktop application" ON)
 if(SCALAR_BUILD_DESKTOP)
-    find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Quick QuickControls2 Sql Concurrent Pdf Svg)
+    if(WIN32)
+        set(_scalar_min_qt_version 6.5)
+    else()
+        set(_scalar_min_qt_version 6.4)
+    endif()
+    find_package(Qt6 ${_scalar_min_qt_version} REQUIRED COMPONENTS Core Gui Quick QuickControls2 Sql Concurrent Pdf Svg)
     qt_standard_project_setup()
     add_library(scalar_desktop STATIC src/app/AppController.cpp src/app/AppController.h
         src/canvas/CanvasItem.cpp src/canvas/CanvasItem.h src/canvas/CanvasSelection.cpp src/rendering/CanvasScene.cpp src/input/InputManager.cpp src/input/InputManager.h
@@ -169,6 +174,8 @@ FunctionEnd
         # QML imports and image codecs are loaded at runtime and are therefore
         # not visible to dpkg-shlibdeps; declare them explicitly for apt.
         set(CPACK_DEBIAN_PACKAGE_DEPENDS "libqt6sql6-sqlite, qt6-image-formats-plugins, qml6-module-qtquick, qml6-module-qtquick-controls, qml6-module-qtquick-layouts, qml6-module-qtquick-dialogs, qml6-module-qtquick-shapes, qml6-module-qtquick-templates, qml6-module-qtquick-window, qml6-module-qtqml, qml6-module-qtqml-workerscript")
+        # Qt Quick Effects is optional and detected once at UI startup.
+        # Do not require a package unavailable on Qt 6.4 distributions.
         set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
     else()
         set(CPACK_GENERATOR "TGZ")

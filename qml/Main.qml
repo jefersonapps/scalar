@@ -64,7 +64,10 @@ ApplicationWindow {
             C.ActionButton { text: "Descartar recuperação"; Layout.fillWidth: true; onClicked: { App.discardRecovery(); recovery.close() } }
         }
     }
-    Component.onCompleted: { if(App.recoveryAvailable) recovery.open() }
+    Component.onCompleted: {
+        App.detectToolbarBlurSupport(window)
+        if(App.recoveryAvailable) recovery.open()
+    }
     Shortcut { sequence: "Ctrl+O"; enabled: !settings.visible && !newProject.visible && !recovery.visible; onActivated: openFile.open() }
     Shortcut { sequence: "Ctrl+N"; enabled: !settings.visible && !newProject.visible && !recovery.visible; onActivated: newProject.open() }
     Shortcut { sequence: "F11";onActivated: window.toggleFullScreen() }
