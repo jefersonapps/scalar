@@ -200,6 +200,17 @@ powershell -ExecutionPolicy Bypass -File .\scripts\package-windows.ps1
 
 No Linux, `packaging/scalar.desktop` informa as categorias Office, Education e Graphics. No Windows 11, a classificação automática em Produtividade ou Outros não é controlada pelo NSIS; veja as [orientações da Microsoft](https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/customize-the-windows-11-start-menu#all-section).
 
+No Linux, compilar e executar `./build/scalar` atualiza o ícone da janela, mas o painel e o menu podem usar o ícone da instalação anterior. Para registrar a compilação local e seu ícone no menu do usuário:
+
+```sh
+python3 scripts/register-linux-build.py
+./build/scalar
+```
+
+O script cria `~/.local/share/applications/scalar.desktop` (ou usa `XDG_DATA_HOME`), apontando para o executável em `build/`. Execute-o novamente depois de alterar `icon.png`; para outro diretório de compilação, passe o caminho do executável como argumento. O menu passa a abrir essa compilação. Para voltar ao aplicativo instalado pelo APT, remova esse arquivo `.desktop` local. Feche e reabra o app; atalhos já fixados no painel podem precisar ser desafixados e fixados novamente.
+
+Os pacotes Linux usam um nome de ícone baseado no conteúdo de `icon.png`, evitando reutilizar o cache de uma imagem anterior após a reinstalação.
+
 ## Validação da interface
 
 Após compilar, execute o teste rápido de abertura:

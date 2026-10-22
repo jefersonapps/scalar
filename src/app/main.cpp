@@ -17,6 +17,7 @@
 int main(int argc,char** argv){
     QSurfaceFormat format;format.setSamples(4);QSurfaceFormat::setDefaultFormat(format);
     QGuiApplication app(argc,argv);app.setOrganizationName("Scalar");app.setApplicationName("Scalar");app.setApplicationVersion("0.5.0");
+    app.setDesktopFileName(QStringLiteral("scalar"));
     app.setWindowIcon(scalar::applicationIcon());
     QQuickStyle::setStyle("Basic");
     QCommandLineParser parser;parser.addHelpOption();parser.addVersionOption();
