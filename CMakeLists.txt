@@ -64,6 +64,10 @@ if(SCALAR_BUILD_DESKTOP)
     if(WIN32)
         enable_language(RC)
         configure_file(packaging/scalar.rc.in scalar.rc @ONLY)
+        # Ninja's resource scanner does not reliably track files referenced by
+        # ICON directives. Recompile the resource whenever the artwork changes.
+        set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/scalar.rc" PROPERTIES
+            OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/packaging/scalar.ico")
         target_sources(scalar PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/scalar.rc")
         get_target_property(_scalar_qt_core_type Qt6::Core TYPE)
         if(_scalar_qt_core_type STREQUAL "SHARED_LIBRARY")
@@ -167,7 +171,13 @@ if(SCALAR_BUILD_DESKTOP)
 !define MUI_FINISHPAGE_SHOWREADME_FUNCTION ScalarCreateDesktopShortcut
 Function ScalarCreateDesktopShortcut
   CreateShortCut "$DESKTOP\Scalar.lnk" "$INSTDIR\bin\scalar.exe" "" "$INSTDIR\bin\scalar.exe" 0
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
+  System::Call 'shell32::SHChangeNotify(i 0x2000, i 0x1005, w "$DESKTOP\Scalar.lnk", p 0)'
 FunctionEnd
+]=])
+        set(CPACK_NSIS_EXTRA_INSTALL_COMMANDS [=[
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
+  System::Call 'shell32::SHChangeNotify(i 0x2000, i 0x1005, w "$INSTDIR\bin\scalar.exe", p 0)'
 ]=])
         set(CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS [=[
   Delete "$DESKTOP\Scalar.lnk"

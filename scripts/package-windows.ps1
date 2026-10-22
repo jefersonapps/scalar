@@ -6,6 +6,9 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $rootDir = (Resolve-Path "$scriptDir\..").Path
 Set-Location $rootDir
 
+Write-Host "Atualizando o icone nativo do Windows..." -ForegroundColor Cyan
+& (Join-Path $scriptDir 'update-windows-icon.ps1')
+
 # Garantir ferramentas no PATH
 $cmakeBin = "C:\Program Files\CMake\bin"
 $nsisBin = "C:\NSIS\nsis-3.10"

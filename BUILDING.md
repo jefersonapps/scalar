@@ -12,6 +12,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\package-windows.ps1
 
 Esse é o comando principal para recompilar o aplicativo e gerar o instalador. O script inicializa o ambiente MSVC, configura o CMake, compila e empacota com NSIS.
 
+O ícone nativo `packaging/scalar.ico` é atualizado automaticamente a partir de `icon.png` antes da compilação. Alterações no `.ico` também recompilam o recurso do executável nas compilações incrementais. Não é necessário executar um comando separado para atualizar o ícone.
+
+Ao instalar e criar o atalho, o instalador notifica o Shell do Windows para invalidar o cache de ícones e atualizar o executável e o atalho. Essa notificação evita que instalações atualizadas continuem exibindo o desenho anterior armazenado no cache.
+
 **Instalador para distribuir:** `build-package\packages\Scalar-0.5.0-win64.exe` (o nome acompanha a versão do projeto). O executável `build-package\scalar.exe` é uma saída de compilação; distribua o instalador em `packages/`, que inclui as dependências.
 
 ### Ferramentas necessárias

@@ -34,7 +34,7 @@ try {
             $bitmap.Dispose()
         }
     }
-    $file = [System.IO.File]::Create((Join-Path $root 'packaging/scalar.ico'))
+    $file = [System.IO.MemoryStream]::new()
     $writer = [System.IO.BinaryWriter]::new($file)
     try {
         $writer.Write([uint16]0)
@@ -54,4 +54,11 @@ try {
         }
         foreach ($frame in $frames) { $writer.Write([byte[]]$frame) }
     } finally { $writer.Dispose() }
+    $generated = $file.ToArray()
+    $destination = Join-Path $root 'packaging/scalar.ico'
+    # Preserve the timestamp when the artwork is unchanged so incremental
+    # packaging does not relink the executable on every run.
+    $unchanged = (Test-Path -LiteralPath $destination) -and
+        ([Convert]::ToBase64String([IO.File]::ReadAllBytes($destination)) -ceq [Convert]::ToBase64String($generated))
+    if (-not $unchanged) { [IO.File]::WriteAllBytes($destination, $generated) }
 } finally { $source.Dispose() }
