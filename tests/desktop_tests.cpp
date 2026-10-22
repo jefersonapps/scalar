@@ -1335,6 +1335,27 @@ private slots:
         QVERIFY(click("homeFullScreenButton"));QTRY_COMPARE(window->visibility(),QWindow::FullScreen);QTest::keyClick(window,Qt::Key_F11);QTRY_COMPARE(window->visibility(),QWindow::Maximized);
         window->showNormal();window->resize(520,640);QTest::qWait(100);QVERIFY(homeButton->mapToScene({homeButton->width(),0}).x()<=window->width());QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
     }
+    void editingOtherPagesDoesNotRegenerateLibraryCover(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();QTRY_VERIFY(!controller.busy());controller.addPage();controller.save();QTRY_VERIFY(!controller.busy());
+        const auto path=controller.recentProjects()[0].toMap()["path"].toString();QFile cover(path+".png");QVERIFY(cover.open(QIODevice::ReadWrite));
+        const auto stamp=QDateTime::fromString("2020-01-01T00:00:00Z",Qt::ISODate);QVERIFY(cover.setFileTime(stamp,QFileDevice::FileModificationTime));cover.close();
+        StrokeObject stroke{newId(),{},{{{20,20},1},{{50,50},1}}};controller.addStroke(stroke);controller.save();QTRY_VERIFY(!controller.busy());QCOMPARE(QFileInfo(cover).lastModified(),stamp);
+        controller.selectPage(0);stroke.id=newId();controller.addStroke(stroke);controller.save();QTRY_VERIFY(!controller.busy());QVERIFY(QFileInfo(cover).lastModified()!=stamp);
+        QVERIFY(controller.shutdown());
+    }
+    void openingManyImagePagesPreparesOnlyVisitedPages(){
+        QTemporaryDir directory;Project project{newId(),"Lazy pages","now","now",{}};
+        for(int index=0;index<5;++index){QImage bitmap(512,384,QImage::Format_RGB32);bitmap.fill(QColor::fromHsv(index*60,200,220));auto image=encodeImage(bitmap,{100,100},PageSize::a4());QVERIFY(image.error.isEmpty());Page page;page.id=newId();page.size=PageSize::a4();page.images.push_back(image.object);project.pages.push_back(std::move(page));}
+        const auto path=directory.filePath("images.board");QVERIFY(ProjectStore::save(path,project).isEmpty());
+        AppController controller(nullptr,directory.filePath("data"));controller.openPath(path);QTRY_VERIFY(!controller.loading());QVERIFY(controller.active());
+        QVERIFY(!controller.image(project.pages[0].images[0].id).isNull());QVERIFY(controller.image(project.pages[1].images[0].id).isNull());QVERIFY(controller.image(project.pages[4].images[0].id).isNull());
+        controller.selectPage(2);QVERIFY(controller.pageImagesLoading());controller.selectPage(4);QTRY_VERIFY(!controller.pageImagesLoading());
+        QTRY_VERIFY(!controller.image(project.pages[4].images[0].id).isNull());QVERIFY(controller.image(project.pages[1].images[0].id).isNull());
+        StrokeObject stroke{newId(),{},{{{20,20},1},{{50,50},1}}};controller.addStroke(stroke);controller.requestHome();QTRY_VERIFY(!controller.active());
+        const auto saved=ProjectStore::load(path);QVERIFY(saved);QCOMPARE(saved.project.pages.size(),std::size_t(5));QCOMPARE(saved.images.size(),5);QCOMPARE(saved.project.pages[4].strokes.size(),std::size_t(1));
+        controller.openPath(path);QTRY_VERIFY(!controller.loading());controller.selectPage(1);QTRY_VERIFY(!controller.pageImagesLoading());QVERIFY(!controller.image(project.pages[1].images[0].id).isNull());
+        QVERIFY(controller.shutdown());
+    }
     void nativeTitleBarFollowsApplicationTheme(){
 #ifdef Q_OS_WIN
         if(QGuiApplication::platformName()!=QStringLiteral("windows"))QSKIP("Requires the native Windows platform.");

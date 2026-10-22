@@ -42,6 +42,7 @@ class AppController : public QObject {
     Q_PROPERTY(bool busy READ busy NOTIFY changed)
     Q_PROPERTY(bool documentBusy READ documentBusy NOTIFY changed)
     Q_PROPERTY(bool loading READ loading NOTIFY changed)
+    Q_PROPERTY(bool pageImagesLoading READ pageImagesLoading NOTIFY changed)
     Q_PROPERTY(bool leaving READ leaving NOTIFY changed)
     Q_PROPERTY(QString leaveError READ leaveError NOTIFY changed)
     Q_PROPERTY(bool systemDark READ systemDark NOTIFY preferencesChanged)
@@ -101,10 +102,11 @@ public:
     bool canRedo() const {const auto i=histories_.find(page()?page()->id:"");return i!=histories_.end()&&i->second.canRedo();}
     bool dirty() const { return dirty_; }
     bool loading() const { return loading_; }
+    bool pageImagesLoading() const { return pageImagesPending_; }
     bool leaving() const { return leaveAction_!=LeaveAction::None; }
     QString leaveError() const { return leaveError_; }
     bool systemDark() const;
-    bool documentBusy() const { return leaving()||loading_||imageImportPending_||textPending_||trashPending_||pdfPending_||renamePending_||fillPending_; }
+    bool documentBusy() const { return leaving()||loading_||pageImagesPending_||imageImportPending_||textPending_||trashPending_||pdfPending_||renamePending_||fillPending_; }
     bool busy() const { return documentBusy()||savePending_; }
     QString status() const { return status_; }
     QVariantList trashedProjects() const {return library_->trash();}
@@ -197,6 +199,7 @@ public:
     Q_INVOKABLE void discardRecovery();
     Q_INVOKABLE bool shutdown();
     Q_INVOKABLE void requestHome();
+    Q_INVOKABLE void requestPageThumbnails(int first,int count);
     Q_INVOKABLE void requestShutdown();
     Q_INVOKABLE void retryLeaving();
     Q_INVOKABLE void cancelLeaving();
@@ -221,7 +224,7 @@ private:
     bool fillPending_=false;
     quint64 fillRevision_=0;
     std::string fillPageId_;
-    struct SaveResult { QString error,id,name,path,updated; quint64 revision=0; };
+    struct SaveResult { QString error,id,name,path,updated; quint64 revision=0; bool coverSaved=false; };
     void mutate();
     void closeLines(const std::string& newest);
     QFutureWatcher<std::optional<ClosedLines>> closedLinesWatcher_;
@@ -235,6 +238,7 @@ private:
     QString leaveError_;
     QTimer leaveTimer_;
     bool savePending_=false;
+    bool coverDirty_=true;
     void beginLeaving(LeaveAction action);
     void continueLeaving();
     void install(Project project,const QString& path);
@@ -249,7 +253,7 @@ private:
     QTimer thumbnailsTimer_;
     QFutureWatcher<QHash<QString,QString>> thumbnailsWatcher_;
     QHash<QString,QString> thumbnails_;
-    QSet<QString> dirtyThumbnails_,renderingThumbnails_;
+    QSet<QString> dirtyThumbnails_,renderingThumbnails_,requestedThumbnails_;
     quint64 thumbnailsRevision_=0;
     bool thumbnailsPending_=false;
     PdfRenderCache pdfCache_;
@@ -269,6 +273,10 @@ private:
     void finishRename();
     QFutureWatcher<LoadResult> loadWatcher_;
     QFutureWatcher<std::vector<ImportedImage>> imageWatcher_;
+    QFutureWatcher<PageImages> pageImagesWatcher_;
+    bool pageImagesPending_=false;
+    std::string pageImagesProjectId_,pageImagesPageId_;
+    void refreshPageImages();
     QFutureWatcher<PreparedText> textWatcher_;
     QFutureWatcher<QHash<QString,TextVisual>> textRasterWatcher_;
     QString textProjectId_,textError_;

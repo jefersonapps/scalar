@@ -76,8 +76,11 @@ int main(int argc,char** argv) {
         const Bytes payload(fixture.begin(),fixture.end());
         const auto archive=packBoard(payload); const auto decoded=unpackBoard(archive);
         check(bool(decoded)&&decoded.json==payload,"ZIP roundtrip");
+        const auto inspected=inspectBoard(archive);check(bool(inspected)&&inspected.json.data()==archive.data()+42&&inspected.json.size()==payload.size(),"ZIP borrowed payload inspection");
+        const std::string known="123456789";const auto knownArchive=packBoard(std::span(reinterpret_cast<const std::uint8_t*>(known.data()),known.size()));
+        check(knownArchive[14]==0x26&&knownArchive[15]==0x39&&knownArchive[16]==0xf4&&knownArchive[17]==0xcb,"ZIP CRC-32 differs from standard check vector");
         for(std::size_t n=0;n<archive.size();++n)check(!unpackBoard(std::span(archive.data(),n)),"truncated ZIP accepted");
-        auto damaged=archive;damaged[45]^=1;check(!unpackBoard(damaged),"CRC failure accepted");
+        auto damaged=archive;damaged[45]^=1;check(!unpackBoard(damaged)&&!inspectBoard(damaged),"CRC failure accepted");
         damaged=archive;damaged[18]=255;damaged[19]=255;damaged[20]=255;damaged[21]=255;check(!unpackBoard(damaged),"oversized ZIP accepted");
         damaged=archive;damaged[8]=8;check(!unpackBoard(damaged),"unsupported compression accepted");
         std::ofstream out(argc>1?argv[1]:"fixture.board",std::ios::binary);check(bool(out),"fixture file open failed");out.write(reinterpret_cast<const char*>(archive.data()),std::streamsize(archive.size()));

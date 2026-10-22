@@ -12,6 +12,50 @@ using namespace scalar;
 class PersistenceTests : public QObject {
     Q_OBJECT
 private slots:
+    void imagesOnOtherPagesAreDecodedOnDemand(){
+        QTemporaryDir dir;Project project{newId(),"Image pages","now","now",{}};
+        QImage bitmap(1024,768,QImage::Format_ARGB32);bitmap.fill(Qt::blue);QByteArray png;QBuffer buffer(&png);QVERIFY(buffer.open(QIODevice::WriteOnly));QVERIFY(bitmap.save(&buffer,"PNG"));
+        const auto bytes=std::make_shared<const std::vector<std::uint8_t>>(png.begin(),png.end());
+        for(int index=0;index<24;++index){Page page;page.id=newId();page.size=PageSize::a4();ImageObject image;image.id=newId();image.corners={{10,10},{110,10},{110,85},{10,85}};image.pixelWidth=1024;image.pixelHeight=768;image.png=bytes;page.images.push_back(image);project.pages.push_back(std::move(page));}
+        const auto path=dir.filePath("images.board");QVERIFY(ProjectStore::save(path,project).isEmpty());
+        QElapsedTimer timer;timer.start();const auto eager=ProjectStore::load(path);const auto eagerMs=timer.elapsed();timer.restart();const auto first=ProjectStore::load(path,ImageLoading::FirstPage);const auto firstMs=timer.elapsed();
+        QVERIFY(eager);QVERIFY(first);QCOMPARE(eager.images.size(),24);QCOMPARE(first.images.size(),1);QCOMPARE(ProjectStore::serialize(eager.project),ProjectStore::serialize(first.project));
+        const auto selected=ProjectStore::decodePageImages(first.project.pages.back());QVERIFY(selected.error.isEmpty());QCOMPARE(selected.images.size(),1);QCOMPARE(selected.images.value(QString::fromStdString(project.pages.back().images[0].id)).size(),bitmap.size());
+        qInfo()<<"24 image pages: eager open"<<eagerMs<<"ms; first-page open"<<firstMs<<"ms";
+        // Damage compressed data while leaving a readable PNG header. A deferred
+        // decode must report the error, and full validation must still reject it.
+        auto corrupt=png;const auto idat=corrupt.indexOf("IDAT");QVERIFY(idat>=0);corrupt[idat+4]=char(uchar(corrupt[idat+4])^0xff);
+        project.pages.back().images[0].png=std::make_shared<const std::vector<std::uint8_t>>(corrupt.begin(),corrupt.end());QVERIFY(ProjectStore::save(path,project).isEmpty());
+        const auto deferred=ProjectStore::load(path,ImageLoading::FirstPage);QVERIFY(deferred);QVERIFY(!ProjectStore::decodePageImages(deferred.project.pages.back()).error.isEmpty());QVERIFY(!ProjectStore::load(path));
+        project.pages.back().images[0].png=bytes;
+        // Headers of deferred images are still checked before opening the board.
+        project.pages.back().images[0].pixelWidth=500;QVERIFY(ProjectStore::save(path,project).isEmpty());QVERIFY(!ProjectStore::load(path,ImageLoading::FirstPage));
+    }
+    void savingCopiesPreservesAtomicWritesAndValidation(){
+        QTemporaryDir dir;Project project{newId(),"Copies","now","now",{{newId(),PageSize::a4(),0xffffffff,{}}}};
+        const auto recovery=dir.filePath("session.board"),path=dir.filePath("project.board");QVERIFY(ProjectStore::saveCopies({recovery,path},project).isEmpty());
+        QFile source(recovery),target(path);QVERIFY(source.open(QIODevice::ReadOnly));QVERIFY(target.open(QIODevice::ReadOnly));const auto original=target.readAll();QCOMPARE(source.readAll(),original);source.close();target.close();
+        auto invalid=project;invalid.pages[0].size.widthMm=-1;QVERIFY(!ProjectStore::saveCopies({recovery,path},invalid).isEmpty());QVERIFY(target.open(QIODevice::ReadOnly));QCOMPARE(target.readAll(),original);target.close();
+        project.name="Changed";const auto blocked=dir.filePath("directory.board");QVERIFY(QDir().mkdir(blocked));QVERIFY(!ProjectStore::saveCopies({recovery,blocked},project).isEmpty());QCOMPARE(ProjectStore::load(recovery).project.name,project.name);
+        QVERIFY(ProjectStore::saveCopies({path},project).isEmpty());QCOMPARE(ProjectStore::load(path).project.name,project.name);
+    }
+    void manyPagesSaveAndOpenTiming(){
+        QTemporaryDir dir;Project project{newId(),"Many pages","now","now",{}};
+        auto pdf=std::make_shared<std::vector<std::uint8_t>>(3*1024*1024,std::uint8_t(' '));
+        const QByteArray header("%PDF-1.7\n");std::copy(header.begin(),header.end(),pdf->begin());const auto assetId=newId();
+        for(int index=0;index<96;++index){
+            Page page;page.id=newId();page.size=PageSize::a4();page.pdf=PdfPageObject{assetId,pdf,index,96,page.size};
+            for(int strokeIndex=0;strokeIndex<24;++strokeIndex){StrokeObject stroke;stroke.id=newId();for(int sample=0;sample<32;++sample)stroke.samples.push_back({{double(sample),double(strokeIndex+index)},.7});page.strokes.push_back(std::move(stroke));}
+            project.pages.push_back(std::move(page));
+        }
+        project.pages.back().strokes[0].samples[0].position.x+=1;
+        QElapsedTimer timer;timer.start();const auto recovery=dir.filePath("recovery.board"),path=dir.filePath("many.board");
+        QVERIFY(ProjectStore::saveCopies({recovery,path},project).isEmpty());
+        const auto saveMs=timer.elapsed();timer.restart();const auto loaded=ProjectStore::load(path);const auto loadMs=timer.elapsed();
+        QVERIFY2(loaded,qPrintable(loaded.error));QCOMPARE(loaded.project.pages.size(),std::size_t(96));QCOMPARE(loaded.project.pages.back().strokes[0].samples[0].position.x,1.);
+        QVERIFY(loaded.project.pages.front().pdf->data==loaded.project.pages.back().pdf->data);
+        qInfo()<<"96 pages / shared 3 MiB PDF / 73728 samples: save recovery + project"<<saveMs<<"ms; open"<<loadMs<<"ms; archive"<<QFileInfo(path).size()<<"bytes";
+    }
     void storedErasureContainsOnlyPermanentResult(){
         QTemporaryDir dir;Project project{newId(),"Erase session","now","now",{{newId(),PageSize::a4(),0xffffffff,{}}}};
         StrokeObject marker;marker.id=newId();marker.marker=true;marker.style.minWidthMm=marker.style.maxWidthMm=5;marker.samples={{{20,30},1},{{100,30},1}};marker.erasedRegions={{{50,30},{50,30},3},{{50,30},{50,30},1,true}};project.pages[0].strokes.push_back(marker);auto deleted=marker;deleted.id=newId();project.pages[0].erasedInk.push_back(deleted);

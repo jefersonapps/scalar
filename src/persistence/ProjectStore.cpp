@@ -90,8 +90,8 @@ QByteArray ProjectStore::serialize(const Project& p) {
         }
         QJsonObject record{{"id",text(page.id)},{"widthMm",page.size.widthMm},{"heightMm",page.size.heightMm},{"background",double(page.background)},{"backgroundStyle",QJsonObject::fromVariantMap(backgroundValues(page.background,page.backgroundStyle))},{"objects",strokes}};
         if(page.size.infinite)record.insert("infinite",true);
-        if(page.pdf){const auto& pdf=*page.pdf;const auto bytes=pdf.data?QByteArray(reinterpret_cast<const char*>(pdf.data->data()),qsizetype(pdf.data->size())):QByteArray{};
-            pdfAssets.insert(text(pdf.assetId),QJsonObject{{"data",QString::fromLatin1(bytes.toBase64())},{"pageCount",pdf.sourcePageCount}});
+        if(page.pdf){const auto& pdf=*page.pdf;
+            if(!pdfAssets.contains(text(pdf.assetId))){const auto bytes=pdf.data?QByteArray::fromRawData(reinterpret_cast<const char*>(pdf.data->data()),qsizetype(pdf.data->size())):QByteArray{};pdfAssets.insert(text(pdf.assetId),QJsonObject{{"data",QString::fromLatin1(bytes.toBase64())},{"pageCount",pdf.sourcePageCount}});}
             const auto size=pdf.size.valid()?pdf.size:page.size;
             record.insert("pdf",QJsonObject{{"asset",text(pdf.assetId)},{"pageIndex",pdf.pageIndex},{"widthMm",size.widthMm},{"heightMm",size.heightMm}});
         }pages.append(record);
@@ -109,6 +109,7 @@ LoadResult ProjectStore::deserialize(const QByteArray& data) {
     p.createdAt=root["createdAt"].toString().toStdString(); p.updatedAt=root["updatedAt"].toString().toStdString();
     if(p.id.empty()||p.name.empty()||!root["pages"].isArray()) return fail("Metadados incompletos.");
     const auto pages=root["pages"].toArray(); if(pages.isEmpty()||pages.size()>1000) return fail("Quantidade de páginas inválida.");
+    p.pages.reserve(pages.size());
     QSet<QString> ids; ids.insert(text(p.id)); qsizetype pointCount=0;
     auto claim=[&](const QString& id){if(id.isEmpty()||ids.contains(id))return false; ids.insert(id); return true;};
     QHash<QString,PdfPageObject> assets;
@@ -249,6 +250,7 @@ LoadResult ProjectStore::deserialize(const QByteArray& data) {
             if(!s["samples"].isArray())return fail("Traço inválido.");
             const auto samples=s["samples"].toArray(); if(samples.isEmpty()) return fail("Traço vazio.");
             pointCount+=samples.size(); if(pointCount>2000000)return fail("Projeto excede 2 milhões de amostras.");
+            stroke.samples.reserve(samples.size());
             for(const auto& sample:samples) {
                 if(!sample.isArray())return fail("Amostra inválida."); const auto a=sample.toArray();
                 if(a.size()!=9)return fail("Amostra incompleta."); for(const auto& n:a)if(!finite(n))return fail("Amostra não numérica.");
@@ -266,29 +268,53 @@ QByteArray ProjectStore::archive(const QByteArray& json) {
     return QByteArray(reinterpret_cast<const char*>(bytes.data()),qsizetype(bytes.size()));
 }
 QByteArray ProjectStore::unpack(const QByteArray& zip,QString& error) {
-    const auto result=unpackBoard(std::span(reinterpret_cast<const std::uint8_t*>(zip.constData()),std::size_t(zip.size())));
+    const auto result=inspectBoard(std::span(reinterpret_cast<const std::uint8_t*>(zip.constData()),std::size_t(zip.size())));
     error=QString::fromStdString(result.error);
     return QByteArray(reinterpret_cast<const char*>(result.json.data()),qsizetype(result.json.size()));
 }
 QString ProjectStore::save(const QString& path,const Project& p) {
+    return saveCopies({path},p);
+}
+QString ProjectStore::saveCopies(const QStringList& paths,const Project& p) {
+    if(paths.isEmpty())return "Nenhum destino de salvamento.";
     auto compact=p;const auto error=discardErasureHistory(compact);if(!error.isEmpty())return error;
     const auto json=serialize(compact); if(json.size()+122>maxBytes)return "Projeto excede o limite de armazenamento.";
-    const auto validation=deserialize(json); if(!validation)return validation.error;
-    const auto bytes=archive(json); QSaveFile file(path); file.setDirectWriteFallback(false);
-    if(!file.open(QIODevice::WriteOnly))return file.errorString();
-    if(file.write(bytes)!=bytes.size())return file.errorString();
-    if(!file.commit())return file.errorString(); return {};
+    {const auto validation=deserialize(json);if(!validation)return validation.error;}
+    const auto bytes=archive(json);
+    for(const auto& path:paths){
+        QSaveFile file(path);file.setDirectWriteFallback(false);
+        if(!file.open(QIODevice::WriteOnly))return file.errorString();
+        if(file.write(bytes)!=bytes.size())return file.errorString();
+        if(!file.commit())return file.errorString();
+    }
+    return {};
 }
-LoadResult ProjectStore::load(const QString& path) {
+namespace {
+QString readImage(const ImageObject& image,QImage* output){
+    if(!image.png||image.png->empty())return "PNG inválido.";
+    auto bytes=QByteArray::fromRawData(reinterpret_cast<const char*>(image.png->data()),qsizetype(image.png->size()));QBuffer buffer(&bytes);buffer.open(QIODevice::ReadOnly);QImageReader reader(&buffer,"PNG");
+    if(reader.size()!=QSize(image.pixelWidth,image.pixelHeight))return "Dimensões PNG não correspondem aos metadados.";
+    if(output){*output=reader.read();if(output->isNull())return "PNG não pôde ser decodificado.";}
+    return {};
+}
+}
+PageImages ProjectStore::decodePageImages(const Page& page){
+    PageImages result;
+    for(const auto& image:page.images){QImage decoded;result.error=readImage(image,&decoded);if(!result.error.isEmpty())return result;result.images.insert(QString::fromStdString(image.id),decoded);}
+    return result;
+}
+LoadResult ProjectStore::load(const QString& path,ImageLoading imageLoading) {
     QFile file(path); if(!file.open(QIODevice::ReadOnly))return {{},file.errorString()};
     if(file.size()>maxBytes)return {{},"Arquivo excede 128 MiB."};
-    QString error; const auto json=unpack(file.readAll(),error); if(!error.isEmpty())return {{},error}; auto result=deserialize(json);if(!result)return result;
-    for(const auto& page:result.project.pages){result.compacted|=!page.erasedInk.empty();for(const auto& object:objects(page))std::visit([&](const auto& item){if constexpr(requires{item.erasedRegions;})result.compacted|=!item.erasedRegions.empty();},object);}
+    const auto zip=file.readAll();const auto payload=inspectBoard(std::span(reinterpret_cast<const std::uint8_t*>(zip.constData()),std::size_t(zip.size())));
+    if(!payload)return {{},QString::fromStdString(payload.error)};
+    const auto json=QByteArray::fromRawData(reinterpret_cast<const char*>(payload.json.data()),qsizetype(payload.json.size()));auto result=deserialize(json);if(!result)return result;
+    for(const auto& page:result.project.pages){result.compacted|=!page.erasedInk.empty();for(const auto& object:objectViews(page))std::visit([&](const auto* item){if constexpr(requires{item->erasedRegions;})result.compacted|=!item->erasedRegions.empty();},object);}
     if(result.compacted){result.error=discardErasureHistory(result.project);if(!result.error.isEmpty())return result;}
-    for(const auto& page:result.project.pages)for(const auto& image:page.images){
-        auto bytes=QByteArray(reinterpret_cast<const char*>(image.png->data()),qsizetype(image.png->size()));QBuffer buffer(&bytes);buffer.open(QIODevice::ReadOnly);QImageReader reader(&buffer,"PNG");
-        if(reader.size()!=QSize(image.pixelWidth,image.pixelHeight))return {{},"Dimensões PNG não correspondem aos metadados."};
-        const auto decoded=reader.read();if(decoded.isNull())return {{},"PNG não pôde ser decodificado."};result.images.insert(QString::fromStdString(image.id),decoded);
+    for(std::size_t index=0;index<result.project.pages.size();++index)for(const auto& image:result.project.pages[index].images){
+        const bool decode=imageLoading==ImageLoading::AllPages||index==0;QImage decoded;
+        const auto imageError=readImage(image,decode?&decoded:nullptr);if(!imageError.isEmpty())return {{},imageError};
+        if(decode)result.images.insert(QString::fromStdString(image.id),decoded);
     }return result;
 }
 }

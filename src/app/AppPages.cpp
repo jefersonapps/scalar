@@ -31,7 +31,7 @@ QVariantList AppController::pages() const {
 void AppController::selectPage(int index){
     if(index<0||index>=pageCount()||index==currentPage_||loading_||imageImportPending_||textPending_||pdfPending_)return;
     currentPage_=index;++revision_;textRasterRevision_=0;latestLineId_.clear();
-    refreshTextTextures(textRasterScale_);refreshPdf(textRasterScale_);emit pageChanged();emit documentChanged();emit changed();
+    refreshPageImages();refreshTextTextures(textRasterScale_);refreshPdf(textRasterScale_);scheduleThumbnails();emit pageChanged();emit documentChanged();emit changed();
 }
 void AppController::addPage(){
     if(!page()||loading_||imageImportPending_||textPending_||pdfPending_||pageCount()>=1000)return;
@@ -41,6 +41,7 @@ void AppController::addPage(){
 void AppController::deletePage(int index){
     if(index<0||index>=pageCount()||documentBusy())return;
     const auto removedId=project_.pages[index].id;const bool selected=index==currentPage_;
+    if(index==0)coverDirty_=true;
     const auto size=project_.pages[index].size;const auto background=project_.pages[index].background;const auto style=project_.pages[index].backgroundStyle;
     histories_.erase(removedId);pageViews_.remove(QString::fromStdString(removedId));thumbnails_.remove(QString::fromStdString(removedId));dirtyThumbnails_.remove(QString::fromStdString(removedId));
     for(const auto& object:objects(project_.pages[index])){const auto id=QString::fromStdString(objectId(object));images_.remove(id);textMeshes_.remove(id);textSizes_.remove(id);textMathColors_.remove(id);}
@@ -48,7 +49,7 @@ void AppController::deletePage(int index){
     if(project_.pages.empty()){Page blank;blank.id=newId();blank.size=size;blank.background=background;blank.backgroundStyle=style;project_.pages.push_back(std::move(blank));currentPage_=0;}
     else if(index<currentPage_)--currentPage_;else currentPage_=std::min(currentPage_,pageCount()-1);
     latestLineId_.clear();textRasterRevision_=0;mutate();
-    if(selected){refreshTextTextures(textRasterScale_);refreshPdf(textRasterScale_);emit pageChanged();}
+    if(selected){refreshPageImages();refreshTextTextures(textRasterScale_);refreshPdf(textRasterScale_);emit pageChanged();}
     emit pagesChanged();emit changed();
 }
 bool AppController::setPageSize(const QString& preset,double width,double height,bool landscape){
@@ -87,13 +88,33 @@ void AppController::importPdfPages(const QString& range){
     else {for(auto& p:imported){dirtyThumbnails_.insert(QString::fromStdString(p.id));project_.pages.push_back(std::move(p));}selectPage(first);}
     mutate();refreshPdf(textRasterScale_);emit pagesChanged();pdfInfo_={};status_="PDF importado · anote sobre as páginas";emit changed();emit pdfImported();
 }
-void AppController::scheduleThumbnails(){if(active())thumbnailsTimer_.start();}
+void AppController::refreshPageImages(){
+    if(!page()||pageImagesPending_)return;
+    Page missing;for(const auto& image:page()->images)if(images_.value(QString::fromStdString(image.id)).isNull())missing.images.push_back(image);
+    if(missing.images.empty())return;
+    pageImagesPending_=true;pageImagesProjectId_=project_.id;pageImagesPageId_=page()->id;
+    pageImagesWatcher_.setFuture(QtConcurrent::run([missing=std::move(missing)]{return ProjectStore::decodePageImages(missing);}));emit changed();
+}
+void AppController::requestPageThumbnails(int first,int count){
+    if(!active()||first<0||count<=0||first>=pageCount())return;
+    const int end=first+std::min(count,pageCount()-first);
+    for(int index=first;index<end;++index)requestedThumbnails_.insert(QString::fromStdString(project_.pages[index].id));
+    scheduleThumbnails();
+}
+void AppController::scheduleThumbnails(){
+    if(!active()||leaving())return;
+    requestedThumbnails_.insert(QString::fromStdString(page()->id));
+    for(const auto& id:requestedThumbnails_)if(dirtyThumbnails_.contains(id)){thumbnailsTimer_.start();return;}
+}
 void AppController::beginThumbnails(){
-    if(!active()||dirtyThumbnails_.isEmpty())return;
+    if(!active()||leaving()||dirtyThumbnails_.isEmpty())return;
     if(thumbnailsPending_){scheduleThumbnails();return;}
-    std::vector<Page> snapshot;renderingThumbnails_.clear();for(const auto& page:project_.pages)if(dirtyThumbnails_.contains(QString::fromStdString(page.id))){snapshot.push_back(page);renderingThumbnails_.insert(QString::fromStdString(page.id));if(snapshot.size()>=16)break;}
+    std::vector<Page> snapshot;renderingThumbnails_.clear();
+    const auto include=[&](const Page& candidate){const auto id=QString::fromStdString(candidate.id);if(!dirtyThumbnails_.contains(id)||!requestedThumbnails_.contains(id))return false;snapshot.push_back(candidate);renderingThumbnails_.insert(id);return true;};
+    if(!include(*page()))for(const auto& candidate:project_.pages)if(include(candidate))break;
+    if(snapshot.empty())return;
     thumbnailsRevision_=revision_;thumbnailsPending_=true;
-    thumbnailsWatcher_.setFuture(QtConcurrent::run([snapshot]{QHash<QString,QString> result;
+    thumbnailsWatcher_.setFuture(QtConcurrent::run([snapshot=std::move(snapshot)]{QHash<QString,QString> result;
         for(const auto& page:snapshot){auto image=pageThumbnail(page,{192,160});QByteArray png;QBuffer buffer(&png);buffer.open(QIODevice::WriteOnly);image.save(&buffer,"PNG");result.insert(QString::fromStdString(page.id),"data:image/png;base64,"+QString::fromLatin1(png.toBase64()));}return result;
     }));
 }

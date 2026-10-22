@@ -7,6 +7,11 @@ C.GlassPopover {
     id: root
     objectName: "pagesPanel"
     width: Math.min(Theme.pagesPanelWidth,parent.width-Theme.xxl)
+    function requestVisibleThumbnails() {
+        if(!root.visible || grid.cellHeight<=0)return
+        App.requestPageThumbnails(Math.max(0,Math.floor(grid.contentY/grid.cellHeight)*2-2),Math.ceil(grid.height/grid.cellHeight)*2+6)
+    }
+    onAboutToShow: Qt.callLater(requestVisibleThumbnails)
     contentItem: ColumnLayout {
         spacing: Theme.md
         RowLayout {
@@ -15,6 +20,8 @@ C.GlassPopover {
         }
         GridView {
             id: grid
+            onContentYChanged: root.requestVisibleThumbnails()
+            onHeightChanged: root.requestVisibleThumbnails()
             Layout.fillWidth: true; Layout.preferredHeight: Math.min(Theme.pageTileHeight*2+Theme.lg,root.parent.height-Theme.topbarHeight-Theme.section*4)
             clip: true; cellWidth: width/2; cellHeight: Theme.pageTileHeight+Theme.sm
             model: App.pages

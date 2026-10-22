@@ -86,6 +86,15 @@ AppController::AppController(QObject* parent,const QString& dataDirectory):QObje
         if(!changes.empty()){history().apply(current(),std::move(changes),CommandKind::AddObject);mutate();}
         if(!errors.isEmpty()){status_=errors.join(" · ");emit changed();}else if(imported.empty())emit changed();
     });
+    connect(&pageImagesWatcher_,&QFutureWatcher<PageImages>::finished,this,[this]{
+        pageImagesPending_=false;
+        if(pageImagesProjectId_!=project_.id){emit changed();refreshPageImages();return;}
+        const auto result=pageImagesWatcher_.result();
+        for(auto it=result.images.begin();it!=result.images.end();++it)images_.insert(it.key(),it.value());
+        if(!result.error.isEmpty())status_=result.error;
+        emit documentChanged();emit changed();
+        if(result.error.isEmpty()||(page()&&pageImagesPageId_!=page()->id))refreshPageImages();
+    });
     connect(&fillWatcher_,&QFutureWatcher<ImportedImage>::finished,this,[this]{
         fillPending_=false;
         if(fillRevision_!=revision_||!page()||page()->id!=fillPageId_){emit changed();return;}
@@ -158,7 +167,7 @@ bool AppController::eventFilter(QObject* watched,QEvent* event){
     if(watched==qGuiApp && event->type()==QEvent::ApplicationPaletteChange)emit preferencesChanged();
     return QObject::eventFilter(watched,event);
 }
-AppController::~AppController(){ if(!closed_)flush(); loadWatcher_.waitForFinished();imageWatcher_.waitForFinished();textWatcher_.waitForFinished();textRasterWatcher_.waitForFinished();trashWatcher_.waitForFinished();closedLinesWatcher_.waitForFinished();pdfWatcher_.waitForFinished();thumbnailsWatcher_.waitForFinished();exportWatcher_.waitForFinished(); }
+AppController::~AppController(){ if(!closed_)flush(); loadWatcher_.waitForFinished();imageWatcher_.waitForFinished();pageImagesWatcher_.waitForFinished();textWatcher_.waitForFinished();textRasterWatcher_.waitForFinished();trashWatcher_.waitForFinished();closedLinesWatcher_.waitForFinished();pdfWatcher_.waitForFinished();thumbnailsWatcher_.waitForFinished();exportWatcher_.waitForFinished(); }
 QColor AppController::pageColor() const { const auto c=page()?page()->background:0xffffffff;return QColor(int((c>>24)&255),int((c>>16)&255),int((c>>8)&255),int(c&255)); }
 bool AppController::systemDark() const {
 #if QT_VERSION >= QT_VERSION_CHECK(6,5,0)
@@ -179,7 +188,7 @@ bool AppController::defaultLandscape() const{return library_->setting("defaultLa
 void AppController::setDefaultLandscape(bool v){library_->setSetting("defaultLandscape",v);emit preferencesChanged();}
 QString AppController::defaultBackground() const{const auto value=library_->setting("defaultBackground","Pautado").toString();return value=="Branco"||value=="Preto"||value=="Verde"?"Sem grade":value;}
 void AppController::setDefaultBackground(const QString& v){bool found=false;for(const auto& preset:gridPresets())if(preset.toMap().value("name").toString()==v)found=true;if(!found)return;library_->setSetting("defaultBackground",v);emit preferencesChanged();}
-void AppController::install(Project p,const QString& path){project_=std::move(p);currentPage_=0;path_=path;images_.clear();textMeshes_.clear();textMathColors_.clear();textSizes_.clear();histories_.clear();thumbnails_.clear();dirtyThumbnails_.clear();for(const auto& page:project_.pages)dirtyThumbnails_.insert(QString::fromStdString(page.id));pdfCache_.clear();dirty_=false;++revision_;textRasterRevision_=0;scheduleThumbnails();refreshPdf(textRasterScale_);emit pagesChanged();emit pageChanged();emit documentChanged();emit changed();}
+void AppController::install(Project p,const QString& path){project_=std::move(p);currentPage_=0;path_=path;coverDirty_=!QFileInfo::exists(path+".png");images_.clear();textMeshes_.clear();textMathColors_.clear();textSizes_.clear();histories_.clear();thumbnails_.clear();dirtyThumbnails_.clear();requestedThumbnails_.clear();for(const auto& page:project_.pages)dirtyThumbnails_.insert(QString::fromStdString(page.id));pdfCache_.clear();dirty_=false;++revision_;textRasterRevision_=0;scheduleThumbnails();refreshPdf(textRasterScale_);emit pagesChanged();emit pageChanged();emit documentChanged();emit changed();}
 void AppController::newProject(const QString& name,const QString& preset,double width,double height,bool landscape,const QString& background,const QString& pageColor) {
     if(loading_)return;
     PageSize size=preset=="A4"?PageSize::a4():preset=="Carta"?PageSize::letter():PageSize{width,height};
@@ -253,7 +262,7 @@ void AppController::newDefaultInFolder(const QString& folderId){
     pendingFolderId_=folderId;
     newDefault();
 }
-void AppController::mutate(){dirty_=true;++revision_;project_.updatedAt=now().toStdString();autosave_.start();refreshTextTextures(textRasterRequestedScale_);if(page())dirtyThumbnails_.insert(QString::fromStdString(page()->id));scheduleThumbnails();emit documentChanged();emit changed();}
+void AppController::mutate(){dirty_=true;if(currentPage_==0)coverDirty_=true;++revision_;project_.updatedAt=now().toStdString();autosave_.start();refreshTextTextures(textRasterRequestedScale_);if(page())dirtyThumbnails_.insert(QString::fromStdString(page()->id));scheduleThumbnails();emit documentChanged();emit changed();}
 void AppController::addStroke(StrokeObject s){if(!active()||loading_||s.samples.empty())return;s.properties.zIndex=nextZIndex();history().add(current(),std::move(s));mutate();}
 void AppController::fillRegion(Point seed,QColor color,double opacity){
     if(!active()||documentBusy())return;
@@ -308,19 +317,17 @@ void AppController::setHoldDelay(int value){holdDelay_=std::clamp(value,250,1500
 void AppController::undo(){if(active()){const auto size=current().size;if(history().undo(current())){mutate();if(size.widthMm!=pageWidth()||size.heightMm!=pageHeight()||size.infinite!=pageInfinite())emit pagesChanged();}}}
 void AppController::redo(){if(active()){const auto size=current().size;if(history().redo(current())){mutate();if(size.widthMm!=pageWidth()||size.heightMm!=pageHeight()||size.infinite!=pageInfinite())emit pagesChanged();}}}
 void AppController::save(){if(active()){dirty_=true;beginSave();}}
-void AppController::saveAs(const QUrl& url){if(!active()||!url.isLocalFile()||!flush())return;path_=url.toLocalFile();if(!path_.endsWith(".board",Qt::CaseInsensitive))path_+=".board";dirty_=true;beginSave();}
+void AppController::saveAs(const QUrl& url){if(!active()||!url.isLocalFile()||!flush())return;path_=url.toLocalFile();if(!path_.endsWith(".board",Qt::CaseInsensitive))path_+=".board";dirty_=true;coverDirty_=true;beginSave();}
 void AppController::beginSave(){
     if(!active()||!dirty_||loading_)return;
     if(savePending_){autosave_.start();return;}
-    const auto snapshot=project_;const auto path=path_;const auto recovery=dataDir_+"/session.board";const auto rev=revision_;
+    auto snapshot=project_;const auto path=path_;const auto recovery=dataDir_+"/session.board";const auto rev=revision_;const bool saveCover=coverDirty_||!QFileInfo::exists(path+".png");
     status_="Salvando…";
     savePending_=true;
-    saveWatcher_.setFuture(QtConcurrent::run([snapshot=Project(snapshot),path,recovery,rev]() mutable {
-        auto error=ProjectStore::discardErasureHistory(snapshot);
-        if(error.isEmpty())error=ProjectStore::save(recovery,snapshot);
-        if(error.isEmpty())error=ProjectStore::save(path,snapshot);
-        if(error.isEmpty())saveThumbnail(snapshot,path+".png");
-        return SaveResult{error,QString::fromStdString(snapshot.id),QString::fromStdString(snapshot.name),path,QString::fromStdString(snapshot.updatedAt),rev};
+    saveWatcher_.setFuture(QtConcurrent::run([snapshot=std::move(snapshot),path,recovery,rev,saveCover]{
+        const auto error=ProjectStore::saveCopies({recovery,path},snapshot);
+        const bool coverSaved=error.isEmpty()&&saveCover&&saveThumbnail(snapshot,path+".png");
+        return SaveResult{error,QString::fromStdString(snapshot.id),QString::fromStdString(snapshot.name),path,QString::fromStdString(snapshot.updatedAt),rev,coverSaved};
     }));emit changed();
 }
 void AppController::finishSave(){
@@ -334,7 +341,7 @@ void AppController::finishSave(){
             pendingFolderId_.clear();
         }
         emit recentChanged();
-        if(r.revision==revision_ && r.id==QString::fromStdString(project_.id)){dirty_=false;status_="Salvo neste dispositivo";} else {status_="Alterações pendentes";autosave_.start();}
+        if(r.revision==revision_ && r.id==QString::fromStdString(project_.id)){dirty_=false;if(r.coverSaved)coverDirty_=false;status_="Salvo neste dispositivo";} else {status_="Alterações pendentes";autosave_.start();}
     } else {status_="Falha ao salvar: "+r.error;qCWarning(appLog)<<status_;if(leaving()){leaveError_=status_;leaveTimer_.stop();}}
     emit changed();
 }
@@ -352,7 +359,7 @@ void AppController::open(const QUrl& url){if(url.isLocalFile())openPath(url.toLo
 void AppController::openPath(const QString& path){
     for(const auto& value:library_->trash()){const auto e=value.toMap();if(QFileInfo(e["originalPath"].toString()).absoluteFilePath()==QFileInfo(path).absoluteFilePath()||QFileInfo(e["trashPath"].toString()).absoluteFilePath()==QFileInfo(path).absoluteFilePath()){status_="Restaure o quadro na lixeira antes de abri-lo.";emit changed();return;}}
     if(trashPending_||loading_||!flush())return;loading_=true;pendingOpenPath_=path;status_="Abrindo projeto…";
-    loadWatcher_.setFuture(QtConcurrent::run([path]{return ProjectStore::load(path);}));emit changed();
+    loadWatcher_.setFuture(QtConcurrent::run([path]{return ProjectStore::load(path,ImageLoading::FirstPage);}));emit changed();
 }
 void AppController::home(){if(loading_||!flush())return;project_={};status_.clear();currentPage_=0;images_.clear();textMeshes_.clear();textMathColors_.clear();textSizes_.clear();histories_.clear();thumbnails_.clear();pdfCache_.clear();thumbnailsTimer_.stop();++revision_;emit pagesChanged();emit pageChanged();emit documentChanged();emit changed();}
 void AppController::requestHome(){beginLeaving(LeaveAction::Home);}
@@ -362,7 +369,7 @@ void AppController::beginLeaving(LeaveAction action){
         if(action==LeaveAction::Shutdown)leaveAction_=action;
         return;
     }
-    leaveAction_=action;leaveError_.clear();autosave_.stop();
+    leaveAction_=action;leaveError_.clear();autosave_.stop();thumbnailsTimer_.stop();
     leaveTimer_.start();emit changed();
 }
 void AppController::retryLeaving(){if(!leaving()||leaveError_.isEmpty())return;leaveError_.clear();leaveTimer_.start();emit changed();}
@@ -371,7 +378,7 @@ void AppController::continueLeaving(){
     if(!leaving()||!leaveError_.isEmpty())return;
     // Let pending edits finish and keep the event loop free to animate the
     // saving dialog. Never wait for a worker from a navigation/close event.
-    if(loading_||imageImportPending_||textPending_||trashPending_||pdfPending_||renamePending_||fillPending_||exportPending_
+    if(loading_||pageImagesPending_||imageImportPending_||textPending_||trashPending_||pdfPending_||renamePending_||fillPending_||exportPending_
        ||closedLinesWatcher_.isRunning()||thumbnailsPending_||textRasterPending_||savePending_)return;
     autosave_.stop();
     if(active()&&dirty_){beginSave();return;}

@@ -44,6 +44,12 @@ Limites: arquivo 128 MiB, 1000 páginas, 2 milhões de amostras, tamanho físico
 
 Snapshot recebe datas; JSON é gerado e validado em worker. Bytes ZIP são gerados com CRC. QSaveFile escreve em arquivo temporário e `commit()` faz substituição atômica. Direct write fallback está desabilitado: se não houver substituição segura, retorna erro e mantém o documento dirty. A durabilidade em power loss depende de filesystem/OS; não é uma garantia de proteção contra falha física de disco.
 
+O salvamento prepara, consolida apagamentos, serializa, valida e empacota uma única vez por snapshot. Os mesmos bytes são escritos primeiro na recuperação e depois no projeto, com substituição atômica individual em cada destino. O PDF compartilhado é convertido para base64 apenas uma vez por asset. O formato continua sendo um único `project.json`: o arquivo completo ainda é regravado, mesmo quando apenas uma página muda.
+
+Na abertura pelo aplicativo, estrutura, IDs, referências, CRC e dimensões dos PNGs são verificados no documento inteiro. Apenas as imagens da primeira página são decodificadas inicialmente; as demais são preparadas em worker quando a página é acessada, exibindo um indicador durante a preparação. Falhas de decodificação são informadas sem remover os dados incorporados. A API de carregamento completo continua disponível para exportação, validação e outros consumidores.
+
+Miniaturas são geradas sob demanda para a página atual e para a região visível do painel de páginas, uma por vez. A capa da biblioteca é regenerada quando a primeira página muda ou quando o arquivo auxiliar está ausente.
+
 ## Arquivos auxiliares
 
 - AppDataLocation/projects/<id>.board: projetos gerenciados.

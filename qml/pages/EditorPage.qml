@@ -100,7 +100,7 @@ Item {
         onWindowPointerReleased: Qt.callLater(function(){root.pressedTogglePanel=null})
         controller: App
         wheelZoomEnabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.formattingOpen && !App.loading
-        enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && !App.loading && !fileOptions.visible && !pagesPanel.visible && !geometryOptions.visible && !penOptions.visible && !penOptions.colorDialogOpen && !shapeOptions.visible && !eraserOptions.visible && !backgroundOptions.visible && !backgroundOptions.colorDialogOpen
+        enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && !App.loading && !App.pageImagesLoading && !fileOptions.visible && !pagesPanel.visible && !geometryOptions.visible && !penOptions.visible && !penOptions.colorDialogOpen && !shapeOptions.visible && !eraserOptions.visible && !backgroundOptions.visible && !backgroundOptions.colorDialogOpen
         toolbarExclusion: Qt.rect(toolbar.x, toolbar.y-y, toolbar.width, toolbar.height)
         optionsExclusion: properties.visible ? Qt.rect(properties.x,properties.y-y,properties.width,properties.height) : Qt.rect(0,0,0,0)
         onTextRequested: (position, id) => inlineText.begin(Qt.rect(position.x,position.y,60,18),id)
@@ -179,6 +179,7 @@ Item {
             }
         }
     }
+    BusyIndicator { objectName: "pageImagesLoadingIndicator"; anchors.centerIn: board; visible: App.pageImagesLoading; running: visible }
     PropertiesPanel { id: properties; canvas: board; onExportRequested: svg => root.exportSelection(svg); visible: board.selectedCount > 0 && board.tool === "select" && !inlineText.active; anchors.top: parent.top; anchors.right: parent.right; anchors.topMargin: root.headerHeight+Theme.lg; anchors.rightMargin: Theme.lg }
     RowLayout {
         id: topbar
