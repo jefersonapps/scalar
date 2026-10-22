@@ -29,7 +29,10 @@ ImportedImage importImageFile(const QString& path,Point center,PageSize page){
         QImage image(size,QImage::Format_ARGB32_Premultiplied);image.fill(Qt::transparent);QPainter painter(&image);renderer.render(&painter);painter.end();return encodeImage(std::move(image),center,page);
     }
 #endif
-    QImageReader reader(path);reader.setAutoTransform(true);
+    QFile source(path);
+    if(!source.open(QIODevice::ReadOnly))return {{},{},"Não foi possível abrir a imagem: "+source.errorString()};
+    QImageReader reader(&source);reader.setAutoTransform(true);
+    reader.setDecideFormatFromContent(true);
     if(!reader.canRead()){
         QFile file(path);
         if(file.open(QIODevice::ReadOnly)){

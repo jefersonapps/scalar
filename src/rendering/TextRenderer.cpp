@@ -14,14 +14,20 @@
 #include <QFontDatabase>
 static void initializeTextFontResources(){Q_INIT_RESOURCE(text_fonts);}
 namespace scalar {
+namespace { QString latexFontFamily; }
 void registerTextFonts(){
     static const bool registered=[]{
         initializeTextFontResources();
         for(const auto* name:{"Regular","Italic","Bold"})QFontDatabase::addApplicationFont(QString(":/assets/fonts/LobsterTwo-%1.otf").arg(name));
+        for(const auto* style:{"regular","italic","bold","bolditalic"}){
+            const auto id=QFontDatabase::addApplicationFont(QString(":/assets/fonts/lmroman10-%1.otf").arg(style));
+            if(latexFontFamily.isEmpty()&&id>=0)latexFontFamily=QFontDatabase::applicationFontFamilies(id).value(0);
+        }
         return true;
     }();
     (void)registered;
 }
+QString latexTextFont(){registerTextFonts();return latexFontFamily;}
 QFont documentFont(const QString& family,int pixelSize,bool bold,bool italic){
     QFont result(family);
     result.setPixelSize(std::max(1,pixelSize));result.setBold(bold);result.setItalic(italic);
@@ -126,7 +132,7 @@ TextVisual textVisual(const TextObject& t,double scale){
     }return visual;
 }
 PreparedText prepareText(TextObject t){
-    auto fragments=mathFragments(t.source);
+    auto fragments=t.latexEnabled?mathFragments(t.source):std::vector<MathFragment>{};
     if(!fragments.empty()&&!svgRenderingAvailable())return {t,{},"O pacote Scalar precisa de um renderizador SVG para matemática."};
     const auto error=renderMath(fragments);if(!error.isEmpty())return {t,{},error};t.math=std::move(fragments);
     const auto l=layout(t);const auto origin=t.corners.empty()?Point{20,20}:t.corners[0];

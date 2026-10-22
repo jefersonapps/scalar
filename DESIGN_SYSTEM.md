@@ -1,6 +1,6 @@
 # Design System — Scalar
 
-Fonte de verdade: `qml/theme/Theme.qml`. Tokens semânticos separam interface e página. A interface usa a fonte do sistema do Qt. O texto do quadro usa Lobster Two como padrão, embutida com licença SIL OFL para garantir acentos e funcionamento offline.
+Fonte de verdade: `qml/theme/Theme.qml`. Tokens semânticos separam interface e página. A interface usa a fonte do sistema do Qt. O texto do quadro usa Latin Modern Roman como padrão, exibida como LaTeX, com Lobster Two como segunda opção. Ambas acompanham o aplicativo para garantir acentos e funcionamento offline, sob GUST Font License e SIL OFL, respectivamente.
 
 | Token | Light | Dark |
 |---|---|---|

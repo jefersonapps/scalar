@@ -9,6 +9,7 @@ Item {
     signal finished()
     property bool active: false
     property bool committing: false
+    readonly property bool formattingOpen: formatting.visible
     property string objectId: ""
     property var draft: ({})
     property point origin: Qt.point(0,0)
@@ -29,7 +30,7 @@ Item {
     function begin(box,id) {
         if(active)return
         objectId=id
-        draft=id ? App.textValues(id) : ({source:"",fontFamily:App.defaultTextFont,fontSizePt:16,bold:false,italic:false,alignment:0,color:canvas.penColor.toString()})
+        draft=id ? App.textValues(id) : ({source:"",fontFamily:App.defaultTextFont,fontSizePt:16,bold:false,italic:false,latexEnabled:true,alignment:0,color:canvas.penColor.toString()})
         origin=id ? Qt.point(draft.x,draft.y) : Qt.point(box.x,box.y)
         boxWidth=id ? draft.width : box.width
         boxHeight=id ? draft.height : box.height
@@ -99,6 +100,7 @@ Item {
             enabled: !root.committing
             padding: 2*root.pixelsPerMm/(96/25.4)
             color: root.draft.color || Theme.text
+            property bool latexEnabled: root.draft.latexEnabled !== false
             property color syntaxBackground: App.pageColor
             placeholderText: "Escreva aqui…"
             placeholderTextColor: App.pageColor.hslLightness<0.5 ? "#a1a1aa" : "#66798b"
@@ -120,6 +122,8 @@ Item {
             objectName: "inlineTextControls"
             x: 0; y: -height-Theme.xs
             bold: root.selectionStyle.bold || false; italic: root.selectionStyle.italic || false
+            latexEnabled: root.draft.latexEnabled !== false
+            onLatexRequested: { root.change("latexEnabled", !latexEnabled);editor.forceActiveFocus() }
             selectedColor: root.selectionStyle.color || root.draft.color || Theme.text
             onFormatRequested: root.openFormatting()
             onBoldRequested: root.toggleEmphasis(true)

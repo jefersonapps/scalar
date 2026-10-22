@@ -4,6 +4,7 @@ import "../theme"
 AbstractButton {
     id: root
     property bool primary: false
+    property real cornerRadius: Theme.radiusMedium
     property string iconName: ""
     property string tooltip: ""
     implicitWidth: Math.max(Theme.touch, label.implicitWidth + Theme.xxl)
@@ -14,7 +15,7 @@ AbstractButton {
     ToolTip.text: tooltip
     ToolTip.delay: Theme.tooltipDelay
     background: Rectangle {
-        radius: Theme.radiusMedium
+        radius: root.cornerRadius
         color: root.primary ? Theme.accent : root.down ? Theme.pressed : root.checked ? Theme.accentSoft : root.hovered ? Theme.hover : Theme.surface
         border.width: root.primary ? 0 : 1
         border.color: Theme.border

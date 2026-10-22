@@ -5,6 +5,8 @@ import "../theme"
 C.GlassPanel {
     id: root
     objectName: "floatingToolbar"
+    // Concentric corners: inner button radius plus the inset (6 px).
+    radius: Theme.radiusMedium + (Theme.toolbarHeight - Theme.touch) / 2
     property Item backdropSource: null
     readonly property bool plainAppearance: !App.toolbarBlurSupported || App.reducedEffects || App.disableToolbarBlur
     color: plainAppearance ? Theme.surface : "transparent"

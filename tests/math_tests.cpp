@@ -10,10 +10,33 @@
 #include "rendering/TextRenderer.h"
 #include "rendering/MathMesh.h"
 #include "geometry/Geometry.h"
+#include "persistence/ProjectStore.h"
+#include <QJsonDocument>
+#include <QJsonArray>
+#include <QJsonObject>
 using namespace scalar;
 class MathTests : public QObject {
     Q_OBJECT
 private slots:
+    void plainTextKeepsCurrencyAndPersistsLatexChoice(){
+        TextObject text;text.id=newId();text.source="Investiu R$ 8.000,00 e recebeu R$ 10.464,98. $x$";text.latexEnabled=false;
+        const auto prepared=prepareText(text);QVERIFY2(prepared.error.isEmpty(),qPrintable(prepared.error));QVERIFY(prepared.object.math.empty());QVERIFY(prepared.geometry.empty());QCOMPARE(prepared.object.source,text.source);
+        Project project;project.id=newId();project.name="Financeiro";Page page;page.id=newId();page.texts.push_back(prepared.object);project.pages.push_back(page);
+        const auto loaded=ProjectStore::deserialize(ProjectStore::serialize(project));QVERIFY2(loaded,qPrintable(loaded.error));QVERIFY(!loaded.project.pages[0].texts[0].latexEnabled);
+        auto json=QJsonDocument::fromJson(ProjectStore::serialize(project)).object();auto pages=json["pages"].toArray();auto first=pages[0].toObject();auto objects=first["objects"].toArray();
+        // Older files omit the option and retain their LaTeX interpretation.
+        auto object=objects[0].toObject();object.remove("latexEnabled");objects[0]=object;first["objects"]=objects;pages[0]=first;json["pages"]=pages;
+        const auto legacy=ProjectStore::deserialize(QJsonDocument(json).toJson());QVERIFY2(legacy,qPrintable(legacy.error));QVERIFY(legacy.project.pages[0].texts[0].latexEnabled);
+    }
+    void bundledLatexFontSupportsStylesAndAccents(){
+        const auto family=latexTextFont();QVERIFY(!family.isEmpty());
+        for(const bool bold:{false,true})for(const bool italic:{false,true}){
+            const auto raw=QRawFont::fromFont(documentFont(family,24,bold,italic));QVERIFY(raw.isValid());
+            QVERIFY(raw.familyName().contains("Roman"));
+            QCOMPARE(raw.weight()>=QFont::Bold,bold);QCOMPARE(raw.style()==QFont::StyleItalic,italic);
+            for(const auto character:QString::fromUtf8("áàâãéêíóôõúüçÁÀÂÃÉÊÍÓÔÕÚÜÇ"))QVERIFY(raw.supportsCharacter(character));
+        }
+    }
     void installedFontsAndPortugueseAccents(){
         registerTextFonts();
         const auto font=documentFont("Lobster Two",24);

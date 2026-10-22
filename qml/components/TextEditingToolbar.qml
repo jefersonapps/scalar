@@ -5,12 +5,14 @@ Rectangle {
     id: root
     property bool bold: false
     property bool italic: false
+    property bool latexEnabled: true
     property bool showColors: true
     property color selectedColor: Theme.text
     property string formatButtonName: "textFormatButton"
     signal formatRequested()
     signal boldRequested()
     signal italicRequested()
+    signal latexRequested()
     signal colorPicked(color value)
     width: controls.width+8; height: controls.height+8
     radius: Theme.radiusMedium; color: Theme.surface
@@ -39,6 +41,30 @@ Rectangle {
                 contentItem: Text { text: parent.text; font.family: "Segoe UI"; font.pixelSize: 16; font.bold: parent.text==="B"; font.italic: parent.text==="I"; color: parent.checked ? Theme.accent : Theme.text; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                 onClicked: modelData==="B" ? root.boldRequested() : root.italicRequested()
             }
+        }
+        ActionButton {
+            objectName: "inlineLatexButton"
+            visible: root.showColors
+            text: "LaTeX"; implicitWidth: 58; implicitHeight: 32
+            checked: root.latexEnabled
+            focusPolicy: Qt.NoFocus
+            Accessible.name: "Interpretar LaTeX"
+            Accessible.role: Accessible.CheckBox
+            Accessible.checkable: true
+            Accessible.checked: root.latexEnabled
+            tooltip: root.latexEnabled ? "Desativar LaTeX e mostrar $ como texto" : "Ativar interpretação de LaTeX"
+            background: Rectangle {
+                radius: 8
+                color: parent.down ? Theme.pressed : parent.checked ? Theme.selectionSurface : parent.hovered ? Theme.hover : "transparent"
+                border.width: parent.checked ? 1 : 0
+                border.color: Theme.selectionBorder
+            }
+            contentItem: Text {
+                text: parent.text; font.pixelSize: Theme.body
+                color: parent.checked ? Theme.accent : Theme.text
+                horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+            }
+            onClicked: root.latexRequested()
         }
         Rectangle { visible: root.showColors; width: visible ? 1 : 0; height: 20; y: 6; color: Theme.border }
         Repeater {

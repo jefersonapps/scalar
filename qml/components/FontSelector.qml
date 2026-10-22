@@ -12,7 +12,10 @@ AbstractButton {
     hoverEnabled: true
     FontMetrics { id: scrollMetrics;font.pixelSize: Theme.body }
     Accessible.name: "Escolher fonte"
-    function familyLabel(family) { return family.replace(/\s*\[[^\]]*\]/g,"").trim() }
+    function familyLabel(family) {
+        const name=family.replace(/\s*\[[^\]]*\]/g,"").trim()
+        return name===App.defaultTextFont.replace(/\s*\[[^\]]*\]/g,"").trim() ? "LaTeX" : name
+    }
     readonly property var entries: {
         const unique={};const result=[]
         for(const family of App.fontFamilies){

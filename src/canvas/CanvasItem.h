@@ -138,6 +138,8 @@ public:
     Q_INVOKABLE QString selectedTextId() const;
     Q_INVOKABLE void deleteSelection();
     Q_INVOKABLE void duplicateSelection();
+    Q_INVOKABLE void copySelection();
+    Q_INVOKABLE void pasteSelection();
     Q_INVOKABLE void exportSelection(const QUrl& url,bool svg=false){if(controller_)controller_->exportSelection(selectedObjects(),url,svg);}
     Q_INVOKABLE void moveSelectionLayer(bool forward);
     Q_INVOKABLE void recognizeSelection();
@@ -207,6 +209,7 @@ private:
     mutable std::map<std::string,ShapeRasterCache> visibilityCaches_;
     bool wheelZoomEnabled_=true;
     void zoomWheelAt(QPointF point,const QWheelEvent& event);
+    void panWheel(const QWheelEvent& event);
     double markerWidth_=4;
     double markerOpacity_=.10;
     enum class State { Idle,Erasing,Drawing,PossibleHold,ShapePreview,CreatingShape,CreatingText,Panning,TouchGesture,Marquee,Moving,Resizing,Rotating,EditingHandle,MovingRuler,RotatingRuler,ResizingRuler,MovingCompass,ResizingCompass,DrawingCompass };

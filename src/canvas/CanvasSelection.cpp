@@ -1,5 +1,9 @@
 #include "CanvasItem.h"
 #include <QtConcurrent>
+#include <QClipboard>
+#include <QGuiApplication>
+#include <QMimeData>
+#include "persistence/ProjectStore.h"
 namespace scalar {
 bool CanvasItem::hasVisibleInk(const CanvasObject& object,std::optional<Point> near) const{
     if(!properties(object).visible)return false;
@@ -238,6 +242,44 @@ void CanvasItem::deleteSelection(){
     if(selectedGuide_=="compass"){setCompassVisible(false);selectedGuide_.clear();emit geometryToolsChanged();return;}
     if(selectedGuide_=="ruler"){setRulerVisible(false);selectedGuide_.clear();emit geometryToolsChanged();return;}
     if(!controller_)return;std::vector<ObjectChange> changes;for(auto o:selectedObjects())changes.push_back({o,{}});selection_.clear();controller_->changeObjects(std::move(changes),CommandKind::DeleteObject);selectionUpdated();
+}
+void CanvasItem::copySelection(){
+    if(!controller_||!controller_->page())return;
+    const auto selected=selectedObjects();if(selected.empty())return;
+    Page page;page.id=newId();page.size=controller_->page()->size;
+    for(const auto& object:selected)std::visit([&](const auto& item){
+        using T=std::decay_t<decltype(item)>;
+        if constexpr(std::is_same_v<T,StrokeObject>)page.strokes.push_back(item);
+        else if constexpr(std::is_same_v<T,ShapeObject>)page.shapes.push_back(item);
+        else if constexpr(std::is_same_v<T,ImageObject>)page.images.push_back(item);
+        else page.texts.push_back(item);
+    },object);
+    Project project;project.id=newId();project.name="Clipboard";project.pages.push_back(std::move(page));
+    auto* mime=new QMimeData;
+    mime->setData("application/x-scalar-selection",ProjectStore::serialize(project));
+    QGuiApplication::clipboard()->setMimeData(mime);
+}
+void CanvasItem::pasteSelection(){
+    if(!controller_||!controller_->page()||controller_->documentBusy())return;
+    const auto* mime=QGuiApplication::clipboard()->mimeData();
+    if(!mime||!mime->hasFormat("application/x-scalar-selection")){pasteImage();return;}
+    const auto loaded=ProjectStore::deserialize(mime->data("application/x-scalar-selection"));
+    if(!loaded||loaded.project.pages.empty())return;
+    auto copied=objects(loaded.project.pages.front());if(copied.empty())return;
+    // Keep relative geometry and place the copied group at the viewport center.
+    auto box=bounds(copied.front());
+    for(const auto& object:copied){const auto b=bounds(object);box.left=std::min(box.left,b.left);box.top=std::min(box.top,b.top);box.right=std::max(box.right,b.right);box.bottom=std::max(box.bottom,b.bottom);}
+    const auto center=viewportCenter();const Point offset{center.x()-(box.left+box.right)/2,center.y()-(box.top+box.bottom)/2};
+    std::stable_sort(copied.begin(),copied.end(),[](const auto& a,const auto& b){return properties(a).zIndex<properties(b).zIndex;});
+    selection_.clear();std::vector<ObjectChange> changes;auto z=controller_->nextZIndex();
+    for(auto object:copied){object=transformed(object,{},offset);const auto id=newId();
+        if(const auto* image=std::get_if<ImageObject>(&object)){
+            const auto& png=*image->png;controller_->cacheImage(id,QImage::fromData(png.data(),int(png.size()),"PNG"));
+        }
+        std::visit([&](auto& item){item.id=id;item.properties.zIndex=z++;},object);
+        changes.push_back({{},object});selection_.select(id,true);
+    }
+    controller_->changeObjects(std::move(changes),CommandKind::AddObject);setTool("select");selectionUpdated();
 }
 void CanvasItem::duplicateSelection(){
     if(!controller_)return;std::vector<ObjectChange> changes;auto selected=selectedObjects();selection_.clear();auto z=controller_->nextZIndex();

@@ -71,7 +71,11 @@ if(SCALAR_BUILD_DESKTOP)
     endif()
     qt_add_resources(scalar_desktop text_fonts PREFIX "/" BASE "${CMAKE_CURRENT_SOURCE_DIR}" FILES
         assets/fonts/LobsterTwo-Regular.otf assets/fonts/LobsterTwo-Italic.otf
-        assets/fonts/LobsterTwo-Bold.otf assets/fonts/LobsterTwo-OFL.txt)
+        assets/fonts/LobsterTwo-Bold.otf assets/fonts/LobsterTwo-OFL.txt
+        assets/fonts/lmroman10-regular.otf assets/fonts/lmroman10-italic.otf
+        assets/fonts/lmroman10-bold.otf assets/fonts/lmroman10-bolditalic.otf
+        assets/fonts/LatinModern-GUST-LICENSE.txt assets/fonts/LatinModern-README.txt
+        assets/fonts/LatinModern-MANIFEST.txt)
     target_link_libraries(scalar PRIVATE scalar_desktop)
     file(GLOB_RECURSE SCALAR_QML CONFIGURE_DEPENDS qml/*.qml qml/qmldir qml/theme/qmldir)
     list(APPEND SCALAR_QML "${CMAKE_CURRENT_SOURCE_DIR}/icon.png")

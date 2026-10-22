@@ -7,6 +7,7 @@
 class QPainter;
 namespace scalar {
 void registerTextFonts();
+QString latexTextFont();
 QFont documentFont(const QString& family,int pixelSize,bool bold=false,bool italic=false);
 struct MathColorRun {std::size_t start=0,count=0;std::uint32_t rgba=0;};
 struct PreparedText {TextObject object;QImage image;QString error;std::vector<Point> geometry{};QSizeF naturalSize{};std::vector<MathColorRun> mathColors;};

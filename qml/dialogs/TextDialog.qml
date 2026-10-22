@@ -36,7 +36,15 @@ C.ModernDialog {
         Text { text: "Cor";color: Theme.secondary;font.pixelSize: Theme.caption }
         C.ColorPicker { Layout.fillWidth: true;selectedColor: root.draft.color || "#263345";onPicked: value => root.change("color",value.toString()) }
         C.ActionButton { text: "Cor personalizada";Layout.fillWidth: true;onClicked: customColor.choose(root.draft.color || "#263345") }
-        Text { text: "LaTeX: $...$ no texto · $$...$$ em destaque.\nClique fora da caixa ou use Ctrl+Enter para concluir.";color: Theme.secondary;font.pixelSize: Theme.caption;Layout.fillWidth: true;wrapMode: Text.WordWrap }
+        C.ActionButton {
+            objectName: "textLatexToggle"
+            Layout.fillWidth: true
+            text: root.draft.latexEnabled !== false ? "LaTeX ativado" : "LaTeX desativado"
+            checked: root.draft.latexEnabled !== false
+            tooltip: "Desative para escrever valores como R$ sem interpretar fórmulas"
+            onClicked: root.change("latexEnabled",root.draft.latexEnabled === false)
+        }
+        Text { text: (root.draft.latexEnabled !== false ? "LaTeX: $...$ no texto · $$...$$ em destaque." : "Texto comum: cifrões e valores em R$ são preservados.") + "\nClique fora da caixa ou use Ctrl+Enter para concluir.";color: Theme.secondary;font.pixelSize: Theme.caption;Layout.fillWidth: true;wrapMode: Text.WordWrap }
         RowLayout {
             C.ActionButton { text: "Cancelar";Layout.fillWidth: true;onClicked: root.close() }
             C.ActionButton { objectName: "applyTextFormatButton";text: "Aplicar";primary: true;Layout.fillWidth: true;onClicked: { root.applied(root.draft);root.close() } }

@@ -271,7 +271,7 @@ private slots:
     }
     void mathSourceUsesMonospaceOnlyWhileEditing(){
         QQmlEngine engine;QQmlComponent component(&engine);
-        component.setData("import QtQuick\nTextEdit { font.family: \"Lobster Two\"; font.pixelSize: 24; textFormat: TextEdit.PlainText }",QUrl());
+        component.setData("import QtQuick\nTextEdit { property bool latexEnabled: true; font.family: \"Lobster Two\"; font.pixelSize: 24; textFormat: TextEdit.PlainText }",QUrl());
         std::unique_ptr<QObject> editor(component.create());QVERIFY2(editor,qPrintable(component.errorString()));
         const auto source=QStringLiteral("Área \\$20 $x^2$ fim\n$$a+b\n=c$$ final");editor->setProperty("text",source);
         auto* wrapper=qobject_cast<QQuickTextDocument*>(editor->property("textDocument").value<QObject*>());QVERIFY(wrapper);
@@ -281,6 +281,9 @@ private slots:
         const auto mono=QFontDatabase::systemFont(QFontDatabase::FixedFont).family();
         QCOMPARE(familyAt(source.indexOf("x^2")),mono);QVERIFY(familyAt(0).isEmpty());QVERIFY(familyAt(source.indexOf("20")).isEmpty());
         QCOMPARE(familyAt(source.indexOf("a+b")),mono);QCOMPARE(familyAt(source.indexOf("=c")),mono);QVERIFY(familyAt(source.indexOf("final")).isEmpty());
+        editor->setProperty("latexEnabled",false);QCoreApplication::processEvents();
+        QVERIFY(familyAt(source.indexOf("x^2")).isEmpty());QVERIFY(familyAt(source.indexOf("a+b")).isEmpty());QCOMPARE(document->toPlainText(),source);
+        editor->setProperty("latexEnabled",true);QCoreApplication::processEvents();QCOMPARE(familyAt(source.indexOf("x^2")),mono);
         QVERIFY(textFormats(wrapper,false,false).isEmpty());
         const auto updated=source+" $\\int_a^b";editor->setProperty("text",updated);QCoreApplication::processEvents();
         QCOMPARE(familyAt(updated.indexOf("\\int")),mono);QCOMPARE(document->toPlainText(),updated);
@@ -551,14 +554,20 @@ private slots:
         QQmlApplicationEngine engine;engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());
         auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);QVERIFY(canvas->setZoom(1.5));
         const auto position=canvas->mapToScene({canvas->width()/2+80,canvas->height()/2+35});
-        const auto wheel=[&](int angle,Qt::KeyboardModifiers modifiers=Qt::NoModifier,QPoint pixels={}){
-            QWheelEvent event(position,window->mapToGlobal(position.toPoint()),pixels,QPoint(0,angle),Qt::NoButton,modifiers,Qt::NoScrollPhase,false);QCoreApplication::sendEvent(window,&event);
+        const auto wheel=[&](int angle,Qt::KeyboardModifiers modifiers=Qt::NoModifier,QPoint pixels={},bool horizontal=false){
+            QWheelEvent event(position,window->mapToGlobal(position.toPoint()),pixels,horizontal?QPoint(angle,0):QPoint(0,angle),Qt::NoButton,modifiers,Qt::NoScrollPhase,false);QCoreApplication::sendEvent(window,&event);
         };
         const auto initial=canvas->viewportCenter();const double scale=canvas->zoom()*96/25.4;
         wheel(-120);QCOMPARE(canvas->zoom(),1.5);QCOMPARE(canvas->viewportCenter().x(),initial.x());QVERIFY(std::abs(canvas->viewportCenter().y()-initial.y()-60/scale)<1e-8);
         wheel(120);QVERIFY(QLineF(canvas->viewportCenter(),initial).length()<1e-8);
         wheel(-60);QVERIFY(std::abs(canvas->viewportCenter().y()-initial.y()-30/scale)<1e-8);
         const auto beforePixels=canvas->viewportCenter();wheel(0,Qt::NoModifier,{10,-20});QCOMPARE(canvas->zoom(),1.5);QCOMPARE(canvas->viewportCenter().x(),beforePixels.x());QVERIFY(std::abs(canvas->viewportCenter().y()-beforePixels.y()-20/scale)<1e-8);
+        const auto beforeHorizontal=canvas->viewportCenter();
+        wheel(-120,Qt::AltModifier);QCOMPARE(canvas->zoom(),1.5);QCOMPARE(canvas->viewportCenter().y(),beforeHorizontal.y());QVERIFY(std::abs(canvas->viewportCenter().x()-beforeHorizontal.x()-60/scale)<1e-8);
+        wheel(120,Qt::AltModifier);QVERIFY(QLineF(canvas->viewportCenter(),beforeHorizontal).length()<1e-8);
+        wheel(0,Qt::AltModifier,{0,-20});QCOMPARE(canvas->viewportCenter().y(),beforeHorizontal.y());QVERIFY(std::abs(canvas->viewportCenter().x()-beforeHorizontal.x()-20/scale)<1e-8);
+        const auto beforeNative=canvas->viewportCenter();wheel(-120,Qt::AltModifier,{},true);QCOMPARE(canvas->viewportCenter().y(),beforeNative.y());QVERIFY(std::abs(canvas->viewportCenter().x()-beforeNative.x()-60/scale)<1e-8);
+        wheel(120,Qt::NoModifier,{},true);QVERIFY(QLineF(canvas->viewportCenter(),beforeNative).length()<1e-8);
         const auto anchor=[&]{return canvas->viewportCenter()+QPointF(80,35)/(canvas->zoom()*96/25.4);};const auto beforeZoom=anchor();
         wheel(120,Qt::ControlModifier);QVERIFY(std::abs(canvas->zoom()-1.575)<1e-8);QVERIFY(QLineF(anchor(),beforeZoom).length()<1e-8);
         canvas->setProperty("wheelZoomEnabled",false);const auto disabledCenter=canvas->viewportCenter();wheel(120,Qt::ControlModifier);QVERIFY(std::abs(canvas->zoom()-1.575)<1e-8);QCOMPARE(canvas->viewportCenter(),disabledCenter);
@@ -1448,6 +1457,46 @@ private slots:
         controller.trashProject(id);QTRY_VERIFY(!controller.busy());controller.deleteProjectPermanently(id);QTRY_VERIFY(!controller.busy());QVERIFY(controller.trashedProjects().isEmpty());QVERIFY(controller.recentProjects().isEmpty());QVERIFY(!QFile::exists(path));
         QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
     }
+    void bundledFontPickerDefaults(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());
+        const auto families=controller.fontFamilies();QCOMPARE(families[0],controller.defaultTextFont());QCOMPARE(families[1],QString("Lobster Two"));
+        QQmlEngine engine;engine.rootContext()->setContextProperty("App",&controller);QQmlComponent component(&engine,QUrl("qrc:/qml/components/FontSelector.qml"));
+        std::unique_ptr<QObject> selector(component.create());QVERIFY2(selector,qPrintable(component.errorString()));
+        QCOMPARE(selector->property("fontFamily").toString(),controller.defaultTextFont());
+        QVariant label;QVERIFY(QMetaObject::invokeMethod(selector.get(),"familyLabel",Q_RETURN_ARG(QVariant,label),Q_ARG(QVariant,controller.defaultTextFont())));QCOMPARE(label.toString(),QString("LaTeX"));
+        QVERIFY(QMetaObject::invokeMethod(selector.get(),"familyLabel",Q_RETURN_ARG(QVariant,label),Q_ARG(QVariant,QString("Lobster Two"))));QCOMPARE(label.toString(),QString("Lobster Two"));
+    }
+    void inlineLatexToggleKeepsCurrencyLiteral(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);canvas->setTool("text");
+        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,canvas->mapToScene(QPointF(400,220)).toPoint());
+        auto* source=findVisualItem(window->contentItem(),"textSource");QVERIFY(source);QTRY_VERIFY(source->hasActiveFocus());
+        const auto currency=QStringLiteral("Investiu R$ 8.000,00 e recebeu R$ 10.464,98.");source->setProperty("text",currency);
+        auto* latex=findVisualItem(window->contentItem(),"inlineLatexButton");QVERIFY(latex);QVERIFY(latex->isVisible());
+        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,latex->mapToScene({latex->width()/2,latex->height()/2}).toPoint());
+        QVERIFY(!source->property("latexEnabled").toBool());QVERIFY(source->hasActiveFocus());QCOMPARE(source->property("text").toString(),currency);
+        QVERIFY(!canvas->isEnabled()); // Drawing is suspended while typing; navigation must still work.
+        QVERIFY(QMetaObject::invokeMethod(source,"select",Q_ARG(int,0),Q_ARG(int,8)));
+        const auto wheel=[&](Qt::KeyboardModifiers modifiers,int angle,QPoint pixels={},bool overText=true){
+            const auto position=overText?source->mapToScene({source->width()/2,source->height()/2}):canvas->mapToScene({800,450});
+            QWheelEvent event(position,window->mapToGlobal(position.toPoint()),pixels,{0,angle},Qt::NoButton,modifiers,Qt::NoScrollPhase,false);QCoreApplication::sendEvent(window,&event);
+        };
+        const auto zoom=canvas->zoom();wheel(Qt::ControlModifier,120);QVERIFY(canvas->zoom()>zoom);
+        wheel(Qt::ControlModifier,-120,{},false);QVERIFY(std::abs(canvas->zoom()-zoom)<1e-8);
+        const auto center=canvas->viewportCenter();const auto sourcePosition=source->mapToScene({0,0});const double scale=zoom*96/25.4;
+        wheel(Qt::AltModifier,-120);QCOMPARE(canvas->zoom(),zoom);QCOMPARE(canvas->viewportCenter().y(),center.y());QVERIFY(std::abs(canvas->viewportCenter().x()-center.x()-60/scale)<1e-8);
+        QVERIFY(std::abs(source->mapToScene({0,0}).x()-sourcePosition.x()+60)<1e-8);
+        wheel(Qt::AltModifier,120,{},false);QVERIFY(QLineF(canvas->viewportCenter(),center).length()<1e-8);
+        wheel(Qt::AltModifier,0,{-20,0});QCOMPARE(canvas->viewportCenter().y(),center.y());QVERIFY(std::abs(canvas->viewportCenter().x()-center.x()-20/scale)<1e-8);
+        QCOMPARE(source->property("text").toString(),currency);QVERIFY(source->hasActiveFocus());QCOMPARE(source->property("selectionStart").toInt(),0);QCOMPARE(source->property("selectionEnd").toInt(),8);QVERIFY(controller.page()->texts.empty());
+        QTest::keyClick(window,Qt::Key_Return,Qt::ControlModifier);QTRY_COMPARE(controller.page()->texts.size(),std::size_t(1));
+        const auto& text=controller.page()->texts[0];QVERIFY(!text.latexEnabled);QVERIFY(text.math.empty());QCOMPARE(QString::fromStdString(text.source),currency);
+        QVERIFY(!controller.textValues(QString::fromStdString(text.id))["latexEnabled"].toBool());
+        controller.undo();QVERIFY(controller.page()->texts.empty());controller.redo();QVERIFY(!controller.page()->texts[0].latexEnabled);
+        QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
+    }
     void drawnInlineTextAndFormatting(){
         QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
         QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
@@ -1858,6 +1907,22 @@ private slots:
         scene.reset(canvas.updatePaintNode(scene.release(),nullptr));
         QCOMPARE(scene->firstChild()->nextSibling()->lastChild()->type(),QSGNode::TransformNodeType);
         QVERIFY(controller.shutdown());
+    }
+    void selectionClipboardAcrossPages(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        CanvasItem canvas;canvas.setWidth(800);canvas.setHeight(600);canvas.setController(&controller);
+        StrokeObject stroke;stroke.id=newId();stroke.samples={{{20,20},1},{{40,30},0.5}};controller.addStroke(stroke);
+        canvas.selectText(QString::fromStdString(stroke.id));canvas.copySelection();
+        QVERIFY(QGuiApplication::clipboard()->mimeData()->hasFormat("application/x-scalar-selection"));
+        controller.addPage();canvas.pasteSelection();QCOMPARE(controller.page()->strokes.size(),std::size_t(1));
+        QVERIFY(controller.page()->strokes[0].id!=stroke.id);QCOMPARE(controller.page()->strokes[0].samples.size(),stroke.samples.size());
+        QCOMPARE(canvas.selectedCount(),1);controller.undo();QVERIFY(controller.page()->strokes.empty());controller.redo();QCOMPARE(controller.page()->strokes.size(),std::size_t(1));
+        QImage bitmap(8,6,QImage::Format_ARGB32);bitmap.fill(Qt::red);
+        const auto path=directory.filePath(QString::fromUtf8("imagem ação sem extensão"));QVERIFY(bitmap.save(path,"PNG"));
+        controller.importImage(QUrl::fromLocalFile(path),{50,50});QTRY_COMPARE(controller.page()->images.size(),std::size_t(1));
+        canvas.selectText(QString::fromStdString(controller.page()->images[0].id));canvas.copySelection();controller.addPage();canvas.pasteSelection();
+        QCOMPARE(controller.page()->images.size(),std::size_t(1));QVERIFY(!controller.image(controller.page()->images[0].id).isNull());
+        QGuiApplication::clipboard()->clear();QVERIFY(controller.shutdown());
     }
     void webpImportWithoutQtPlugin(){
         QTemporaryDir directory;const auto path=directory.filePath("sample.webp");

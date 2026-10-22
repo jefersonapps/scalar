@@ -112,6 +112,7 @@ struct TextObject {
     std::vector<MathFragment> math;
     std::vector<TextFormat> formats;
     ObjectProperties properties{};
+    bool latexEnabled=true;
 };
 struct PdfPageObject {
     std::string assetId;

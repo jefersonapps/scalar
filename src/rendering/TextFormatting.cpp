@@ -14,11 +14,14 @@ class MathSourceHighlighter final : public QSyntaxHighlighter {
 public:
     explicit MathSourceHighlighter(QTextDocument* doc,QObject* editor):QSyntaxHighlighter(doc),editor_(editor){
         setObjectName("scalarMathSourceHighlighter");
+        if(editor&&editor->metaObject()->indexOfSignal("latexEnabledChanged()")>=0)
+            QObject::connect(editor,SIGNAL(latexEnabledChanged()),this,SLOT(rehighlight()));
         format_.setFontFamilies({QFontDatabase::systemFont(QFontDatabase::FixedFont).family()});
         format_.setFontStyleHint(QFont::Monospace);format_.setFontFixedPitch(true);format_.setFontItalic(false);
     }
 protected:
     void highlightBlock(const QString& text) override {
+        if(editor_&&editor_->property("latexEnabled").isValid()&&!editor_->property("latexEnabled").toBool()){setCurrentBlockState(0);return;}
         int delimiter=std::max(0,previousBlockState()),start=delimiter?0:-1;
         for(int i=0;i<text.size();++i){
             if(delimiter&&text[i]=='%')break;

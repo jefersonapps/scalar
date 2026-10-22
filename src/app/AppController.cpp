@@ -150,7 +150,7 @@ QString AppController::defaultSize() const{return library_->setting("defaultSize
 void AppController::setDefaultSize(const QString& v){if(v!="A4"&&v!="Carta")return;library_->setSetting("defaultSize",v);emit preferencesChanged();}
 bool AppController::defaultLandscape() const{return library_->setting("defaultLandscape",false).toBool();}
 void AppController::setDefaultLandscape(bool v){library_->setSetting("defaultLandscape",v);emit preferencesChanged();}
-QString AppController::defaultBackground() const{const auto value=library_->setting("defaultBackground","Sem grade").toString();return value=="Branco"||value=="Preto"||value=="Verde"?"Sem grade":value;}
+QString AppController::defaultBackground() const{const auto value=library_->setting("defaultBackground","Pautado").toString();return value=="Branco"||value=="Preto"||value=="Verde"?"Sem grade":value;}
 void AppController::setDefaultBackground(const QString& v){bool found=false;for(const auto& preset:gridPresets())if(preset.toMap().value("name").toString()==v)found=true;if(!found)return;library_->setSetting("defaultBackground",v);emit preferencesChanged();}
 void AppController::install(Project p,const QString& path){project_=std::move(p);currentPage_=0;path_=path;images_.clear();textMeshes_.clear();textMathColors_.clear();textSizes_.clear();histories_.clear();thumbnails_.clear();dirtyThumbnails_.clear();for(const auto& page:project_.pages)dirtyThumbnails_.insert(QString::fromStdString(page.id));pdfCache_.clear();dirty_=false;++revision_;textRasterRevision_=0;scheduleThumbnails();refreshPdf(textRasterScale_);emit pagesChanged();emit pageChanged();emit documentChanged();emit changed();}
 void AppController::newProject(const QString& name,const QString& preset,double width,double height,bool landscape,const QString& background,const QString& pageColor) {
@@ -247,8 +247,12 @@ void AppController::importImage(const QUrl& url,QPointF center){
 }
 void AppController::importImages(const QVariantList& urls,QPointF center){
     if(!active()||loading_||imageImportPending_||urls.isEmpty())return;QStringList paths;
-    for(const auto& value:urls){const auto url=value.toUrl();if(url.isLocalFile())paths.append(url.toLocalFile());}
-    if(paths.isEmpty())return;if(paths.size()>32){status_="Importe até 32 imagens por vez.";emit changed();return;}
+    for(const auto& value:urls){
+        const auto url=value.toUrl();
+        if(url.isLocalFile())paths.append(url.toLocalFile());
+        else if(QFileInfo(value.toString()).isAbsolute())paths.append(value.toString());
+    }
+    if(paths.isEmpty()){status_="Nenhum arquivo local de imagem foi encontrado.";emit changed();return;}if(paths.size()>32){status_="Importe até 32 imagens por vez.";emit changed();return;}
     importProjectId_=QString::fromStdString(project_.id);importPageId_=QString::fromStdString(page()->id);const auto size=page()->size;
     imageImportPending_=true;imageWatcher_.setFuture(QtConcurrent::run([paths,center,size]{std::vector<ImportedImage> result;qint64 memory=0;int offset=0;
         for(const auto& path:paths){auto image=importImageFile(path,{center.x()+offset,center.y()+offset},size);memory+=image.image.sizeInBytes();
@@ -344,8 +348,14 @@ void AppController::saveBackgroundPreset(const QString& name,const QVariantMap& 
     if(library_->saveBackgroundPreset(label,backgroundValues(color,style)))emit preferencesChanged();
 }
 
-QStringList AppController::fontFamilies() const {return QFontDatabase::families();}
-QString AppController::defaultTextFont() const {return QStringLiteral("Lobster Two");}
+QStringList AppController::fontFamilies() const {
+    auto families=QFontDatabase::families();
+    const auto primary=defaultTextFont();
+    families.removeAll(primary);families.removeAll(QStringLiteral("Lobster Two"));
+    families.prepend(QStringLiteral("Lobster Two"));families.prepend(primary);
+    return families;
+}
+QString AppController::defaultTextFont() const {return latexTextFont();}
 QFont AppController::textFont(const QString& family,int pixelSize,bool bold,bool italic) const {return documentFont(family,pixelSize,bold,italic);}
 QVariantMap AppController::textEmphasis(QObject* document,int start,int end) const {return scalar::textEmphasis(document,start,end);}
 void AppController::formatTextSelection(QObject* document,int start,int end,bool bold,bool enabled){scalar::formatTextSelection(document,start,end,bold,enabled);}
@@ -357,7 +367,7 @@ QVariantMap AppController::textValues(const QString& id) const {
         const auto c=t->style.rgba;const auto origin=t->corners[0],edge=t->corners[1]-origin;
         QVariantList formats;for(const auto& f:t->formats){QVariantMap span{{"start",int(f.start)},{"length",int(f.length)},{"bold",f.bold},{"italic",f.italic}};
             if(f.rgba){const auto c=*f.rgba;span.insert("color",QColor((c>>24)&255,(c>>16)&255,(c>>8)&255,c&255).name(QColor::HexArgb));}formats.append(span);}
-        return {{"source",QString::fromStdString(t->source)},{"fontFamily",QString::fromStdString(t->fontFamily)},{"fontSizePt",t->fontSizePt},{"bold",t->bold},{"italic",t->italic},{"alignment",t->alignment},{"color",QColor((c>>24)&255,(c>>16)&255,(c>>8)&255,c&255).name()},
+        return {{"latexEnabled",t->latexEnabled},{"source",QString::fromStdString(t->source)},{"fontFamily",QString::fromStdString(t->fontFamily)},{"fontSizePt",t->fontSizePt},{"bold",t->bold},{"italic",t->italic},{"alignment",t->alignment},{"color",QColor((c>>24)&255,(c>>16)&255,(c>>8)&255,c&255).name()},
             {"formats",formats},{"x",origin.x},{"y",origin.y},{"width",length(edge)},{"height",length(t->corners[3]-origin)},{"rotation",std::atan2(edge.y,edge.x)*180/std::numbers::pi},{"boxWidthMm",t->boxWidthMm},{"boxHeightMm",t->boxHeightMm}};
     }return {};
 }
@@ -368,6 +378,7 @@ void AppController::upsertText(const QString& id,QPointF position,const QVariant
         textBefore_=original;t=std::get<TextObject>(*original);++t.properties.revision;
     }else{t.id=newId();t.properties.zIndex=nextZIndex();t.corners={{position.x(),position.y()}};}
     const auto source=v.value("source").toString();const QColor c(v.value("color","#263345").toString());
+    t.latexEnabled=v.value("latexEnabled",t.latexEnabled).toBool();
     t.source=source.toStdString();t.fontFamily=v.value("fontFamily",defaultTextFont()).toString().toStdString();t.fontSizePt=v.value("fontSizePt",16).toDouble();t.bold=v.value("bold",false).toBool();t.italic=v.value("italic",false).toBool();t.alignment=v.value("alignment",0).toInt();
     t.boxWidthMm=v.value("boxWidthMm",t.boxWidthMm).toDouble();t.boxHeightMm=v.value("boxHeightMm",t.boxHeightMm).toDouble();
     if(t.fontFamily.empty())t.fontFamily=defaultTextFont().toStdString();

@@ -99,7 +99,7 @@ Item {
         onWindowPointerPressed: position => root.rememberPanelTrigger(position)
         onWindowPointerReleased: Qt.callLater(function(){root.pressedTogglePanel=null})
         controller: App
-        wheelZoomEnabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && !App.loading
+        wheelZoomEnabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.formattingOpen && !App.loading
         enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && !App.loading && !fileOptions.visible && !pagesPanel.visible && !geometryOptions.visible && !penOptions.visible && !penOptions.colorDialogOpen && !shapeOptions.visible && !eraserOptions.visible && !backgroundOptions.visible && !backgroundOptions.colorDialogOpen
         toolbarExclusion: Qt.rect(toolbar.x, toolbar.y-y, toolbar.width, toolbar.height)
         optionsExclusion: properties.visible ? Qt.rect(properties.x,properties.y-y,properties.width,properties.height) : Qt.rect(0,0,0,0)
@@ -167,6 +167,10 @@ Item {
     }
     DropArea {
         anchors.fill: board; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active
+        onEntered: drag => {
+            if(drag.hasUrls) drag.acceptProposedAction()
+            else drag.accepted = false
+        }
         onDropped: drop => {
             if(drop.hasUrls && drop.urls.length > 0) {
                 if(drop.urls[0].toString().toLowerCase().endsWith(".pdf")) App.inspectPdfFile(drop.urls[0])
@@ -331,12 +335,13 @@ Item {
         text: board.drawing ? board.interactionHint : App.status
         color: Theme.secondary; font.pixelSize: Theme.caption; elide: Text.ElideRight
     }
-    Text { anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.margins: Theme.lg; visible: root.width > Theme.hintBreakpoint; text: "Rolagem para mover · Ctrl + rolagem para zoom"; color: Theme.secondary; font.pixelSize: Theme.caption }
+    Text { anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.margins: Theme.lg; visible: root.width > Theme.hintBreakpoint; text: "Rolagem para mover · Alt + rolagem na horizontal · Ctrl + rolagem para zoom"; color: Theme.secondary; font.pixelSize: Theme.caption }
     Shortcut { sequence: "E"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.tool = "eraser" }
     readonly property bool eraserSizeShortcutsEnabled: board.tool === "eraser" && (board.enabled || eraserOptions.visible) && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && !projectTitle.editing && !zoomControl.editing
     Shortcut { sequences: ["+", "]"]; enabled: root.eraserSizeShortcutsEnabled; autoRepeat: true; onActivated: board.adjustEraserSize(true) }
     Shortcut { sequences: ["-", "["]; enabled: root.eraserSizeShortcutsEnabled; autoRepeat: true; onActivated: board.adjustEraserSize(false) }
-    Shortcut { sequence: "Ctrl+V"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.pasteImage() }
+    Shortcut { sequence: "Ctrl+C"; enabled: board.enabled && !projectTitle.editing && !zoomControl.editing && board.selectedCount > 0; onActivated: board.copySelection() }
+    Shortcut { sequence: "Ctrl+V"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && !projectTitle.editing && !zoomControl.editing; onActivated: board.pasteSelection() }
     Shortcut { sequence: "V"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.tool = "select" }
     Shortcut { sequence: "Delete"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && (board.selectedCount > 0 || board.selectedGuide !== ""); onActivated: board.deleteSelection() }
     Shortcut { sequence: "Ctrl+D"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && board.selectedCount > 0; onActivated: board.duplicateSelection() }

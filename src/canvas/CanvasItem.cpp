@@ -432,8 +432,14 @@ bool CanvasItem::eventFilter(QObject* object,QEvent* e){
         if(e->type()==QEvent::TouchEnd||e->type()==QEvent::TouchCancel)emit windowPointerReleased();
         if(e->type()==QEvent::Wheel&&isVisible()&&wheelZoomEnabled_&&controller_&&controller_->active()&&!drawing()&&state_!=State::Erasing){
             auto* wheel=static_cast<QWheelEvent*>(e);const auto local=mapFromScene(wheel->position());
-            if(wheel->modifiers().testFlag(Qt::ControlModifier)&&QRectF(0,0,width(),height()).contains(local)){
-                zoomWheelAt(local,*wheel);wheel->accept();return true;
+            if(QRectF(0,0,width(),height()).contains(local)){
+                if(wheel->modifiers().testFlag(Qt::ControlModifier)){
+                    zoomWheelAt(local,*wheel);wheel->accept();return true;
+                }
+                const auto delta=wheel->pixelDelta().isNull()?wheel->angleDelta():wheel->pixelDelta();
+                if(wheel->modifiers().testFlag(Qt::AltModifier)||(delta.y()==0&&delta.x()!=0)){
+                    panWheel(*wheel);wheel->accept();return true;
+                }
             }
         }
         if(e->type()==QEvent::TabletPress||e->type()==QEvent::TabletMove||e->type()==QEvent::TabletRelease){auto* t=static_cast<QTabletEvent*>(e);return tablet(t,mapFromScene(t->position()));}
@@ -505,14 +511,21 @@ void CanvasItem::zoomWheelAt(QPointF point,const QWheelEvent& event){
     const double steps=event.angleDelta().y()?event.angleDelta().y()/120.:event.pixelDelta().y()/40.;
     view_.zoomAt({point.x(),point.y()},std::pow(1.05,steps));viewUpdated();
 }
+void CanvasItem::panWheel(const QWheelEvent& event){
+    // Positive wheel deltas move the content in the direction of the gesture.
+    const auto delta=event.pixelDelta().isNull()?QPointF(event.angleDelta())/120.*60.:QPointF(event.pixelDelta());
+    const bool horizontal=event.modifiers().testFlag(Qt::AltModifier)||(delta.y()==0&&delta.x()!=0);
+    const double pixels=horizontal?(delta.y()!=0?delta.y():delta.x()):delta.y();
+    if(pixels==0)return;
+    if(horizontal)view_.pan.x+=pixels;else view_.pan.y+=pixels;
+    viewUpdated();
+}
 void CanvasItem::wheelEvent(QWheelEvent* e){
     if(!drawing()&&state_!=State::Erasing){
         if(e->modifiers().testFlag(Qt::ControlModifier)){
             if(wheelZoomEnabled_)zoomWheelAt(e->position(),*e);
         }else {
-            // Positive wheel deltas move content down, as in a document viewer.
-            const double pixels=!e->pixelDelta().isNull()?double(e->pixelDelta().y()):e->angleDelta().y()/120.*60.;
-            if(pixels!=0){view_.pan.y+=pixels;viewUpdated();}
+            panWheel(*e);
         }
     }e->accept();
 }
