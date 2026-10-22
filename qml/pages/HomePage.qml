@@ -114,7 +114,8 @@ Item {
                 model: [{icon:"pen",title:"Começar agora",detail:"Um quadro com seu padrão",action:"quick"},{icon:"folder",title:"Abrir projeto",detail:"Retome um arquivo .board",action:"open"},{icon:"page",title:"Importar PDF",detail:"Anote sobre suas páginas",action:"pdf"}]
                 AbstractButton {
                     required property var modelData
-                    Layout.fillWidth: true; Layout.preferredHeight: root.height<Theme.windowHeight+Theme.section*2 ? Theme.touch+Theme.lg : Theme.homeActionHeight
+                    implicitHeight: Math.max(root.height<Theme.windowHeight+Theme.section*2 ? Theme.touch+Theme.lg : Theme.homeActionHeight, implicitContentHeight + topPadding + bottomPadding)
+                    Layout.fillWidth: true; Layout.preferredHeight: implicitHeight; Layout.minimumHeight: implicitHeight
                     hoverEnabled: true; enabled: !App.busy
                     Accessible.name: modelData.title
                     background: Rectangle { radius: Theme.radiusLarge; color: parent.hovered ? Theme.hover : Theme.surface; border.color: Theme.border }

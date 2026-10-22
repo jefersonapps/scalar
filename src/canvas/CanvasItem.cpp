@@ -490,10 +490,10 @@ void CanvasItem::mouseDoubleClickEvent(QMouseEvent* e){
 void CanvasItem::mouseReleaseEvent(QMouseEvent* e){if(e->button()==Qt::RightButton){e->accept();return;}angleSnap_=e->modifiers().testFlag(Qt::ControlModifier);eraserCtrl_=angleSnap_;if(tool_=="eraser")shiftHeld_=e->modifiers().testFlag(Qt::ShiftModifier);if(tabletActive_){e->accept();return;}eraserCursorVisible_=false;emit selectionChanged();endPointer(InputManager::mouse(*e,world(e->position())));state_=State::Idle;updateCursor();e->accept();}
 void CanvasItem::hoverMoveEvent(QHoverEvent* e){
     if(tool_=="select"&&state_==State::Idle){
-        bool resizing=false;for(const auto& value:selectionHandles()){const auto handle=value.toMap();
-            if(QLineF(e->position(),QPointF(handle["x"].toDouble(),handle["y"].toDouble())).length()<12){resizing=handle["type"].toString()=="resize";break;}}
+        bool resizing=false;int corner=0;for(const auto& value:selectionHandles()){const auto handle=value.toMap();
+            if(QLineF(e->position(),QPointF(handle["x"].toDouble(),handle["y"].toDouble())).length()<12){resizing=handle["type"].toString()=="resize";corner=handle["index"].toInt();break;}}
         const auto local=rotatePoint(world(e->position())-selectionFrame_.origin,{},-selectionFrame_.angle);
-        if(resizing)setCursor(QCursor(selectionResizeCursor(selectionRotation())));
+        if(resizing)setCursor(QCursor(selectionResizeCursor(selectionRotation()+(corner%2?90:0))));
         else if(selectedCount()&&Bounds{0,0,selectionFrame_.width,selectionFrame_.height}.contains(local))setCursor(QCursor(Qt::SizeAllCursor));
         else updateCursor();
     }
@@ -549,7 +549,7 @@ void CanvasItem::touchEvent(QTouchEvent* e){
 void CanvasItem::updateCursor(){
     const auto shape=state_==State::Panning||state_==State::TouchGesture?Qt::ClosedHandCursor:
         tool_=="hand"||space_?Qt::OpenHandCursor:
-        state_==State::Resizing?selectionResizeCursor(editFrame_.angle*180/std::numbers::pi):
+        state_==State::Resizing?selectionResizeCursor(editFrame_.angle*180/std::numbers::pi+(resizeCorner_%2?90:0)):
         state_==State::Moving?Qt::SizeAllCursor:
         tool_=="pen"||tool_=="marker"?Qt::CrossCursor:Qt::ArrowCursor;
     setCursor(QCursor(shape));

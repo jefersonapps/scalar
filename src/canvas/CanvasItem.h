@@ -270,6 +270,7 @@ private:
     QSizeF editTextSize_;
     std::optional<TextVisual> textResizeVisual_;
     int handleIndex_=-1;
+    int resizeCorner_=0;
     bool marqueeAdditive_=false;
     double eraserRadius_=3;
     Point eraserWorldPosition_;

@@ -164,12 +164,19 @@ QSGNode* rasterShapeNode(const Object& shape,QQuickWindow* window,SceneRoot::Ras
     }
     return root;
 }
+struct ImageNode : QSGTransformNode {
+    qint64 bitmapKey=0;
+    void setCorners(const std::vector<Point>& corners){
+        if(corners.size()!=4)return;
+        const auto origin=corners[0],edge=corners[1]-origin;
+        QMatrix4x4 matrix;matrix.translate(float(origin.x),float(origin.y));matrix.rotate(float(std::atan2(edge.y,edge.x)*180/std::numbers::pi),0,0,1);setMatrix(matrix);
+        if(auto* texture=static_cast<QSGSimpleTextureNode*>(firstChild()))texture->setRect(0,0,length(edge),length(corners[3]-origin));
+    }
+};
 template<class Object> QSGNode* imageNode(const Object& image,QQuickWindow* window,const QImage& bitmap){
-    auto* root=new QSGTransformNode;if(image.corners.size()!=4||!window||bitmap.isNull())return root;
-    const auto origin=image.corners[0],edge=image.corners[1]-origin;
-    QMatrix4x4 matrix;matrix.translate(float(origin.x),float(origin.y));matrix.rotate(float(std::atan2(edge.y,edge.x)*180/std::numbers::pi),0,0,1);root->setMatrix(matrix);
+    auto* root=new ImageNode;if(image.corners.size()!=4||!window||bitmap.isNull())return root;
     auto* node=new QSGSimpleTextureNode;auto* texture=window->createTextureFromImage(bitmap);if(!texture)return root;
-    node->setTexture(texture);node->setOwnsTexture(true);node->setFiltering(QSGTexture::Linear);node->setRect(0,0,length(edge),length(image.corners[3]-origin));root->appendChildNode(node);return root;
+    node->setTexture(texture);node->setOwnsTexture(true);node->setFiltering(QSGTexture::Linear);root->appendChildNode(node);root->setCorners(image.corners);root->bitmapKey=bitmap.cacheKey();return root;
 }
 
 
@@ -267,7 +274,17 @@ QSGNode* CanvasItem::updatePaintNode(QSGNode* old,UpdatePaintNodeData*){
                     rasterScale=it->second.rasterScale;rasterBounds=it->second.rasterBounds;refinementPending=true;
                 }
             }
-            if(it!=root->strokes.end()&&(it->second.revision!=props.revision||it->second.kind!=object.index()||it->second.editing||editing||(raster&&(it->second.rasterScale!=rasterScale||it->second.rasterBounds!=rasterBounds)))){root->clip->removeChildNode(it->second.node);delete it->second.node;root->strokes.erase(it);it=root->strokes.end();}
+            bool reuseImage=false,imageTextureChanged=false;
+            if(!raster&&it!=root->strokes.end()&&it->second.kind==object.index())if(const auto* image=std::get_if<const ImageObject*>(&object)){
+                auto* node=dynamic_cast<ImageNode*>(it->second.node);
+                imageTextureChanged=node&&node->bitmapKey!=controller_->image(id).cacheKey();
+                if(node&&node->firstChild()&&!imageTextureChanged){
+                    // Moving, resizing and rotating preserve the bitmap. Keep its
+                    // texture resident instead of uploading it on every event.
+                    node->setCorners((*image)->corners);it->second.revision=props.revision;it->second.editing=editing;reuseImage=true;
+                }
+            }
+            if(!reuseImage&&it!=root->strokes.end()&&(imageTextureChanged||it->second.revision!=props.revision||it->second.kind!=object.index()||it->second.editing||editing||(raster&&(it->second.rasterScale!=rasterScale||it->second.rasterBounds!=rasterBounds)))){root->clip->removeChildNode(it->second.node);delete it->second.node;root->strokes.erase(it);it=root->strokes.end();}
             if(it==root->strokes.end()){auto* node=std::visit([&](const auto* s)->QSGNode*{
                 using T=std::decay_t<decltype(*s)>;
                 if constexpr(std::is_same_v<T,TextObject>){

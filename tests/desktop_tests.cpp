@@ -3,6 +3,7 @@
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQmlComponent>
+#include <QQmlExpression>
 #include <QQuickTextDocument>
 #include <QTextDocument>
 #include <QTextBlock>
@@ -31,6 +32,14 @@
 #include <QSGTransformNode>
 #include <QSGGeometryNode>
 #include <QSGSimpleTextureNode>
+#include <QSGTexture>
+#include <QtConcurrent>
+#include <QSemaphore>
+#include <QThreadPool>
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#include <dwmapi.h>
+#endif
 #include <memory>
 #include <array>
 #include <atomic>
@@ -46,6 +55,19 @@
 #include "rendering/StrokeMesh.h"
 #include "rendering/TextFormatting.h"
 using namespace scalar;
+class SaveWorkerBlock {
+    QSemaphore entered_,release_;
+    QFuture<void> worker_;
+    int previousThreads_=QThreadPool::globalInstance()->maxThreadCount();
+    bool released_=false;
+public:
+    SaveWorkerBlock(){
+        QThreadPool::globalInstance()->setMaxThreadCount(1);
+        worker_=QtConcurrent::run([this]{entered_.release();release_.tryAcquire(1,10000);});entered_.acquire();
+    }
+    void unblock(){if(released_)return;released_=true;release_.release();worker_.waitForFinished();QThreadPool::globalInstance()->setMaxThreadCount(previousThreads_);}
+    ~SaveWorkerBlock(){unblock();}
+};
 QQuickItem* findVisualItem(QQuickItem* parent,const QString& name){
     if(parent->objectName()==name)return parent;
     for(auto* child:parent->childItems())if(auto* found=findVisualItem(child,name))return found;
@@ -65,6 +87,9 @@ public:
 class ZoomInspectableCanvas : public CanvasItem {
 public:
     using CanvasItem::CanvasItem;
+    using CanvasItem::mousePressEvent;
+    using CanvasItem::mouseMoveEvent;
+    using CanvasItem::mouseReleaseEvent;
     double tileWidth=0;
     int renderedFrames=0;
     std::vector<std::pair<QSGTexture*,QRectF>> textures;
@@ -1310,6 +1335,129 @@ private slots:
         QVERIFY(click("homeFullScreenButton"));QTRY_COMPARE(window->visibility(),QWindow::FullScreen);QTest::keyClick(window,Qt::Key_F11);QTRY_COMPARE(window->visibility(),QWindow::Maximized);
         window->showNormal();window->resize(520,640);QTest::qWait(100);QVERIFY(homeButton->mapToScene({homeButton->width(),0}).x()<=window->width());QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
     }
+    void nativeTitleBarFollowsApplicationTheme(){
+#ifdef Q_OS_WIN
+        if(QGuiApplication::platformName()!=QStringLiteral("windows"))QSKIP("Requires the native Windows platform.");
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.setTheme("Dark");
+        QQuickWindow window;window.resize(640,480);window.show();QVERIFY(QTest::qWaitForWindowExposed(&window));
+        const auto titleBarMode=[](QWindow& target){BOOL dark=FALSE;const auto result=DwmGetWindowAttribute(reinterpret_cast<HWND>(target.winId()),DWMWA_USE_IMMERSIVE_DARK_MODE,&dark,sizeof(dark));return SUCCEEDED(result)?int(dark):-1;};
+        QCOMPARE(titleBarMode(window),1);
+        controller.setTheme("Light");QCOMPARE(titleBarMode(window),0);
+        controller.setTheme("Dark");QCOMPARE(titleBarMode(window),1);
+        controller.setTheme("System");QCOMPARE(titleBarMode(window),int(controller.systemDark()));
+        controller.setTheme("Dark");QQuickWindow second;second.resize(320,240);second.show();QVERIFY(QTest::qWaitForWindowExposed(&second));QCOMPARE(titleBarMode(second),1);
+        second.hide();window.hide();QVERIFY(controller.shutdown());
+#else
+        QSKIP("Windows-only title bar integration.");
+#endif
+    }
+    void leavingShowsSavingAndKeepsUiResponsive_data(){QTest::addColumn<bool>("closing");QTest::newRow("back-to-library")<<false;QTest::newRow("close-window")<<true;}
+    void leavingShowsSavingAndKeepsUiResponsive(){
+        QFETCH(bool,closing);QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();QTRY_VERIFY(!controller.busy());
+        const auto path=controller.recentProjects()[0].toMap()["path"].toString();
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());
+        auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto* dialog=window->findChild<QObject*>("savingBeforeLeavingDialog");QVERIFY(dialog);QSignalSpy ready(&controller,&AppController::shutdownReady);
+        SaveWorkerBlock blocked;
+        StrokeObject first{newId(),{},{{{20,20},1},{{50,50},1}}};controller.addStroke(first);controller.save();
+        auto second=first;second.id=newId();second.samples={{{30,40},1},{{60,70},1}};controller.addStroke(second);
+        int ticks=0;QTimer heartbeat;heartbeat.setInterval(5);connect(&heartbeat,&QTimer::timeout,&controller,[&]{++ticks;});heartbeat.start();
+        if(closing)QVERIFY(!window->close());
+        else {auto* back=findVisualItem(window->contentItem(),"editorBackButton");QVERIFY(back);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,back->mapToScene({back->width()/2,back->height()/2}).toPoint());}
+        QVERIFY(controller.leaving());QVERIFY(controller.active());QVERIFY(window->isVisible());QTRY_VERIFY(dialog->property("visible").toBool());QTest::qWait(70);QVERIFY(ticks>=3);QCOMPARE(ready.count(),0);
+        auto* spinner=window->findChild<QObject*>("savingBeforeLeavingSpinner");QVERIFY(spinner);QVERIFY(spinner->property("running").toBool());
+        // Repeating the request while a save is in flight must not start another exit.
+        if(closing)window->close();else controller.requestHome();
+        blocked.unblock();
+        if(closing){QTRY_COMPARE(ready.count(),1);QTRY_VERIFY(!window->isVisible());}
+        else {QTRY_VERIFY(!controller.active());QVERIFY(window->isVisible());QCOMPARE(ready.count(),0);QVERIFY(controller.shutdown());}
+        QVERIFY(!controller.leaving());const auto saved=ProjectStore::load(path);QVERIFY(saved);QCOMPARE(saved.project.pages[0].strokes.size(),std::size_t(2));QVERIFY(warnings.isEmpty());
+    }
+    void failedLeavingSaveKeepsProjectOpenAndCanRetry(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();QTRY_VERIFY(!controller.busy());
+        const auto path=controller.recentProjects()[0].toMap()["path"].toString();QVERIFY(QFile::remove(path));QVERIFY(QDir().mkdir(path));
+        QQmlApplicationEngine engine;engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));
+        StrokeObject stroke{newId(),{},{{{20,20},1},{{50,50},1}}};controller.addStroke(stroke);controller.requestHome();
+        QTRY_VERIFY(!controller.leaveError().isEmpty());QVERIFY(controller.active());QVERIFY(controller.dirty());QVERIFY(window->isVisible());
+        auto* dialog=window->findChild<QObject*>("savingBeforeLeavingDialog");QVERIFY(dialog->property("visible").toBool());
+        auto* spinner=window->findChild<QObject*>("savingBeforeLeavingSpinner");QVERIFY(!spinner->property("running").toBool());
+        controller.cancelLeaving();QVERIFY(!controller.leaving());QVERIFY(controller.active());QVERIFY(controller.leaveError().isEmpty());
+        controller.requestHome();QTRY_VERIFY(!controller.leaveError().isEmpty());QVERIFY(QDir().rmdir(path));controller.retryLeaving();
+        QTRY_VERIFY(!controller.active());const auto saved=ProjectStore::load(path);QVERIFY(saved);QCOMPARE(saved.project.pages[0].strokes.size(),std::size_t(1));QVERIFY(controller.shutdown());
+    }
+    void imageTransformsReuseTextureAndResizeFromEveryCorner(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();QTRY_VERIFY(!controller.busy());
+        QImage bitmap(1600,1000,QImage::Format_ARGB32_Premultiplied);bitmap.fill(Qt::green);
+        auto imported=encodeImage(bitmap,{105,148.5},controller.page()->size);QVERIFY(imported.error.isEmpty());
+        auto image=std::get<ImageObject>(transformed(CanvasObject(imported.object),{105,148.5},{},1,1,.3));
+        controller.cacheImage(image.id,imported.image);controller.changeObjects({{{},CanvasObject(image)}},CommandKind::AddObject);
+        QQuickWindow window;window.resize(800,700);auto* canvas=new ZoomInspectableCanvas(window.contentItem());canvas->setWidth(800);canvas->setHeight(700);canvas->setController(&controller);canvas->fitPage();canvas->setTool("select");
+        window.show();QVERIFY(QTest::qWaitForWindowExposed(&window));QVERIFY(!window.grabWindow().isNull());QCOMPARE(canvas->textures.size(),std::size_t(1));
+        QSignalSpy destroyed(canvas->textures.front().first,&QObject::destroyed);
+        const auto send=[&](QEvent::Type type,QPointF position){QMouseEvent event(type,position,position,type==QEvent::MouseMove?Qt::NoButton:Qt::LeftButton,type==QEvent::MouseButtonRelease?Qt::NoButton:Qt::LeftButton,Qt::NoModifier);if(type==QEvent::MouseButtonPress)canvas->mousePressEvent(&event);else if(type==QEvent::MouseMove)canvas->mouseMoveEvent(&event);else canvas->mouseReleaseEvent(&event);};
+        const auto start=canvas->screenPoint({105,148.5}).toPoint();send(QEvent::MouseButtonPress,start);
+        for(int step=1;step<=20;++step){send(QEvent::MouseMove,start+QPoint(step,step/2));QVERIFY(!window.grabWindow().isNull());QCOMPARE(destroyed.count(),0);}
+        send(QEvent::MouseButtonRelease,start+QPoint(20,10));QCOMPARE(canvas->selectedCount(),1);
+        QVERIFY(length(controller.page()->images[0].corners[0]-image.corners[0])>1);
+        controller.undo();QVERIFY(!window.grabWindow().isNull());QCOMPARE(controller.page()->images[0].corners,image.corners);QCOMPARE(destroyed.count(),0);
+        for(int corner=0;corner<4;++corner){
+            const auto before=controller.page()->images[0];QVariantMap handle;int resizeCount=0;
+            for(const auto& value:canvas->selectionHandles()){const auto h=value.toMap();if(h["type"]=="resize"){++resizeCount;if(h["index"].toInt()==corner)handle=h;}}
+            QCOMPARE(resizeCount,4);QVERIFY(!handle.isEmpty());
+            const auto fixed=before.corners[corner],moving=before.corners[(corner+2)%4];
+            const auto targetWorld=fixed+(moving-fixed)*1.2;
+            const auto target=canvas->screenPoint({targetWorld.x,targetWorld.y}).toPoint();
+            send(QEvent::MouseButtonPress,{handle["x"].toDouble(),handle["y"].toDouble()});
+            send(QEvent::MouseMove,target);QVERIFY(!window.grabWindow().isNull());QCOMPARE(destroyed.count(),0);
+            send(QEvent::MouseButtonRelease,target);
+            const auto resized=controller.page()->images[0];QVERIFY(length(resized.corners[corner]-fixed)<1e-6);
+            QVERIFY(length(resized.corners[1]-resized.corners[0])>length(before.corners[1]-before.corners[0])*1.15);
+            controller.undo();QCOMPARE(controller.page()->images[0].corners,before.corners);controller.redo();QCOMPARE(controller.page()->images[0].corners,resized.corners);controller.undo();
+            QVERIFY(!window.grabWindow().isNull());QCOMPARE(destroyed.count(),0);
+        }
+        bitmap.fill(Qt::red);controller.cacheImage(image.id,bitmap);canvas->update();QVERIFY(!window.grabWindow().isNull());QCOMPARE(destroyed.count(),1);
+        window.hide();delete canvas;QVERIFY(controller.shutdown());
+    }
+    void textResizeFromEveryCornerKeepsOppositeCornerFixed(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        TextObject text;text.id=newId();text.source="A sentence long enough to reflow when resizing the text box from any corner.";text.boxWidthMm=80;text.boxHeightMm=25;text.corners={{50,80},{130,80},{130,105},{50,105}};
+        const auto prepared=prepareText(text);QVERIFY(prepared.error.isEmpty());
+        text=std::get<TextObject>(transformed(CanvasObject(prepared.object),{50,80},{},1,1,.4));
+        controller.cacheTextVisual(text.id,{prepared.image,prepared.geometry,prepared.error,prepared.naturalSize});controller.changeObjects({{{},CanvasObject(text)}},CommandKind::AddObject);
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(800);canvas.setController(&controller);canvas.restorePageView();canvas.setTool("select");canvas.selectText(QString::fromStdString(text.id));
+        const auto send=[&](QEvent::Type type,QPointF position){QMouseEvent event(type,position,position,type==QEvent::MouseMove?Qt::NoButton:Qt::LeftButton,type==QEvent::MouseButtonRelease?Qt::NoButton:Qt::LeftButton,Qt::NoModifier);if(type==QEvent::MouseButtonPress)canvas.mousePressEvent(&event);else if(type==QEvent::MouseMove)canvas.mouseMoveEvent(&event);else canvas.mouseReleaseEvent(&event);};
+        for(int corner=0;corner<4;++corner){
+            QVariantMap handle;for(const auto& value:canvas.selectionHandles()){const auto h=value.toMap();if(h["type"]=="resize"&&h["index"].toInt()==corner)handle=h;}QVERIFY(!handle.isEmpty());
+            const auto fixed=text.corners[corner],moving=text.corners[(corner+2)%4];const auto worldTarget=fixed+(moving-fixed)*.7;
+            const auto target=canvas.screenPoint({worldTarget.x,worldTarget.y});
+            send(QEvent::MouseButtonPress,{handle["x"].toDouble(),handle["y"].toDouble()});send(QEvent::MouseMove,target);send(QEvent::MouseButtonRelease,target);
+            const auto resized=controller.page()->texts[0];QVERIFY(length(resized.corners[corner]-fixed)<1e-6);QVERIFY(resized.boxWidthMm<text.boxWidthMm*.75);QCOMPARE(resized.fontSizePt,text.fontSizePt);QCOMPARE(resized.source,text.source);
+            controller.undo();QCOMPARE(controller.page()->texts[0].corners,text.corners);controller.redo();QCOMPARE(controller.page()->texts[0].corners,resized.corners);controller.undo();
+        }
+        QVERIFY(controller.shutdown());
+    }
+    void imageQmlSelectionAndDrop(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.filePath("data"));controller.newDefault();
+        const auto path=directory.filePath(QString::fromUtf8("imagem com espaço #1.png"));
+        QImage image(64,48,QImage::Format_RGB32);image.fill(Qt::blue);QVERIFY(image.save(path));
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);
+        engine.rootContext()->setContextProperty("App",&controller);
+        engine.rootContext()->setContextProperty("testImageUrl",QUrl::fromLocalFile(path));
+        engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());
+        auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));
+        // FileDialog.selectedFiles and DropArea.urls expose lists of QML URL values.
+        QQmlExpression selection(qmlContext(window),window,"var source = Qt.createQmlObject('import QtQml; QtObject { property list<url> files: [testImageUrl] }', window); pageLoader.item.insertImages(source.files)");
+        selection.evaluate();QVERIFY2(!selection.hasError(),qPrintable(selection.error().toString()));
+        QTRY_COMPARE(controller.page()->images.size(),std::size_t(1));
+        auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);
+        const auto position=canvas->mapToScene({canvas->width()/2,canvas->height()/2}).toPoint();
+        QMimeData mime;mime.setUrls({QUrl::fromLocalFile(path)});
+        QDragEnterEvent enter(position,Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QCoreApplication::sendEvent(window,&enter);QVERIFY(enter.isAccepted());
+        QDropEvent drop(position,Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QCoreApplication::sendEvent(window,&drop);QVERIFY(drop.isAccepted());
+        QTRY_COMPARE(controller.page()->images.size(),std::size_t(2));
+        controller.undo();QCOMPARE(controller.page()->images.size(),std::size_t(1));controller.redo();QCOMPARE(controller.page()->images.size(),std::size_t(2));
+        QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
+    }
     void multipleImagesOnSelectedPage(){
         QTemporaryDir directory;AppController controller(nullptr,directory.filePath("data"));controller.newDefault();controller.addPage();
         QImage image(64,48,QImage::Format_RGB32);image.fill(QColor("#397ce0"));QVariantList urls;
@@ -2071,7 +2219,7 @@ private slots:
         QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,shapeStart+QPoint(25,25));QTest::mouseMove(window,shapeStart+QPoint(45,35));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,shapeStart+QPoint(45,35));QVERIFY(length(controller.page()->shapes[0].center-center)>1);
         controller.undo();QVERIFY(length(controller.page()->shapes[0].center-center)<1e-8);
         const auto resizeHandles=canvas->selectionHandles();QVariantMap resize;
-        for(const auto& h:resizeHandles)if(h.toMap()["type"].toString()=="resize")resize=h.toMap();
+        for(const auto& h:resizeHandles)if(h.toMap()["type"].toString()=="resize"&&h.toMap()["index"].toInt()==0)resize=h.toMap();
         QVERIFY(!resize.isEmpty());const auto radius=controller.page()->shapes[0].radiusX;
         const auto resizePoint=screen({resize["x"].toDouble(),resize["y"].toDouble()});
         QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,resizePoint);QTest::mouseMove(window,resizePoint+QPoint(25,25));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,resizePoint+QPoint(25,25));QVERIFY(controller.page()->shapes[0].radiusX>radius);controller.undo();

@@ -10,6 +10,7 @@ ApplicationWindow {
     id: window
     property string homeFolder: ""
     property bool wasMaximized: false
+    property bool shutdownApproved: false
     function toggleFullScreen() {
         if(visibility===Window.FullScreen){if(wasMaximized)showMaximized();else showNormal()}
         else {wasMaximized=visibility===Window.Maximized;showFullScreen()}
@@ -20,12 +21,19 @@ ApplicationWindow {
     title: App.active ? App.projectName + " — Scalar" : "Scalar"
     color: Theme.background
     onClosing: close => {
-        if(App.active && pageLoader.item && !pageLoader.item.prepareToClose())close.accepted=false
-        else close.accepted=App.shutdown()
+        close.accepted=window.shutdownApproved
+        if(window.shutdownApproved || App.leaving)return
+        if(App.active && pageLoader.item && !pageLoader.item.prepareToClose())return
+        App.requestShutdown()
+    }
+    Connections {
+        target: App
+        function onShutdownReady() { window.shutdownApproved=true; Qt.callLater(function(){window.close()}) }
     }
     Loader {
         id: pageLoader
         anchors.fill: parent
+        enabled: !App.leaving
         sourceComponent: App.active ? editor : home
     }
     Component {
@@ -43,7 +51,7 @@ ApplicationWindow {
     }
     Component {
         id: editor
-        EditorPage { overlaysOpen: settings.visible || saveFile.visible || openFile.visible || imageFile.visible || pdfFile.visible || exportFile.visible || pdfImport.visible || newProject.visible || recovery.visible; onBackRequested: App.home(); onSaveAsRequested: saveFile.open(); onImageRequested: imageFile.open(); onImportPdfRequested: pdfFile.open(); onExportPdfRequested: exportFile.open(); onSettingsRequested: settings.open();onFullScreenRequested: window.toggleFullScreen() }
+        EditorPage { overlaysOpen: App.leaving || settings.visible || saveFile.visible || openFile.visible || imageFile.visible || pdfFile.visible || exportFile.visible || pdfImport.visible || newProject.visible || recovery.visible; onBackRequested: App.requestHome(); onSaveAsRequested: saveFile.open(); onImageRequested: imageFile.open(); onImportPdfRequested: pdfFile.open(); onExportPdfRequested: exportFile.open(); onSettingsRequested: settings.open();onFullScreenRequested: window.toggleFullScreen() }
     }
     NewProjectDialog { id: newProject }
     SettingsDialog { id: settings }
@@ -53,6 +61,20 @@ ApplicationWindow {
     FileDialog { id: saveFile; title: "Salvar quadro como"; fileMode: FileDialog.SaveFile; defaultSuffix: "board"; nameFilters: ["Projetos Scalar (*.board)"]; onAccepted: App.saveAs(selectedFile) }
     FileDialog { id: exportFile; objectName: "exportPdfFileDialog"; title: "Exportar todas as páginas como PDF"; fileMode: FileDialog.SaveFile; defaultSuffix: "pdf"; nameFilters: ["PDF (*.pdf)"]; onAccepted: App.exportPdf(selectedFile) }
     FileDialog { id: imageFile; title: "Importar imagens"; fileMode: FileDialog.OpenFiles; nameFilters: ["Imagens (*.png *.jpg *.jpeg *.webp *.bmp *.svg)"]; onAccepted: { if(pageLoader.item) pageLoader.item.insertImages(selectedFiles) } }
+    C.ModernDialog {
+        id: savingDialog
+        objectName: "savingBeforeLeavingDialog"
+        visible: App.leaving
+        closePolicy: Popup.NoAutoClose
+        contentItem: ColumnLayout {
+            spacing: Theme.lg
+            BusyIndicator { objectName: "savingBeforeLeavingSpinner"; Layout.alignment: Qt.AlignHCenter; running: App.leaving && App.leaveError===""; visible: running }
+            Text { Layout.fillWidth: true; text: App.leaveError ? "Não foi possível salvar" : "Salvando…"; color: Theme.text; font.pixelSize: Theme.heading; font.weight: Font.DemiBold; horizontalAlignment: Text.AlignHCenter }
+            Text { Layout.fillWidth: true; text: App.leaveError || "Aguarde enquanto suas alterações são salvas."; color: Theme.secondary; font.pixelSize: Theme.body; wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignHCenter }
+            C.ActionButton { objectName: "retryLeavingSaveButton"; visible: App.leaveError!==""; Layout.fillWidth: true; text: "Tentar novamente"; primary: true; onClicked: App.retryLeaving() }
+            C.ActionButton { objectName: "cancelLeavingSaveButton"; visible: App.leaveError!==""; Layout.fillWidth: true; text: "Continuar editando"; onClicked: App.cancelLeaving() }
+        }
+    }
     C.ModernDialog {
         id: recovery
         closePolicy: Popup.NoAutoClose
@@ -68,7 +90,7 @@ ApplicationWindow {
         App.detectToolbarBlurSupport(window)
         if(App.recoveryAvailable) recovery.open()
     }
-    Shortcut { sequence: "Ctrl+O"; enabled: !settings.visible && !newProject.visible && !recovery.visible; onActivated: openFile.open() }
-    Shortcut { sequence: "Ctrl+N"; enabled: !settings.visible && !newProject.visible && !recovery.visible; onActivated: newProject.open() }
+    Shortcut { sequence: "Ctrl+O"; enabled: !App.leaving && !settings.visible && !newProject.visible && !recovery.visible; onActivated: openFile.open() }
+    Shortcut { sequence: "Ctrl+N"; enabled: !App.leaving && !settings.visible && !newProject.visible && !recovery.visible; onActivated: newProject.open() }
     Shortcut { sequence: "F11";onActivated: window.toggleFullScreen() }
 }

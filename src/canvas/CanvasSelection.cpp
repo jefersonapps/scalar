@@ -112,7 +112,9 @@ QVariantList CanvasItem::selectionHandles() const{
         if(s->kind==ShapeKind::Circle||s->kind==ShapeKind::Ellipse){add(s->center,"center",0);add(rotatePoint(s->center+Point{s->radiusX,0},s->center,s->rotation),"radiusX",0);if(s->kind==ShapeKind::Ellipse)add(rotatePoint(s->center+Point{0,s->radiusY},s->center,s->rotation),"radiusY",0);}
     }
     const auto& f=selectionFrame_;const auto world=[&](Point local){return f.origin+rotatePoint(local,{},f.angle);};
-    add(world({f.width,f.height}),"resize",0);add(world({f.width/2,-28/(view_.zoom*view_.pixelsPerMm)}),"rotate",0);return result;
+    add(world({f.width,f.height}),"resize",0);add(world({0,f.height}),"resize",1);
+    add(world({0,0}),"resize",2);add(world({f.width,0}),"resize",3);
+    add(world({f.width/2,-28/(view_.zoom*view_.pixelsPerMm)}),"rotate",0);return result;
 }
 QString CanvasItem::selectionName() const{
     const auto selected=selectedObjects();if(selected.size()!=1)return QString::number(selected.size())+" objetos";if(const auto* s=std::get_if<ShapeObject>(&selected[0]))return QString::fromStdString(shapeName(s->kind));if(std::holds_alternative<TextObject>(selected[0]))return "Texto";return std::holds_alternative<ImageObject>(selected[0])?"Imagem":"Traço";
@@ -182,7 +184,7 @@ void CanvasItem::beginSelection(Point p,Qt::KeyboardModifiers modifiers){
     if(!controller_||!controller_->page())return;
     dragStart_=p;lastPan_=p;const double tolerance=12/(view_.pixelsPerMm*view_.zoom);handleIndex_=-1;
     const auto handles=selectionHandles();for(int i=0;i<handles.size();++i){const auto h=handles[i].toMap();const auto screen=view_.worldToScreen(p);
-        if(length(screen-Point{h["x"].toDouble(),h["y"].toDouble()})<12){handleIndex_=i;const auto type=h["type"].toString();state_=type=="resize"?State::Resizing:type=="rotate"?State::Rotating:State::EditingHandle;break;}}
+        if(length(screen-Point{h["x"].toDouble(),h["y"].toDouble()})<12){handleIndex_=i;const auto type=h["type"].toString();resizeCorner_=h["index"].toInt();state_=type=="resize"?State::Resizing:type=="rotate"?State::Rotating:State::EditingHandle;break;}}
     const auto local=rotatePoint(p-selectionFrame_.origin,{},-selectionFrame_.angle);
     if(handleIndex_<0&&selectedCount()>0&&!(modifiers&Qt::ShiftModifier)&&Bounds{0,0,selectionFrame_.width,selectionFrame_.height}.contains(local))state_=State::Moving;
     else if(handleIndex_<0){std::optional<CanvasObject> hit;const auto all=objects(*controller_->page());for(auto i=all.rbegin();i!=all.rend();++i)if(hitTest(*i,p,tolerance)&&hasVisibleInk(*i,p)){hit=*i;break;}
@@ -198,18 +200,23 @@ void CanvasItem::updateSelection(Point p){
     for(auto& o:editPreview_){
         if(state_==State::Moving)o=transformed(o,center,p-dragStart_);
         else if(state_==State::Resizing){
-            const auto local=rotatePoint(p-editFrame_.origin,{},-editFrame_.angle);
+            const bool right=resizeCorner_==0||resizeCorner_==3,bottom=resizeCorner_==0||resizeCorner_==1;
+            const auto anchor=editFrame_.origin+rotatePoint({right?0:editFrame_.width,bottom?0:editFrame_.height},{},editFrame_.angle);
+            auto local=rotatePoint(p-anchor,{},-editFrame_.angle);local.x*=right?1:-1;local.y*=bottom?1:-1;
             if(editBefore_.size()==1&&std::holds_alternative<TextObject>(o)){
                 auto& text=std::get<TextObject>(o);const auto origin=text.corners[0];const auto edge=text.corners[1]-origin;
                 const double gain=length(edge)/std::max(.1,editTextSize_.width()),angle=std::atan2(edge.y,edge.x);
                 text.boxWidthMm=std::clamp(local.x/std::max(.01,gain),5.,10000.);
                 text.boxHeightMm=std::clamp(local.y/std::max(.01,gain),5.,10000.);
                 const auto size=textNaturalSize(text);const auto horizontal=rotatePoint({size.width()*gain,0},{},angle),vertical=rotatePoint({0,size.height()*gain},{},angle);
-                text.corners={origin,origin+horizontal,origin+horizontal+vertical,origin+vertical};++text.properties.revision;
+                const auto fixedCorner=text.corners[resizeCorner_];
+                text.corners={origin,origin+horizontal,origin+horizontal+vertical,origin+vertical};
+                const auto shift=fixedCorner-text.corners[resizeCorner_];for(auto& corner:text.corners)corner=corner+shift;
+                ++text.properties.revision;
                 textResizeVisual_=textVisual(text,std::clamp(view_.zoom*view_.pixelsPerMm*gain,1.,8.));
             }else{
                 const auto sx=std::clamp(local.x/std::max(.1,editFrame_.width),.05,20.),sy=std::clamp(local.y/std::max(.1,editFrame_.height),.05,20.);
-                const auto scale=std::min(sx,sy);o=transformed(o,editFrame_.origin,{},scale,scale);
+                const auto scale=std::min(sx,sy);o=transformed(o,anchor,{},scale,scale);
             }
         }
         else if(state_==State::Rotating){const auto a=dragStart_-center,b=p-center;double rotation=std::atan2(b.y,b.x)-std::atan2(a.y,a.x);

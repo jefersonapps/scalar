@@ -42,6 +42,8 @@ class AppController : public QObject {
     Q_PROPERTY(bool busy READ busy NOTIFY changed)
     Q_PROPERTY(bool documentBusy READ documentBusy NOTIFY changed)
     Q_PROPERTY(bool loading READ loading NOTIFY changed)
+    Q_PROPERTY(bool leaving READ leaving NOTIFY changed)
+    Q_PROPERTY(QString leaveError READ leaveError NOTIFY changed)
     Q_PROPERTY(bool systemDark READ systemDark NOTIFY preferencesChanged)
     Q_PROPERTY(QString status READ status NOTIFY changed)
     Q_PROPERTY(QVariantList recentProjects READ recentProjects NOTIFY recentChanged)
@@ -99,9 +101,11 @@ public:
     bool canRedo() const {const auto i=histories_.find(page()?page()->id:"");return i!=histories_.end()&&i->second.canRedo();}
     bool dirty() const { return dirty_; }
     bool loading() const { return loading_; }
+    bool leaving() const { return leaveAction_!=LeaveAction::None; }
+    QString leaveError() const { return leaveError_; }
     bool systemDark() const;
-    bool documentBusy() const { return loading_||imageImportPending_||textPending_||trashPending_||pdfPending_||renamePending_||fillPending_; }
-    bool busy() const { return documentBusy()||saveWatcher_.isRunning(); }
+    bool documentBusy() const { return leaving()||loading_||imageImportPending_||textPending_||trashPending_||pdfPending_||renamePending_||fillPending_; }
+    bool busy() const { return documentBusy()||savePending_; }
     QString status() const { return status_; }
     QVariantList trashedProjects() const {return library_->trash();}
     Q_INVOKABLE void trashProject(const QString& id);
@@ -192,7 +196,12 @@ public:
     Q_INVOKABLE void recover();
     Q_INVOKABLE void discardRecovery();
     Q_INVOKABLE bool shutdown();
+    Q_INVOKABLE void requestHome();
+    Q_INVOKABLE void requestShutdown();
+    Q_INVOKABLE void retryLeaving();
+    Q_INVOKABLE void cancelLeaving();
 signals:
+    void shutdownReady();
     void toolbarBlurSupportChanged();
     void changed();
     void documentChanged();
@@ -221,6 +230,13 @@ private:
     void beginSave();
     bool flush();
     void finishSave();
+    enum class LeaveAction { None, Home, Shutdown };
+    LeaveAction leaveAction_=LeaveAction::None;
+    QString leaveError_;
+    QTimer leaveTimer_;
+    bool savePending_=false;
+    void beginLeaving(LeaveAction action);
+    void continueLeaving();
     void install(Project project,const QString& path);
     Page& current(){return project_.pages[currentPage_];}
     History& history(){return histories_[current().id];}

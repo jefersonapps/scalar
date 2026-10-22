@@ -21,11 +21,28 @@
 #include <QFontInfo>
 #include <QQmlComponent>
 #include <QQmlEngine>
+#include <QWindow>
+#include <QPlatformSurfaceEvent>
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#include <dwmapi.h>
+#endif
 #include "rendering/TextFormatting.h"
 #include <numbers>
 Q_LOGGING_CATEGORY(appLog,"scalar.app")
 namespace scalar {
-namespace { QString now(){return QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);} }
+namespace {
+QString now(){return QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);}
+void applyWindowTheme(QWindow* window,bool dark){
+#ifdef Q_OS_WIN
+    if(!window||!window->handle()||QGuiApplication::platformName()!=QStringLiteral("windows"))return;
+    const BOOL enabled=dark?TRUE:FALSE;
+    DwmSetWindowAttribute(reinterpret_cast<HWND>(window->winId()),DWMWA_USE_IMMERSIVE_DARK_MODE,&enabled,sizeof(enabled));
+#else
+    Q_UNUSED(window);Q_UNUSED(dark);
+#endif
+}
+}
 void AppController::detectToolbarBlurSupport(QObject* qmlOwner){
     if(toolbarBlurSupportChecked_)return;
     auto* engine=qmlEngine(qmlOwner);if(!engine)return;
@@ -42,6 +59,10 @@ AppController::AppController(QObject* parent,const QString& dataDirectory):QObje
     QDir().mkpath(dataDir_+"/projects"); library_=std::make_unique<Library>(dataDir_+"/library.sqlite");
     recognitionEnabled_=library_->setting("recognitionEnabled",true).toBool();holdDelay_=std::clamp(library_->setting("holdDelay",1000).toInt(),250,1500);
     qGuiApp->installEventFilter(this);
+    connect(this,&AppController::preferencesChanged,this,[this]{
+        const auto mode=theme();const bool dark=mode=="Dark"||(mode=="System"&&systemDark());
+        for(auto* window:QGuiApplication::topLevelWindows())applyWindowTheme(window,dark);
+    });
     connect(&exportWatcher_,&QFutureWatcher<QString>::finished,this,[this]{exportPending_=false;const auto error=exportWatcher_.result();status_=error.isEmpty()?"Arquivo exportado":error;emit changed();});
     thumbnailsTimer_.setSingleShot(true);thumbnailsTimer_.setInterval(700);
     connect(&thumbnailsTimer_,&QTimer::timeout,this,&AppController::beginThumbnails);
@@ -115,6 +136,8 @@ AppController::AppController(QObject* parent,const QString& dataDirectory):QObje
     autosave_.setSingleShot(true); autosave_.setInterval(1600);
     connect(&autosave_,&QTimer::timeout,this,&AppController::beginSave);
     connect(&saveWatcher_,&QFutureWatcher<SaveResult>::finished,this,&AppController::finishSave);
+    leaveTimer_.setInterval(16);
+    connect(&leaveTimer_,&QTimer::timeout,this,&AppController::continueLeaving);
     connect(&renameWatcher_,&QFutureWatcher<SaveResult>::finished,this,&AppController::finishRename);
     connect(&loadWatcher_,&QFutureWatcher<LoadResult>::finished,this,[this]{
         loading_=false; const auto result=loadWatcher_.result();
@@ -128,6 +151,10 @@ AppController::AppController(QObject* parent,const QString& dataDirectory):QObje
     });
 }
 bool AppController::eventFilter(QObject* watched,QEvent* event){
+    if(event->type()==QEvent::Show||event->type()==QEvent::WinIdChange
+       ||(event->type()==QEvent::PlatformSurface&&static_cast<QPlatformSurfaceEvent*>(event)->surfaceEventType()==QPlatformSurfaceEvent::SurfaceCreated)){
+        if(auto* window=qobject_cast<QWindow*>(watched)){const auto mode=theme();applyWindowTheme(window,mode=="Dark"||(mode=="System"&&systemDark()));}
+    }
     if(watched==qGuiApp && event->type()==QEvent::ApplicationPaletteChange)emit preferencesChanged();
     return QObject::eventFilter(watched,event);
 }
@@ -247,7 +274,9 @@ void AppController::importImage(const QUrl& url,QPointF center){
 }
 void AppController::importImages(const QVariantList& urls,QPointF center){
     if(!active()||loading_||imageImportPending_||urls.isEmpty())return;QStringList paths;
-    for(const auto& value:urls){
+    for(auto value:urls){
+        // QML URL lists can wrap each entry in an additional QVariant.
+        while(value.metaType()==QMetaType::fromType<QVariant>())value=value.value<QVariant>();
         const auto url=value.toUrl();
         if(url.isLocalFile())paths.append(url.toLocalFile());
         else if(QFileInfo(value.toString()).isAbsolute())paths.append(value.toString());
@@ -282,9 +311,10 @@ void AppController::save(){if(active()){dirty_=true;beginSave();}}
 void AppController::saveAs(const QUrl& url){if(!active()||!url.isLocalFile()||!flush())return;path_=url.toLocalFile();if(!path_.endsWith(".board",Qt::CaseInsensitive))path_+=".board";dirty_=true;beginSave();}
 void AppController::beginSave(){
     if(!active()||!dirty_||loading_)return;
-    if(saveWatcher_.isRunning()){autosave_.start();return;}
+    if(savePending_){autosave_.start();return;}
     const auto snapshot=project_;const auto path=path_;const auto recovery=dataDir_+"/session.board";const auto rev=revision_;
     status_="Salvando…";
+    savePending_=true;
     saveWatcher_.setFuture(QtConcurrent::run([snapshot=Project(snapshot),path,recovery,rev]() mutable {
         auto error=ProjectStore::discardErasureHistory(snapshot);
         if(error.isEmpty())error=ProjectStore::save(recovery,snapshot);
@@ -294,7 +324,8 @@ void AppController::beginSave(){
     }));emit changed();
 }
 void AppController::finishSave(){
-    if(!saveWatcher_.future().isValid()||saveWatcher_.isRunning())return;
+    if(!savePending_||!saveWatcher_.future().isValid()||saveWatcher_.isRunning())return;
+    savePending_=false;
     const auto r=saveWatcher_.result();
     if(r.error.isEmpty()) {
         library_->remember(r.id,r.name,r.path,r.updated);
@@ -304,7 +335,7 @@ void AppController::finishSave(){
         }
         emit recentChanged();
         if(r.revision==revision_ && r.id==QString::fromStdString(project_.id)){dirty_=false;status_="Salvo neste dispositivo";} else {status_="Alterações pendentes";autosave_.start();}
-    } else {status_="Falha ao salvar: "+r.error;qCWarning(appLog)<<status_;}
+    } else {status_="Falha ao salvar: "+r.error;qCWarning(appLog)<<status_;if(leaving()){leaveError_=status_;leaveTimer_.stop();}}
     emit changed();
 }
 bool AppController::flush(){
@@ -313,7 +344,7 @@ bool AppController::flush(){
     if(textPending_){status_="Aguarde a conversão do texto.";emit changed();return false;}
     if(imageImportPending_){status_="Aguarde a importação da imagem.";emit changed();return false;}
     autosave_.stop();
-    if(saveWatcher_.isRunning()){saveWatcher_.waitForFinished();finishSave();}
+    if(savePending_){saveWatcher_.waitForFinished();finishSave();}
     if(active()&&dirty_){beginSave();saveWatcher_.waitForFinished();finishSave();}
     return !dirty_;
 }
@@ -323,7 +354,31 @@ void AppController::openPath(const QString& path){
     if(trashPending_||loading_||!flush())return;loading_=true;pendingOpenPath_=path;status_="Abrindo projeto…";
     loadWatcher_.setFuture(QtConcurrent::run([path]{return ProjectStore::load(path);}));emit changed();
 }
-void AppController::home(){if(loading_||!flush())return;project_={};currentPage_=0;images_.clear();textMeshes_.clear();textMathColors_.clear();textSizes_.clear();histories_.clear();thumbnails_.clear();pdfCache_.clear();thumbnailsTimer_.stop();++revision_;emit pagesChanged();emit pageChanged();emit documentChanged();emit changed();}
+void AppController::home(){if(loading_||!flush())return;project_={};status_.clear();currentPage_=0;images_.clear();textMeshes_.clear();textMathColors_.clear();textSizes_.clear();histories_.clear();thumbnails_.clear();pdfCache_.clear();thumbnailsTimer_.stop();++revision_;emit pagesChanged();emit pageChanged();emit documentChanged();emit changed();}
+void AppController::requestHome(){beginLeaving(LeaveAction::Home);}
+void AppController::requestShutdown(){beginLeaving(LeaveAction::Shutdown);}
+void AppController::beginLeaving(LeaveAction action){
+    if(leaving()){
+        if(action==LeaveAction::Shutdown)leaveAction_=action;
+        return;
+    }
+    leaveAction_=action;leaveError_.clear();autosave_.stop();
+    leaveTimer_.start();emit changed();
+}
+void AppController::retryLeaving(){if(!leaving()||leaveError_.isEmpty())return;leaveError_.clear();leaveTimer_.start();emit changed();}
+void AppController::cancelLeaving(){leaveTimer_.stop();leaveAction_=LeaveAction::None;leaveError_.clear();emit changed();}
+void AppController::continueLeaving(){
+    if(!leaving()||!leaveError_.isEmpty())return;
+    // Let pending edits finish and keep the event loop free to animate the
+    // saving dialog. Never wait for a worker from a navigation/close event.
+    if(loading_||imageImportPending_||textPending_||trashPending_||pdfPending_||renamePending_||fillPending_||exportPending_
+       ||closedLinesWatcher_.isRunning()||thumbnailsPending_||textRasterPending_||savePending_)return;
+    autosave_.stop();
+    if(active()&&dirty_){beginSave();return;}
+    const auto action=leaveAction_;leaveTimer_.stop();leaveAction_=LeaveAction::None;
+    if(action==LeaveAction::Home)home();
+    else if(shutdown()){emit changed();emit shutdownReady();}
+}
 void AppController::recover(){if(!recovery_)return;recovery_=false;openPath(dataDir_+"/session.board");}
 void AppController::discardRecovery(){recovery_=false;QFile::remove(dataDir_+"/session.board");emit changed();}
 bool AppController::shutdown(){
