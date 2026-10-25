@@ -104,6 +104,25 @@ C.ModernDialog {
             Rectangle { Layout.fillWidth: true; height: Theme.hairline; color: Theme.border }
             ColumnLayout {
                 Layout.fillWidth: true; spacing: Theme.sm
+                RowLayout {
+                    Layout.fillWidth: true
+                    Text { text: "Interpretar LaTeX"; color: Theme.text; font.pixelSize: Theme.body; font.weight: Font.Medium; Layout.fillWidth: true }
+                    C.SegmentedControl {
+                        objectName: "defaultLatexControl"
+                        Layout.preferredWidth: Theme.settingsSegmentWidth
+                        options: ["Desativado", "Ativado"]
+                        currentIndex: App.defaultLatexEnabled ? 1 : 0
+                        onSelected: index => App.defaultLatexEnabled = index === 1
+                    }
+                }
+                Text {
+                    text: "Padrão salvo para novas caixas de texto. Alterações na caixa valem durante a sessão do quadro, em todas as páginas."
+                    Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.secondary; font.pixelSize: Theme.caption
+                }
+            }
+            Rectangle { Layout.fillWidth: true; height: Theme.hairline; color: Theme.border }
+            ColumnLayout {
+                Layout.fillWidth: true; spacing: Theme.sm
                 Text { text: "Novos projetos"; color: Theme.text; font.pixelSize: Theme.body; font.weight: Font.Medium }
                 RowLayout {
                     Layout.fillWidth: true; spacing: Theme.sm

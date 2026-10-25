@@ -38,6 +38,8 @@ C.GlassPanel {
     property alias rulerButton: rulerButton
     property alias compassButton: compassButton
     property string activeTool: "pen"
+    property color penColor: "#263345"
+    property color markerColor: "#b98624"
     signal toolSelected(string tool)
     signal penOptionsRequested()
     signal shapeOptionsRequested()
@@ -58,8 +60,14 @@ C.GlassPanel {
         y: (scroll.height-height)/2
         spacing: Theme.xs
         C.ToolButton { iconName: "select"; label: "Selecionar (V) · Shift para seleção múltipla"; selected: root.activeTool === "select"; onClicked: root.toolSelected("select") }
-        C.ToolButton { id: penButton;objectName: "penToolButton"; iconName: "pen"; label: "Caneta (P) · clique novamente para opções"; selected: root.activeTool === "pen"; onClicked: { if(root.activeTool === "pen") root.penOptionsRequested(); else root.toolSelected("pen") } }
-        C.ToolButton { id: markerButton;objectName: "markerToolButton"; iconName: "marker"; label: "Marcador (M) · Ctrl + clique para preencher uma região"; selected: root.activeTool === "marker"; onClicked: { if(selected) root.penOptionsRequested(); else root.toolSelected("marker") } }
+        C.InkToolButton {
+            id: penButton;objectName: "penToolButton"; iconName: "pen"
+            inkColor: root.penColor
+            label: "Caneta (P) · cores 1–7 · clique novamente para opções"
+            selected: root.activeTool === "pen"
+            onClicked: { if(root.activeTool === "pen") root.penOptionsRequested(); else root.toolSelected("pen") }
+        }
+        C.InkToolButton { id: markerButton;objectName: "markerToolButton"; iconName: "marker";inkColor: root.markerColor; label: "Marcador (M) · cores 1–7 · Ctrl + clique para preencher uma região"; selected: root.activeTool === "marker"; onClicked: { if(selected) root.penOptionsRequested(); else root.toolSelected("marker") } }
         C.ToolButton { id: eraserButton;objectName: "eraserToolButton"; iconName: "eraser"; label: "Borracha por trecho (E)"; selected: root.activeTool === "eraser"; onClicked: { if(root.activeTool === "eraser") root.eraserOptionsRequested(); else root.toolSelected("eraser") } }
         C.ToolButton { iconName: "hand"; label: "Mover quadro (H)"; selected: root.activeTool === "hand"; onClicked: root.toolSelected("hand") }
         C.ToolButton { iconName: "text"; label: "Texto e LaTeX (T)"; selected: root.activeTool === "text"; onClicked: root.toolSelected("text") }

@@ -17,6 +17,7 @@ class CanvasItem : public QQuickItem {
     Q_PROPERTY(QString tool READ tool WRITE setTool NOTIFY toolChanged)
     Q_PROPERTY(QString editingTextId READ editingTextId WRITE setEditingTextId NOTIFY selectionChanged)
     Q_PROPERTY(QColor penColor READ penColor WRITE setPenColor NOTIFY penChanged)
+    Q_PROPERTY(QColor markerColor READ markerColor WRITE setMarkerColor NOTIFY penChanged)
     Q_PROPERTY(double penWidth READ penWidth WRITE setPenWidth NOTIFY penChanged)
     Q_PROPERTY(double markerWidth READ markerWidth WRITE setMarkerWidth NOTIFY penChanged)
     Q_PROPERTY(double markerOpacity READ markerOpacity WRITE setMarkerOpacity NOTIFY penChanged)
@@ -80,6 +81,8 @@ public:
     void setMarkerWidth(double value){if(std::isfinite(value)){markerWidth_=std::clamp(value,1.,20.);emit penChanged();}}
     QColor penColor() const {return color_;}
     void setPenColor(const QColor& color);
+    QColor markerColor() const {return markerColor_;}
+    void setMarkerColor(const QColor& color){if(!color.isValid()||color==markerColor_)return;markerColor_=color;emit penChanged();}
     double penWidth() const {return style_.maxWidthMm;}
     void setPenWidth(double width);
     double pressureGamma() const {return style_.gamma;}
@@ -219,6 +222,7 @@ private:
     void finishGeometryPointer();
     void resetGeometryTools();
     ShapeObject compassCircle() const;
+    void commitCompassObject(CanvasObject object);
     Point world(QPointF p) const {return view_.screenToWorld({p.x(),p.y()});}
     void begin(PointerSample sample);
     void append(PointerSample sample);
@@ -275,14 +279,16 @@ private:
     double eraserRadius_=3;
     Point eraserWorldPosition_;
     bool eraserCursorVisible_=false,angleSnap_=false;
-    bool eraserShapes_=false,eraserCtrl_=false;
+    bool eraserShapes_=true,eraserCtrl_=false;
     std::vector<StrokeObject> eraseBefore_,erasePreview_;
     EraserIndex eraseIndex_,restoreIndex_;
+    bool restoreIndexReady_=false;
     std::vector<StrokeObject> recoverableInk_;
     std::vector<ShapeObject> eraseShapesBefore_,eraseShapesPreview_;
     std::vector<ImageObject> eraseFillsBefore_,eraseFillsPreview_;
     PenStyle style_;
     QColor color_{"#263345"};
+    QColor markerColor_{"#b98624"};
     QString tool_="pen";
     QString editingTextId_;
     LinePattern manualShapePattern_=LinePattern::Solid;
@@ -292,7 +298,9 @@ private:
     double touchDistance_=0;
     QPointF touchCenter_;
     bool space_=false,tabletActive_=false;
+    bool tabletInProximity_=false;
     QString tabletToolBefore_;
+    Qt::MouseButtons tabletButtons_=Qt::NoButton;
     QString handToolBefore_;
     QRectF toolbarExclusion_,optionsExclusion_;
     RulerGeometry ruler_;

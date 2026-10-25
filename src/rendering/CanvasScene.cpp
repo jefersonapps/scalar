@@ -1,4 +1,5 @@
 #include "canvas/CanvasItem.h"
+#include "input/InputDiagnostics.h"
 #include "StrokeMesh.h"
 #include "ShapeMesh.h"
 #include "ShapeRasterCache.h"
@@ -182,6 +183,7 @@ template<class Object> QSGNode* imageNode(const Object& image,QQuickWindow* wind
 
 }
 QSGNode* CanvasItem::updatePaintNode(QSGNode* old,UpdatePaintNodeData*){
+    InputDiagnosticSpan diagnostic("render-sync",8000);
     auto* root=static_cast<SceneRoot*>(old);if(!root)root=new SceneRoot;
     QMatrix4x4 matrix;matrix.translate(float(view_.pan.x),float(view_.pan.y));matrix.scale(float(view_.pixelsPerMm*view_.zoom));root->setMatrix(matrix);
     const Page* page=controller_?controller_->page():nullptr;

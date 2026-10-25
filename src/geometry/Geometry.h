@@ -23,6 +23,7 @@ std::string objectId(const CanvasObject& object);
 ObjectProperties& properties(CanvasObject& object);
 const ObjectProperties& properties(const CanvasObject& object);
 using CanvasObjectView=std::variant<const StrokeObject*,const ShapeObject*,const ImageObject*,const TextObject*>;
+Bounds bounds(CanvasObjectView object);
 std::vector<CanvasObjectView> objectViews(const Page& page);
 std::vector<CanvasObject> objects(const Page& page);
 std::optional<CanvasObject> findObject(const Page& page,const std::string& id);

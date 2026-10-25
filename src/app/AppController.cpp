@@ -58,6 +58,7 @@ AppController::AppController(QObject* parent,const QString& dataDirectory):QObje
     dataDir_=dataDirectory.isEmpty()?QStandardPaths::writableLocation(QStandardPaths::AppDataLocation):dataDirectory;
     QDir().mkpath(dataDir_+"/projects"); library_=std::make_unique<Library>(dataDir_+"/library.sqlite");
     recognitionEnabled_=library_->setting("recognitionEnabled",true).toBool();holdDelay_=std::clamp(library_->setting("holdDelay",1000).toInt(),250,1500);
+    sessionLatexEnabled_=defaultLatexEnabled();
     qGuiApp->installEventFilter(this);
     connect(this,&AppController::preferencesChanged,this,[this]{
         const auto mode=theme();const bool dark=mode=="Dark"||(mode=="System"&&systemDark());
@@ -183,12 +184,19 @@ void AppController::setReducedEffects(bool v){library_->setSetting("reducedEffec
 bool AppController::disableToolbarBlur() const {return library_->setting("disableToolbarBlur",false).toBool();}
 void AppController::setDisableToolbarBlur(bool value){if(value==disableToolbarBlur())return;library_->setSetting("disableToolbarBlur",value);emit preferencesChanged();}
 QString AppController::defaultSize() const{return library_->setting("defaultSize","A4").toString();}
+bool AppController::defaultLatexEnabled() const {return library_->setting("defaultLatexEnabled",true).toBool();}
+QColor AppController::customPenColor() const {return QColor(library_->setting("customPenColor","#268fb5").toString());}
+void AppController::setCustomPenColor(const QColor& value){if(!value.isValid()||value==customPenColor())return;library_->setSetting("customPenColor",value.name(QColor::HexArgb));emit preferencesChanged();}
+QColor AppController::customMarkerColor() const {return QColor(library_->setting("customMarkerColor","#b98624").toString());}
+void AppController::setCustomMarkerColor(const QColor& value){if(!value.isValid()||value==customMarkerColor())return;library_->setSetting("customMarkerColor",value.name(QColor::HexArgb));emit preferencesChanged();}
+void AppController::setDefaultLatexEnabled(bool value){library_->setSetting("defaultLatexEnabled",value);setSessionLatexEnabled(value);emit preferencesChanged();}
+void AppController::setSessionLatexEnabled(bool value){if(sessionLatexEnabled_==value)return;sessionLatexEnabled_=value;emit sessionLatexEnabledChanged();}
 void AppController::setDefaultSize(const QString& v){if(v!="A4"&&v!="Carta")return;library_->setSetting("defaultSize",v);emit preferencesChanged();}
 bool AppController::defaultLandscape() const{return library_->setting("defaultLandscape",false).toBool();}
 void AppController::setDefaultLandscape(bool v){library_->setSetting("defaultLandscape",v);emit preferencesChanged();}
 QString AppController::defaultBackground() const{const auto value=library_->setting("defaultBackground","Pautado").toString();return value=="Branco"||value=="Preto"||value=="Verde"?"Sem grade":value;}
 void AppController::setDefaultBackground(const QString& v){bool found=false;for(const auto& preset:gridPresets())if(preset.toMap().value("name").toString()==v)found=true;if(!found)return;library_->setSetting("defaultBackground",v);emit preferencesChanged();}
-void AppController::install(Project p,const QString& path){project_=std::move(p);currentPage_=0;path_=path;coverDirty_=!QFileInfo::exists(path+".png");images_.clear();textMeshes_.clear();textMathColors_.clear();textSizes_.clear();histories_.clear();thumbnails_.clear();dirtyThumbnails_.clear();requestedThumbnails_.clear();for(const auto& page:project_.pages)dirtyThumbnails_.insert(QString::fromStdString(page.id));pdfCache_.clear();dirty_=false;++revision_;textRasterRevision_=0;scheduleThumbnails();refreshPdf(textRasterScale_);emit pagesChanged();emit pageChanged();emit documentChanged();emit changed();}
+void AppController::install(Project p,const QString& path){setSessionLatexEnabled(defaultLatexEnabled());setSessionCompassMarkCenter(true);project_=std::move(p);currentPage_=0;path_=path;coverDirty_=!QFileInfo::exists(path+".png");images_.clear();textMeshes_.clear();textMathColors_.clear();textSizes_.clear();histories_.clear();thumbnails_.clear();dirtyThumbnails_.clear();requestedThumbnails_.clear();for(const auto& page:project_.pages)dirtyThumbnails_.insert(QString::fromStdString(page.id));pdfCache_.clear();dirty_=false;++revision_;textRasterRevision_=0;scheduleThumbnails();refreshPdf(textRasterScale_);emit pagesChanged();emit pageChanged();emit documentChanged();emit changed();}
 void AppController::newProject(const QString& name,const QString& preset,double width,double height,bool landscape,const QString& background,const QString& pageColor) {
     if(loading_)return;
     PageSize size=preset=="A4"?PageSize::a4():preset=="Carta"?PageSize::letter():PageSize{width,height};
@@ -317,7 +325,12 @@ void AppController::setHoldDelay(int value){holdDelay_=std::clamp(value,250,1500
 void AppController::undo(){if(active()){const auto size=current().size;if(history().undo(current())){mutate();if(size.widthMm!=pageWidth()||size.heightMm!=pageHeight()||size.infinite!=pageInfinite())emit pagesChanged();}}}
 void AppController::redo(){if(active()){const auto size=current().size;if(history().redo(current())){mutate();if(size.widthMm!=pageWidth()||size.heightMm!=pageHeight()||size.infinite!=pageInfinite())emit pagesChanged();}}}
 void AppController::save(){if(active()){dirty_=true;beginSave();}}
-void AppController::saveAs(const QUrl& url){if(!active()||!url.isLocalFile()||!flush())return;path_=url.toLocalFile();if(!path_.endsWith(".board",Qt::CaseInsensitive))path_+=".board";dirty_=true;coverDirty_=true;beginSave();}
+void AppController::saveAs(const QUrl& url){
+    if(!active()||!url.isLocalFile()||url.toLocalFile().isEmpty()||!flush())return;
+    path_=url.toLocalFile();
+    if(!path_.endsWith(".scalar",Qt::CaseInsensitive)&&!path_.endsWith(".board",Qt::CaseInsensitive))path_+=".scalar";
+    dirty_=true;coverDirty_=true;beginSave();
+}
 void AppController::beginSave(){
     if(!active()||!dirty_||loading_)return;
     if(savePending_){autosave_.start();return;}

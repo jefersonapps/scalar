@@ -137,7 +137,7 @@ Instale as dependências de desenvolvimento:
 ```sh
 sudo apt install build-essential cmake ninja-build python3 qt6-base-dev qt6-declarative-dev qt6-pdf-dev qt6-svg-dev \
   libqt6sql6-sqlite qt6-image-formats-plugins qml6-module-qtquick qml6-module-qtquick-controls \
-  qml6-module-qtquick-layouts qml6-module-qtquick-dialogs qml6-module-qtquick-shapes \
+  qml6-module-qtquick-layouts qml6-module-qtquick-dialogs qml6-module-qt-labs-folderlistmodel qml6-module-qtquick-shapes \
   qml6-module-qtquick-templates qml6-module-qtquick-window qml6-module-qtqml qml6-module-qtqml-workerscript
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
 cmake --build build --parallel
@@ -228,6 +228,16 @@ mkdir -p build/screenshots
 ```
 
 Em Linux sem sessão gráfica, `QT_QPA_PLATFORM=offscreen` permite testar a inicialização. Capturas com backend software podem omitir os meshes do canvas; não comprovam renderização GPU, desempenho ou funcionamento de stylus.
+
+Para investigar botões, coordenadas e pausas de uma stylus física, execute uma sessão curta com:
+
+```sh
+bash scripts/trace-tablet.sh
+```
+
+O script recompila o executável e abre o app com `SCALAR_TABLET_TRACE` apontando para `build/tablet-input.jsonl`. Abrir o app normalmente não ativa o diagnóstico.
+
+Reproduza a troca para a borracha e feche o app. O arquivo registra os eventos de tablet, ferramenta e cursor antes/depois, duração do processamento, sincronizações de renderização acima de 8 ms e intervalos da interface acima de 50 ms. O diagnóstico fica desativado sem essa variável e não grava o conteúdo do quadro. O arquivo é substituído a cada execução e limitado a aproximadamente 16 MiB. O registro adiciona trabalho de diagnóstico; seus tempos ajudam a localizar a pausa, mas não substituem uma medição sem registro.
 
 Valide manualmente criação de quadros, desenho, undo/redo, salvar/reabrir, PDF, LaTeX, temas, DPI e atalhos. Na instalação, confira o ícone e cada combinação das duas opções finais.
 

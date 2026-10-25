@@ -68,6 +68,7 @@ Item {
     readonly property real headerRowHeight: fullScreen ? Theme.touch+Theme.sm*2 : Theme.topbarHeight
     readonly property real headerHeight: inlineNavigation ? headerRowHeight : headerRowHeight + navigator.implicitHeight + Theme.lg
     signal saveAsRequested()
+    signal importBoardRequested()
     signal imageRequested()
     signal importPdfRequested()
     signal exportPdfRequested()
@@ -159,11 +160,19 @@ Item {
         }
     }
     Rectangle {
+        id: eraserIndicator
         objectName: "eraserIndicator"
-        x: board.x+board.eraserPosition.x-width/2; y: board.y+board.eraserPosition.y-height/2
+        property point lastVisiblePosition: Qt.point(0,0)
+        function trackPosition() { if(board.eraserVisible)lastVisiblePosition=board.eraserPosition }
+        x: board.x+lastVisiblePosition.x-width/2; y: board.y+lastVisiblePosition.y-height/2
         width: board.eraserRadius*2*board.zoom*96/25.4; height: width; radius: width/2
         visible: board.eraserVisible
         color: "#20ffffff"; border.color: Theme.accent; border.width: Theme.hairline
+        Connections {
+            target: board
+            function onSelectionChanged() { eraserIndicator.trackPosition() }
+            function onViewChanged() { eraserIndicator.trackPosition() }
+        }
     }
     DropArea {
         anchors.fill: board; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active
@@ -248,9 +257,11 @@ Item {
         contentItem: ColumnLayout {
             spacing: Theme.sm
             Text { text: "Arquivo";color: Theme.text;font.pixelSize: Theme.body;font.weight: Font.DemiBold }
-            C.ActionButton { text: "Salvar como…";iconName: "save";Layout.fillWidth: true;enabled: !App.documentBusy;onClicked: { fileOptions.close();root.saveAsRequested() } }
+            C.ActionButton { objectName: "saveBoardAsButton";text: "Salvar como…";iconName: "save";Layout.fillWidth: true;enabled: !App.documentBusy;onClicked: { fileOptions.close();root.saveAsRequested() } }
+            C.ActionButton { objectName: "importBoardButton";text: "Importar quadro…";iconName: "folder";Layout.fillWidth: true;enabled: !App.documentBusy;onClicked: { fileOptions.close();root.importBoardRequested() } }
             C.ActionButton { objectName: "importPdfButton";text: "Importar PDF…";iconName: "pdfImport";Layout.fillWidth: true;enabled: !App.documentBusy;onClicked: { fileOptions.close();root.importPdfRequested() } }
             C.ActionButton { objectName: "exportPdfButton";text: "Exportar PDF…";iconName: "pdfExport";Layout.fillWidth: true;enabled: !App.documentBusy && !App.exporting;onClicked: { fileOptions.close();root.exportPdfRequested() } }
+            Text { text: "O arquivo .scalar guarda todas as páginas e objetos para abrir em outro computador.";Layout.fillWidth: true;wrapMode: Text.WordWrap;color: Theme.secondary;font.pixelSize: Theme.caption }
         }
     }
     FloatingToolbar {
@@ -259,6 +270,8 @@ Item {
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.bottom: parent.bottom; anchors.bottomMargin: Theme.xxl
         activeTool: board.tool
+        penColor: board.penColor
+        markerColor: board.markerColor
         onToolSelected: tool => root.finishTextThen(function(){ board.tool=tool;board.forceActiveFocus() })
         onPenOptionsRequested: root.togglePanel(penOptions)
         onShapeOptionsRequested: root.togglePanel(shapeOptions)
@@ -338,6 +351,21 @@ Item {
     }
     Text { anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.margins: Theme.lg; visible: root.width > Theme.hintBreakpoint; text: "Rolagem para mover · Alt + rolagem na horizontal · Ctrl + rolagem para zoom"; color: Theme.secondary; font.pixelSize: Theme.caption }
     Shortcut { sequence: "E"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.tool = "eraser" }
+    readonly property bool penColorShortcutsEnabled: {
+        const focus=root.Window.window ? root.Window.window.activeFocusItem : null
+        const typing=focus && (focus.hasOwnProperty("textDocument") || focus.hasOwnProperty("acceptableInput"))
+        return !typing && !inlineText.active && !projectTitle.editing && !zoomControl.editing && !root.overlaysOpen
+            && !App.documentBusy && !board.drawing && !selectionExport.visible && !selectionMenu.visible
+            && !fileOptions.visible && !pagesPanel.visible && !geometryOptions.visible && !shapeOptions.visible
+            && !eraserOptions.visible && !backgroundOptions.visible && !backgroundOptions.colorDialogOpen && !penOptions.colorDialogOpen
+    }
+    Repeater {
+        model: 7
+        delegate: Item {
+            required property int index
+            Shortcut { sequence: String(index+1); context: Qt.ApplicationShortcut; enabled: root.penColorShortcutsEnabled; onActivated: penOptions.pickColor(index) }
+        }
+    }
     readonly property bool eraserSizeShortcutsEnabled: board.tool === "eraser" && (board.enabled || eraserOptions.visible) && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && !projectTitle.editing && !zoomControl.editing
     Shortcut { sequences: ["+", "]"]; enabled: root.eraserSizeShortcutsEnabled; autoRepeat: true; onActivated: board.adjustEraserSize(true) }
     Shortcut { sequences: ["-", "["]; enabled: root.eraserSizeShortcutsEnabled; autoRepeat: true; onActivated: board.adjustEraserSize(false) }

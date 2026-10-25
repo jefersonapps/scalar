@@ -30,7 +30,7 @@ Item {
     function begin(box,id) {
         if(active)return
         objectId=id
-        draft=id ? App.textValues(id) : ({source:"",fontFamily:App.defaultTextFont,fontSizePt:16,bold:false,italic:false,latexEnabled:true,alignment:0,color:canvas.penColor.toString()})
+        draft=id ? App.textValues(id) : ({source:"",fontFamily:App.defaultTextFont,fontSizePt:16,bold:false,italic:false,latexEnabled:App.sessionLatexEnabled,alignment:0,color:canvas.penColor.toString()})
         origin=id ? Qt.point(draft.x,draft.y) : Qt.point(box.x,box.y)
         boxWidth=id ? draft.width : box.width
         boxHeight=id ? draft.height : box.height
@@ -40,7 +40,10 @@ Item {
         active=true
         Qt.callLater(function(){ App.restoreTextFormats(editor.textDocument,root.draft.formats || []);root.formatRevision++;editor.forceActiveFocus();if(id)editor.selectAll() })
     }
-    function change(key,value) { const next=Object.assign({},draft);next[key]=value;draft=next }
+    function change(key,value) {
+        const next=Object.assign({},draft);next[key]=value;draft=next
+        if(key==="latexEnabled")App.sessionLatexEnabled=value
+    }
     function openFormatting() {
         formatStart=editor.selectionStart;formatEnd=editor.selectionEnd
         change("source",editor.text)
@@ -155,6 +158,7 @@ Item {
         id: formatting
         onApplied: values => {
             const changedColor=!Qt.colorEqual(values.color || Theme.text,root.dialogColor)
+            if(values.latexEnabled!==root.draft.latexEnabled)App.sessionLatexEnabled=values.latexEnabled!==false
             root.draft=Object.assign({},values,{color:root.draft.color})
             if(changedColor)root.applyColor(values.color,root.formatStart,root.formatEnd)
             else { editor.forceActiveFocus();editor.select(root.formatStart,root.formatEnd) }

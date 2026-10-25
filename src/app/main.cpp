@@ -1,6 +1,7 @@
 #include "AppController.h"
 #include "Branding.h"
 #include "canvas/CanvasItem.h"
+#include "input/InputDiagnostics.h"
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -24,6 +25,8 @@ int main(int argc,char** argv){
     parser.addOption({"smoke-test","Exit after a short UI startup check."});
     parser.addOption({"screenshot","Save a startup screenshot to a PNG path.","path"});
     parser.addOption({"editor","Start with a new default project."});parser.process(app);
+    scalar::InputDiagnostics::write({{"phase","session"},{"binary",QCoreApplication::applicationFilePath()},
+        {"build",__DATE__ " " __TIME__},{"qt",qVersion()},{"platform",QGuiApplication::platformName()}});
     qmlRegisterType<scalar::CanvasItem>("Scalar",1,0,"BoardCanvas");
     qmlRegisterType<scalar::ApplicationLogo>("Scalar",1,0,"ApplicationLogo");
     qmlRegisterUncreatableType<scalar::AppController>("Scalar",1,0,"ApplicationController","Use the App singleton context.");

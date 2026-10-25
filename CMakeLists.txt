@@ -199,7 +199,7 @@ FunctionEnd
         set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
         # QML imports and image codecs are loaded at runtime and are therefore
         # not visible to dpkg-shlibdeps; declare them explicitly for apt.
-        set(CPACK_DEBIAN_PACKAGE_DEPENDS "libqt6sql6-sqlite, qt6-image-formats-plugins, qml6-module-qtquick, qml6-module-qtquick-controls, qml6-module-qtquick-layouts, qml6-module-qtquick-dialogs, qml6-module-qtquick-shapes, qml6-module-qtquick-templates, qml6-module-qtquick-window, qml6-module-qtqml, qml6-module-qtqml-workerscript")
+        set(CPACK_DEBIAN_PACKAGE_DEPENDS "libqt6sql6-sqlite, qt6-image-formats-plugins, qml6-module-qtquick, qml6-module-qtquick-controls, qml6-module-qtquick-layouts, qml6-module-qtquick-dialogs, qml6-module-qt-labs-folderlistmodel, qml6-module-qtquick-shapes, qml6-module-qtquick-templates, qml6-module-qtquick-window, qml6-module-qtqml, qml6-module-qtqml-workerscript")
         # Qt Quick Effects is optional and detected once at UI startup.
         # Do not require a package unavailable on Qt 6.4 distributions.
         set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)

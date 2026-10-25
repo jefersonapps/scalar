@@ -29,6 +29,11 @@ class AppController : public QObject {
     Q_PROPERTY(bool textBusy READ textBusy NOTIFY changed)
     Q_PROPERTY(QStringList fontFamilies READ fontFamilies CONSTANT)
     Q_PROPERTY(QString defaultTextFont READ defaultTextFont CONSTANT)
+    Q_PROPERTY(bool defaultLatexEnabled READ defaultLatexEnabled WRITE setDefaultLatexEnabled NOTIFY preferencesChanged)
+    Q_PROPERTY(QColor customPenColor READ customPenColor WRITE setCustomPenColor NOTIFY preferencesChanged)
+    Q_PROPERTY(QColor customMarkerColor READ customMarkerColor WRITE setCustomMarkerColor NOTIFY preferencesChanged)
+    Q_PROPERTY(bool sessionLatexEnabled READ sessionLatexEnabled WRITE setSessionLatexEnabled NOTIFY sessionLatexEnabledChanged)
+    Q_PROPERTY(bool sessionCompassMarkCenter READ sessionCompassMarkCenter WRITE setSessionCompassMarkCenter NOTIFY sessionCompassMarkCenterChanged)
     Q_PROPERTY(QString textError READ textError NOTIFY changed)
     Q_PROPERTY(bool active READ active NOTIFY changed)
     Q_PROPERTY(QString projectName READ projectName NOTIFY changed)
@@ -75,6 +80,16 @@ public:
     bool textBusy() const {return textPending_;}
     QStringList fontFamilies() const;
     QString defaultTextFont() const;
+    bool defaultLatexEnabled() const;
+    QColor customPenColor() const;
+    void setCustomPenColor(const QColor& value);
+    QColor customMarkerColor() const;
+    void setCustomMarkerColor(const QColor& value);
+    void setDefaultLatexEnabled(bool value);
+    bool sessionLatexEnabled() const { return sessionLatexEnabled_; }
+    bool sessionCompassMarkCenter() const {return sessionCompassMarkCenter_;}
+    void setSessionCompassMarkCenter(bool value){if(sessionCompassMarkCenter_==value)return;sessionCompassMarkCenter_=value;emit sessionCompassMarkCenterChanged();}
+    void setSessionLatexEnabled(bool value);
     Q_INVOKABLE QFont textFont(const QString& family,int pixelSize,bool bold=false,bool italic=false) const;
     Q_INVOKABLE QVariantMap textEmphasis(QObject* document,int start,int end) const;
     Q_INVOKABLE void formatTextSelection(QObject* document,int start,int end,bool bold,bool enabled);
@@ -210,6 +225,8 @@ signals:
     void documentChanged();
     void recentChanged();
     void preferencesChanged();
+    void sessionLatexEnabledChanged();
+    void sessionCompassMarkCenterChanged();
     void textCommitted(const QString& id);
     void pagesChanged();
     void pageChanged();
@@ -295,6 +312,8 @@ private:
     QHash<QString,QSizeF> textSizes_;
     quint64 revision_=0;
     bool recognitionEnabled_=true;
+    bool sessionLatexEnabled_=true;
+    bool sessionCompassMarkCenter_=true;
     int holdDelay_=1000;
     bool imageImportPending_=false;
     bool dirty_=false,loading_=false,recovery_=false,closed_=false;

@@ -1,4 +1,8 @@
-# Formato .board — versão 4 (leitura das versões 1, 2 e 3)
+# Formato .scalar / .board
+
+“Salvar como…” usa a extensão `.scalar`. “Importar quadro…” e Ctrl+O abrem tanto `.scalar` quanto os antigos `.board`. As duas extensões usam o mesmo arquivo ZIP validado pelo aplicativo; a identificação interna `scalar.board` permanece compatível. O arquivo contém todas as páginas, traços, formas, textos (incluindo a opção LaTeX), imagens e PDFs incorporados. Copiar apenas o `.scalar` para outro computador basta para continuar editando. Preferências locais e histórico de desfazer pertencem à instalação/sessão.
+
+O arquivo adicional `<projeto>.scalar.png` (ou `.board.png`) é apenas uma miniatura regenerável da biblioteca. Ele não é o projeto e não precisa ser transferido. A miniatura só é gerada após o salvamento bem-sucedido do arquivo completo.
 
 `.board` é ZIP padrão, não JSON renomeado. Perfil inicial: uma única entrada `project.json`, método STORE sem compressão, sem encryption, sem ZIP64. Cabeçalhos local/central, EOCD, nome, tamanhos e CRC-32 são validados. O leitor recusa perfis diferentes. Para manter interoperabilidade no futuro, uma versão nova deverá expandir o leitor antes de adicionar entries assets/pages/thumbnails ou compressão. Pastas vazias não são gravadas.
 

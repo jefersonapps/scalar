@@ -44,7 +44,7 @@ bool CanvasItem::beginGeometryPointer(PointerSample s){
         const double left=length(q-Point{0,RulerGeometry::widthMm/2}),right=length(q-Point{ruler_.lengthMm,RulerGeometry::widthMm/2}),middle=length(q-center);
         const bool rotate=left<tolerance&&left<std::min(right,middle),resize=right<tolerance&&right<std::min(left,middle);
         const bool body=q.x>=0&&q.x<=ruler_.lengthMm&&q.y>0&&q.y<RulerGeometry::widthMm;
-        if(rotate||resize||body||middle<tolerance){selectedGuide_="ruler";selection_.clear();selectionUpdated();emit geometryToolsChanged();rulerBefore_=ruler_;dragStart_=p;state_=rotate?State::RotatingRuler:resize?State::ResizingRuler:State::MovingRuler;return true;}
+        if(rotate||resize||body||middle<tolerance){selectedGuide_="ruler";selection_.clear();selectionUpdated();emit geometryToolsChanged();rulerBefore_=ruler_;dragStart_=lastPan_=p;state_=rotate?State::RotatingRuler:resize?State::ResizingRuler:State::MovingRuler;return true;}
         if(tool_=="ruler"&&!ruler_.nearEdge(p,rulerSnapDistance_)){if(s.device==DeviceType::Touch)return false;ruler_.origin=p-center;emit geometryToolsChanged();return true;}
     }
     return false;
@@ -53,7 +53,14 @@ bool CanvasItem::moveGeometryPointer(PointerSample s){
     if(!geometryGesture())return false;
     const auto p=s.position;
     if(state_==State::MovingRuler&&rulerBefore_)ruler_.origin=rulerBefore_->origin+p-dragStart_;
-    else if(state_==State::RotatingRuler&&rulerBefore_){const auto center=rulerBefore_->world({rulerBefore_->lengthMm/2,RulerGeometry::widthMm/2});const auto d=p-center,a=dragStart_-center;ruler_.angle=rulerBefore_->angle+std::atan2(d.y,d.x)-std::atan2(a.y,a.x);ruler_.origin=center-rotatePoint({ruler_.lengthMm/2,RulerGeometry::widthMm/2},{},ruler_.angle);}
+    else if(state_==State::RotatingRuler&&rulerBefore_){
+        lastPan_=p;
+        const auto center=rulerBefore_->world({rulerBefore_->lengthMm/2,RulerGeometry::widthMm/2});
+        const auto d=p-center,a=dragStart_-center;
+        ruler_.angle=rulerBefore_->angle+std::atan2(d.y,d.x)-std::atan2(a.y,a.x);
+        if(angleSnap_){const double step=std::numbers::pi/12;ruler_.angle=std::round(ruler_.angle/step)*step;}
+        ruler_.origin=center-rotatePoint({ruler_.lengthMm/2,RulerGeometry::widthMm/2},{},ruler_.angle);
+    }
     else if(state_==State::ResizingRuler&&rulerBefore_){const auto q=rulerBefore_->local(p);ruler_.lengthMm=std::clamp(q.x,20.,500.);}
     else if(state_==State::MovingCompass&&compassBefore_)compass_.center=compassBefore_->center+p-dragStart_;
     else if(state_==State::ResizingCompass&&compassBefore_){
@@ -75,12 +82,24 @@ bool CanvasItem::moveGeometryPointer(PointerSample s){
     emit geometryToolsChanged();return true;
 }
 ShapeObject CanvasItem::compassCircle() const {ShapeObject out;out.id=current_.id.empty()?newId():current_.id;out.kind=ShapeKind::Circle;out.center=compass_.center;out.radiusX=out.radiusY=compass_.radiusMm;out.style=style_;out.fillOpacity=0;return out;}
+void CanvasItem::commitCompassObject(CanvasObject object){
+    if(!controller_||!controller_->active())return;
+    auto z=controller_->nextZIndex();properties(object).zIndex=z++;
+    std::vector<ObjectChange> changes;changes.push_back({{},std::move(object)});
+    if(controller_->sessionCompassMarkCenter()){
+        StrokeObject dot;dot.id=newId();dot.style=style_;
+        dot.style.minWidthMm=dot.style.maxWidthMm=std::max(.8,style_.maxWidthMm);
+        dot.style.pattern=LinePattern::Solid;dot.samples.push_back({compass_.center,1});dot.properties.zIndex=z;
+        changes.push_back({{},CanvasObject(std::move(dot))});
+    }
+    controller_->changeObjects(std::move(changes),CommandKind::AddObject);
+}
 void CanvasItem::finishGeometryPointer(){
     const bool wasDrawing=state_==State::DrawingCompass;
-    if(wasDrawing&&controller_){if(compassComplete_)controller_->addShape(compassCircle());else if(current_.samples.size()>1)controller_->addStroke(current_);}
+    if(wasDrawing&&controller_){if(compassComplete_)commitCompassObject(compassCircle());else if(current_.samples.size()>1)commitCompassObject(current_);}
     rulerBefore_.reset();compassBefore_.reset();state_=State::Idle;current_={};previewShape_.reset();if(wasDrawing)emit drawingChanged();emit geometryToolsChanged();update();
 }
-void CanvasItem::drawCompassCircle(){if(!controller_||!controller_->active()||!compassVisible_)return;cancelStroke();controller_->addShape(compassCircle());}
+void CanvasItem::drawCompassCircle(){if(!controller_||!controller_->active()||!compassVisible_)return;cancelStroke();commitCompassObject(compassCircle());}
 bool CanvasItem::constructFromSelection(const QString& kind){
     if(!controller_||!controller_->page())return false;const auto selected=selectedObjects();if(selected.size()!=1||!std::holds_alternative<ShapeObject>(selected[0]))return false;
     const auto& source=std::get<ShapeObject>(selected[0]);std::optional<ShapeObject> result;

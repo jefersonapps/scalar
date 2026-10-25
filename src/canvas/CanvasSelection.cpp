@@ -246,8 +246,8 @@ void CanvasItem::commitSelection(){
 QString CanvasItem::selectedTextId() const {const auto selected=selectedObjects();if(selected.size()==1&&std::holds_alternative<TextObject>(selected[0]))return QString::fromStdString(objectId(selected[0]));return {};}
 void CanvasItem::editSelectedText(){const auto id=selectedTextId();if(!id.isEmpty())emit textRequested({},id);}
 void CanvasItem::deleteSelection(){
-    if(selectedGuide_=="compass"){setCompassVisible(false);selectedGuide_.clear();emit geometryToolsChanged();return;}
-    if(selectedGuide_=="ruler"){setRulerVisible(false);selectedGuide_.clear();emit geometryToolsChanged();return;}
+    if(selectedGuide_=="compass"){setCompassVisible(false);setTool("select");selectedGuide_.clear();emit geometryToolsChanged();return;}
+    if(selectedGuide_=="ruler"){setRulerVisible(false);setTool("select");selectedGuide_.clear();emit geometryToolsChanged();return;}
     if(!controller_)return;std::vector<ObjectChange> changes;for(auto o:selectedObjects())changes.push_back({o,{}});selection_.clear();controller_->changeObjects(std::move(changes),CommandKind::DeleteObject);selectionUpdated();
 }
 void CanvasItem::copySelection(){

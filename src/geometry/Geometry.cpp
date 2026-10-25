@@ -52,21 +52,21 @@ ObjectProperties& properties(CanvasObject& o){return std::visit([](auto& s)->Obj
 const ObjectProperties& properties(const CanvasObject& o){return std::visit([](const auto& s)->const ObjectProperties&{return s.properties;},o);
     }
 Bounds bounds(const CanvasObject& o){
-    std::vector<Point> p;
-
-    if(const auto* s=std::get_if<StrokeObject>(&o)){for(const auto& sample:s->samples)p.push_back(sample.position);
-        }else if(const auto* shape=std::get_if<ShapeObject>(&o))p=shapeOutline(*shape);
-    else std::visit([&](const auto& obj){if constexpr(requires {obj.corners;})p=obj.corners;},o);
-
-    if(p.empty())return {};
-
-    Bounds b{p[0].x,p[0].y,p[0].x,p[0].y};
-    for(auto v:p){b.left=std::min(b.left,v.x);
-        b.top=std::min(b.top,v.y);
-        b.right=std::max(b.right,v.x);
-        b.bottom=std::max(b.bottom,v.y);
-        }return b;
-
+    return std::visit([](const auto& object){return bounds(CanvasObjectView{&object});},o);
+}
+Bounds bounds(CanvasObjectView object){
+    const auto measure=[](const auto& points,const auto& point){
+        if(points.empty())return Bounds{};
+        const auto first=point(points.front());
+        double left=first.x,top=first.y,right=first.x,bottom=first.y;
+        for(const auto& value:points){const auto p=point(value);left=std::min(left,p.x);top=std::min(top,p.y);right=std::max(right,p.x);bottom=std::max(bottom,p.y);}
+        return Bounds{left,top,right,bottom};
+    };
+    return std::visit([&](const auto* value){
+        if constexpr(std::is_same_v<std::decay_t<decltype(*value)>,StrokeObject>)return measure(value->samples,[](const auto& sample){return sample.position;});
+        else if constexpr(std::is_same_v<std::decay_t<decltype(*value)>,ShapeObject>)return measure(shapeOutline(*value),[](Point p){return p;});
+        else return measure(value->corners,[](Point p){return p;});
+    },object);
 }
 Bounds pageRenderBounds(const Page& page,double marginMm){
     if(!page.size.infinite)return {0,0,page.size.widthMm,page.size.heightMm};

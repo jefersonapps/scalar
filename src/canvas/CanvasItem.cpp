@@ -1,6 +1,8 @@
 #include "CanvasItem.h"
 #include "tools/StrokeEraser.h"
 #include "rendering/StrokeMesh.h"
+#include "input/InputDiagnostics.h"
+#include <QJsonArray>
 #include <QtConcurrent>
 #include <QKeyEvent>
 #include <QWheelEvent>
@@ -13,6 +15,35 @@
 #include <functional>
 namespace scalar {
 namespace {
+class TabletEventTrace {
+public:
+    TabletEventTrace(CanvasItem* canvas,const QTabletEvent* event,QPointF local):canvas_(canvas),event_(event),local_(local){
+        if(!InputDiagnostics::enabled())return;
+        beforeTool_=canvas->tool();beforeVisible_=canvas->eraserVisible();beforePosition_=canvas->eraserPosition();timer_.start();
+    }
+    ~TabletEventTrace(){
+        if(!timer_.isValid())return;
+        const auto duration=timer_.nsecsElapsed()/1000;
+        const auto after=canvas_->eraserPosition();
+        InputDiagnostics::write({{"phase","tablet"},{"duration_us",double(duration)},
+            {"event",int(event_->type())},{"timestamp",double(event_->timestamp())},
+            {"device",event_->pointingDevice()?event_->pointingDevice()->name():QString{}},
+            {"pointer",int(event_->pointerType())},{"button",int(event_->button())},{"buttons",int(event_->buttons().toInt())},
+            {"pressure",event_->pressure()},{"local",QJsonArray{local_.x(),local_.y()}},
+            {"global",QJsonArray{event_->globalPosition().x(),event_->globalPosition().y()}},
+            {"tool_before",beforeTool_},{"tool_after",canvas_->tool()},
+            {"visible_before",beforeVisible_},{"visible_after",canvas_->eraserVisible()},
+            {"cursor_before",QJsonArray{beforePosition_.x(),beforePosition_.y()}},
+            {"cursor_after",QJsonArray{after.x(),after.y()}},{"drawing",canvas_->drawing()}});
+    }
+private:
+    CanvasItem* canvas_;
+    const QTabletEvent* event_;
+    QPointF local_,beforePosition_;
+    QString beforeTool_;
+    bool beforeVisible_=false;
+    QElapsedTimer timer_;
+};
 Qt::CursorShape selectionResizeCursor(double degrees){
     const int direction=(int(std::round(std::remainder(degrees,180.)/45))+5)%4;
     constexpr Qt::CursorShape cursors[]={Qt::SizeHorCursor,Qt::SizeFDiagCursor,Qt::SizeVerCursor,Qt::SizeBDiagCursor};
@@ -30,18 +61,30 @@ template<class Object> void appendErasedRegion(Object& object,Point from,Point t
 }
 class TabletProximityFilter final : public QObject {
 public:
-    TabletProximityFilter(QObject* parent,std::function<void()> leave):QObject(parent),leave_(std::move(leave)){}
+    TabletProximityFilter(CanvasItem* parent,std::function<void(bool)> proximity):QObject(parent),canvas_(parent),proximity_(std::move(proximity)){}
 protected:
     bool eventFilter(QObject*,QEvent* event) override {
-        if(event->type()==QEvent::TabletLeaveProximity)leave_();
+        if(event->type()==QEvent::TabletEnterProximity||event->type()==QEvent::TabletLeaveProximity){
+            TabletEventTrace trace(canvas_,static_cast<QTabletEvent*>(event),{});proximity_(event->type()==QEvent::TabletEnterProximity);
+        }
         return false;
     }
 private:
-    std::function<void()> leave_;
+    CanvasItem* canvas_;
+    std::function<void(bool)> proximity_;
 };
 }
 CanvasItem::CanvasItem(QQuickItem* parent):QQuickItem(parent){
-    if(auto* app=QGuiApplication::instance())app->installEventFilter(new TabletProximityFilter(this,[this]{setTabletEraser(false);}));
+    if(InputDiagnostics::enabled()){
+        auto* heartbeat=new QTimer(this);heartbeat->setInterval(16);
+        auto last=std::make_shared<QElapsedTimer>();last->start();
+        connect(heartbeat,&QTimer::timeout,this,[last]{const auto elapsed=last->nsecsElapsed()/1000;last->restart();if(elapsed>50000)InputDiagnostics::write({{"phase","gui-stall"},{"duration_us",double(elapsed)}});});
+        heartbeat->start();
+    }
+    if(auto* app=QGuiApplication::instance())app->installEventFilter(new TabletProximityFilter(this,[this](bool entered){
+        tabletInProximity_=entered;
+        if(!entered){tabletButtons_=Qt::NoButton;setTabletEraser(false);eraserCursorVisible_=false;emit selectionChanged();}
+    }));
     setFlag(ItemHasContents,true);setFlag(ItemIsFocusScope,true);setAcceptedMouseButtons(Qt::LeftButton|Qt::MiddleButton|Qt::RightButton);setAcceptTouchEvents(true);setAcceptHoverEvents(true);setClip(true);
     setCursor(QCursor(Qt::CrossCursor));
     holdTimer_.setSingleShot(true);connect(&holdTimer_,&QTimer::timeout,this,&CanvasItem::beginRecognition);
@@ -57,8 +100,8 @@ CanvasItem::CanvasItem(QQuickItem* parent):QQuickItem(parent){
             if(auto before=findObject(*controller_->page(),current_.id);before&&std::holds_alternative<StrokeObject>(*before)&&properties(*before).revision==current_.properties.revision){controller_->changeObjects({{before,CanvasObject(*result.shape)}},CommandKind::ConvertStrokeToShape);selectionUpdated();}
         }
     });
-    connect(this,&QQuickItem::enabledChanged,this,[this]{if(!isEnabled()){space_=false;cancelStroke();setTemporaryHand(false);setTabletEraser(false);}});
-    connect(this,&QQuickItem::visibleChanged,this,[this]{if(!isVisible()){space_=false;cancelStroke();setTemporaryHand(false);setTabletEraser(false);}});
+    connect(this,&QQuickItem::enabledChanged,this,[this]{if(!isEnabled()){tabletInProximity_=false;tabletButtons_=Qt::NoButton;space_=false;cancelStroke();setTemporaryHand(false);setTabletEraser(false);}});
+    connect(this,&QQuickItem::visibleChanged,this,[this]{if(!isVisible()){tabletInProximity_=false;tabletButtons_=Qt::NoButton;space_=false;cancelStroke();setTemporaryHand(false);setTabletEraser(false);}});
     connect(this,&QQuickItem::windowChanged,this,[this](QQuickWindow* w){
         disconnect(handFocusConnection_);
         if(filteredWindow_)filteredWindow_->removeEventFilter(this);
@@ -79,6 +122,7 @@ void CanvasItem::setController(AppController* c){
     if(c&&c->pageColor().lightness()<128)setPenColor(QColor("#f4f4f5"));emit controllerChanged();update();
 }
 void CanvasItem::setTool(const QString& t){
+    InputDiagnosticSpan diagnostic("tool-switch");
     if(t!="ruler"&&t!="compass"&&t!="text"&&t!="eraser"&&t!="pen"&&t!="marker"&&t!="hand"&&t!="select"&&t!="line"&&t!="circle"&&t!="ellipse"&&t!="triangle"&&t!="rectangle")return;
     if(t==tool_)return;
     // Selecting the current tool leaves contact uninterrupted. Switching away
@@ -142,7 +186,7 @@ void CanvasItem::begin(PointerSample s){
     if(!controller_->pageInfinite()&&(s.position.x<0||s.position.y<0||s.position.x>controller_->pageWidth()||s.position.y>controller_->pageHeight()))return;
     selection_.clear();selectionUpdated();++inputEpoch_;holdTimer_.stop();previewShape_.reset();
     guidedEdge_.reset();if(rulerVisible_&&rulerSnap_&&(tool_=="pen"||tool_=="ruler")){guidedEdge_=ruler_.nearEdge(s.position,rulerSnapDistance_);if(guidedEdge_)s.position=ruler_.project(s.position,*guidedEdge_);}
-    auto ink=style_;if(tool_=="marker"){ink.rgba=(ink.rgba&0xffffff00)|std::uint32_t(std::lround(markerOpacity_*255));ink.minWidthMm=ink.maxWidthMm=markerWidth_;ink.pattern=LinePattern::Solid;}
+    auto ink=style_;if(tool_=="marker"){ink.rgba=(std::uint32_t(markerColor_.red())<<24)|(std::uint32_t(markerColor_.green())<<16)|(std::uint32_t(markerColor_.blue())<<8)|std::uint32_t(std::lround(markerOpacity_*255));ink.minWidthMm=ink.maxWidthMm=markerWidth_;ink.pattern=LinePattern::Solid;}
     smoothFreehand_=!rulerVisible_&&(tool_=="pen"||tool_=="marker");
     recognitionDashed_=false;input_.reset();current_={newId(),ink,{input_.filter(s,smoothFreehand_)}};holdAnchor_=lastPan_=s.position;
     freehandSamples_=current_.samples;
@@ -209,7 +253,7 @@ void CanvasItem::commit(){
 }
 void CanvasItem::cancelStroke(){
     eraserCursorVisible_=false;
-    eraseIndex_.clear();restoreIndex_.clear();
+    eraseIndex_.clear();restoreIndex_.clear();restoreIndexReady_=false;
     if(rulerBefore_)ruler_=*rulerBefore_;if(compassBefore_)compass_=*compassBefore_;rulerBefore_.reset();compassBefore_.reset();guidedEdge_.reset();
     const bool was=drawing();holdTimer_.stop();++inputEpoch_;state_=State::Idle;current_={};previewShape_.reset();editBefore_.clear();editPreview_.clear();eraseBefore_.clear();erasePreview_.clear();eraseShapesBefore_.clear();eraseShapesPreview_.clear();eraseFillsBefore_.clear();eraseFillsPreview_.clear();recoverableInk_.clear();tabletActive_=false;touchDistance_=0;
     updateCursor();
@@ -228,7 +272,7 @@ ShapeObject CanvasItem::directShape(Point a,Point b) const{
 void CanvasItem::startPointer(PointerSample s,Qt::KeyboardModifiers modifiers){
     angleSnap_=modifiers.testFlag(Qt::ControlModifier);
     shiftHeld_=modifiers.testFlag(Qt::ShiftModifier);
-    if(tool_=="marker"&&modifiers.testFlag(Qt::ControlModifier)){if(controller_)controller_->fillRegion(s.position,color_,markerOpacity_);return;}
+    if(tool_=="marker"&&modifiers.testFlag(Qt::ControlModifier)){if(controller_)controller_->fillRegion(s.position,markerColor_,markerOpacity_);return;}
     if(beginGeometryPointer(s))return;
     selectedGuide_.clear();emit geometryToolsChanged();
     if(tool_=="text"){
@@ -240,9 +284,12 @@ void CanvasItem::startPointer(PointerSample s,Qt::KeyboardModifiers modifiers){
         selection_.clear();dragStart_=lastPan_=s.position;state_=State::CreatingText;selectionUpdated();return;
     }
     if(tool_=="eraser"){
+        InputDiagnosticSpan diagnostic("eraser-start");
         if(!controller_||!controller_->page())return;cancelStroke();selection_.clear();state_=State::Erasing;eraserCtrl_=modifiers.testFlag(Qt::ControlModifier);shiftHeld_=modifiers.testFlag(Qt::ShiftModifier);recoverableInk_=controller_->page()->erasedInk;lastPan_=s.position;eraseBefore_.clear();erasePreview_.clear();eraseShapesBefore_.clear();eraseShapesPreview_.clear();eraseFillsBefore_.clear();eraseFillsPreview_.clear();
-        for(const auto& object:objectViews(*controller_->page()))eraseIndex_.insert(object);
-        for(const auto& ink:recoverableInk_)restoreIndex_.insert(&ink);
+        const auto& page=*controller_->page();
+        for(const auto& stroke:page.strokes)eraseIndex_.insert(&stroke);
+        for(const auto& shape:page.shapes)eraseIndex_.insert(&shape);
+        for(const auto& image:page.images)if(image.inkFill)eraseIndex_.insert(&image);
         eraserWorldPosition_=s.position;eraserCursorVisible_=true;eraseAt(s.position);return;
     }
     if(tool_=="select"){beginSelection(s.position,modifiers);return;}
@@ -264,7 +311,7 @@ void CanvasItem::endPointer(PointerSample s){
         emit textBoxRequested({std::min(s.position.x,dragStart_.x),std::min(s.position.y,dragStart_.y),w<2?60:w,h<2?18:h});return;
     }
     if(geometryGesture()){moveGeometryPointer(s);finishGeometryPointer();}
-    else if(state_==State::Erasing){eraseAt(s.position);commitErase();}
+    else if(state_==State::Erasing){if(s.position.x!=lastPan_.x||s.position.y!=lastPan_.y)eraseAt(s.position);commitErase();}
     else if(drawing()){
         movePointer(s);
         if(smoothFreehand_&&!previewShape_&&!freehandSamples_.empty()){
@@ -277,6 +324,7 @@ void CanvasItem::endPointer(PointerSample s){
     else if(state_==State::Moving||state_==State::Resizing||state_==State::Rotating||state_==State::EditingHandle){updateSelection(s.position);commitSelection();}
 }
 void CanvasItem::eraseAt(Point point){
+    InputDiagnosticSpan diagnostic("eraser-move",8000);
     if(!controller_||!controller_->page())return;
     const auto nearby=eraseIndex_.query(lastPan_,point,eraserRadius_);
     const auto eraseVisible=[&](const StrokeObject& stroke){
@@ -288,12 +336,13 @@ void CanvasItem::eraseAt(Point point){
         auto cut=cutStroke(stroke,lastPan_,point,eraserRadius_,shields);
         if(!cut.removed.empty()){
             eraseIndex_.erase(stroke.id);for(const auto& fragment:cut.visible)eraseIndex_.insert(&fragment);
-            for(const auto& fragment:cut.removed)restoreIndex_.insert(&fragment);
+            if(restoreIndexReady_)for(const auto& fragment:cut.removed)restoreIndex_.insert(&fragment);
             recoverableInk_.insert(recoverableInk_.end(),std::make_move_iterator(cut.removed.begin()),std::make_move_iterator(cut.removed.end()));
         }
         return std::move(cut.visible);
     };
     if(shiftHeld_){
+        if(!restoreIndexReady_){for(const auto& ink:recoverableInk_)restoreIndex_.insert(&ink);restoreIndexReady_=true;}
         const auto restorable=restoreIndex_.query(lastPan_,point,eraserRadius_);
         std::vector<StrokeObject> remaining;
         for(auto& ink:recoverableInk_){
@@ -352,8 +401,9 @@ void CanvasItem::eraseAt(Point point){
     lastPan_=point;eraserWorldPosition_=point;selectionUpdated();
 }
 void CanvasItem::commitErase(){
+    InputDiagnosticSpan diagnostic("eraser-commit",8000);
     eraserCursorVisible_=false;
-    eraseIndex_.clear();restoreIndex_.clear();
+    eraseIndex_.clear();restoreIndex_.clear();restoreIndexReady_=false;
     std::vector<ObjectChange> changes;for(const auto& s:eraseBefore_)changes.push_back({CanvasObject(s),{}});for(const auto& s:erasePreview_)changes.push_back({{},CanvasObject(s)});
     for(std::size_t i=0;i<eraseShapesBefore_.size();++i)changes.push_back({CanvasObject(eraseShapesBefore_[i]),CanvasObject(eraseShapesPreview_[i])});
     for(std::size_t i=0;i<eraseFillsBefore_.size();++i)changes.push_back({CanvasObject(eraseFillsBefore_[i]),CanvasObject(eraseFillsPreview_[i])});
@@ -363,18 +413,40 @@ void CanvasItem::setTabletEraser(bool erasing){
     if(erasing==!tabletToolBefore_.isEmpty())return;
     const auto previous=erasing?tool_:tabletToolBefore_;
     // A driver can change pointer type while the tip is still touching the tablet.
-    if(state_==State::Erasing)commitErase();else if(drawing())commit();else cancelStroke();
-    setTool(erasing?QStringLiteral("eraser"):previous);
+    if(state_==State::Erasing)commitErase();else if(drawing())commit();else if(state_!=State::Idle)cancelStroke();
+    const auto next=erasing?QStringLiteral("eraser"):previous;
+    // setTool already clears the idle gesture state; avoid doing that work twice.
+    if(next==tool_)cancelStroke();else setTool(next);
     tabletToolBefore_=erasing?previous:QString{};
 }
 bool CanvasItem::tablet(QTabletEvent* e,QPointF local){
+    TabletEventTrace diagnostic(this,e,local);
     if(!isVisible()||!isEnabled())return false;
+    tabletInProximity_=true;
     const bool inside=QRectF(0,0,width(),height()).contains(local)&&!toolbarExclusion_.contains(local)&&!optionsExclusion_.contains(local);
     const bool eraserPointer=e->pointerType()==QPointingDevice::PointerType::Eraser;
-    const bool changedMode=handToolBefore_.isEmpty()&&(eraserPointer!=!tabletToolBefore_.isEmpty());
+    auto buttons=e->buttons();
+    if(e->type()==QEvent::TabletPress)buttons|=e->button();
+    else if(e->type()==QEvent::TabletRelease)buttons&=~Qt::MouseButtons(e->button());
+    if(e->type()==QEvent::TabletRelease&&(!buttons.testFlag(Qt::LeftButton)||e->pressure()<=0)){
+        eraserCursorVisible_=false;emit selectionChanged();
+    }
+    bool erasing=eraserPointer,penRequested=false,sideButtonHandled=false;
+#ifdef Q_OS_LINUX
+    // Standard stylus side buttons: lower/right temporarily erases; upper/middle selects pen.
+    const bool penPointer=e->pointerType()==QPointingDevice::PointerType::Pen;
+    erasing|=penPointer&&buttons.testFlag(Qt::RightButton);
+    penRequested=penPointer&&inside&&!erasing&&buttons.testFlag(Qt::MiddleButton)&&!tabletButtons_.testFlag(Qt::MiddleButton);
+    sideButtonHandled=penPointer&&(e->button()==Qt::RightButton||e->button()==Qt::MiddleButton||buttons.testFlag(Qt::RightButton)||buttons.testFlag(Qt::MiddleButton));
+#endif
+    tabletButtons_=buttons;
+    const bool changedMode=handToolBefore_.isEmpty()&&((erasing!=!tabletToolBefore_.isEmpty())||(penRequested&&tool_!="pen"));
     const bool wasContact=tabletActive_;
-    if(handToolBefore_.isEmpty()&&(!eraserPointer||inside))setTabletEraser(eraserPointer);
-    const bool continuingContact=e->type()==QEvent::TabletMove||(e->type()==QEvent::TabletRelease&&e->buttons().testFlag(Qt::LeftButton));
+    if(handToolBefore_.isEmpty()){
+        if(!erasing||inside)setTabletEraser(erasing);
+        if(penRequested)setTool(QStringLiteral("pen"));
+    }
+    const bool continuingContact=e->type()==QEvent::TabletMove||(e->type()==QEvent::TabletRelease&&buttons.testFlag(Qt::LeftButton));
     if(changedMode&&wasContact&&continuingContact&&e->pressure()>0&&inside){
         startPointer(InputManager::tablet(*e,world(local)),e->modifiers());tabletActive_=true;
     }
@@ -391,23 +463,26 @@ bool CanvasItem::tablet(QTabletEvent* e,QPointF local){
     } else if(!tabletActive_){
         // Some drivers report zero pressure at press, or coalesce the press into
         // a move. Recover tip contact without treating hover buttons as ink.
-        if(e->type()==QEvent::TabletMove&&inside&&e->pressure()>0&&e->buttons().testFlag(Qt::LeftButton)){
+        if(e->type()==QEvent::TabletMove&&inside&&e->pressure()>0&&buttons.testFlag(Qt::LeftButton)){
             forceActiveFocus();
             if(tool_=="hand"||space_){state_=State::Panning;lastPan_={local.x(),local.y()};updateCursor();}
             else startPointer(InputManager::tablet(*e,world(local)),e->modifiers());
             tabletActive_=true;
-        }else{if(tool_=="eraser"){eraserCursorVisible_=inside;if(inside)eraserWorldPosition_=world(local);emit selectionChanged();}return false;}
+        }else{if(tool_=="eraser"&&e->type()!=QEvent::TabletRelease){eraserCursorVisible_=inside;if(inside)eraserWorldPosition_=world(local);emit selectionChanged();}if(sideButtonHandled){e->accept();return true;}return false;}
     }
     else if(e->type()==QEvent::TabletMove){
         if(state_==State::Panning){const Point p{local.x(),local.y()};view_.pan=view_.pan+p-lastPan_;lastPan_=p;viewUpdated();}
         else movePointer(InputManager::tablet(*e,world(local)));
     } else if(e->type()==QEvent::TabletRelease){
-        if(e->pressure()>0&&e->buttons().testFlag(Qt::LeftButton)){
+        if(e->pressure()>0&&buttons.testFlag(Qt::LeftButton)){
             movePointer(InputManager::tablet(*e,world(local)));e->accept();return true;
         }
         // Release pressure often drops to zero; retain the final nonzero sample.
         eraserCursorVisible_=false;emit selectionChanged();
-        auto sample=InputManager::tablet(*e,world(local));if(!current_.samples.empty())sample.pressure=current_.samples.back().pressure;endPointer(sample);
+        auto sample=InputManager::tablet(*e,world(local));
+        // Pen-up coordinates can jump to the last mouse/toolbar position on some drivers.
+        if(state_==State::Erasing)sample.position=lastPan_;
+        if(!current_.samples.empty())sample.pressure=current_.samples.back().pressure;endPointer(sample);
         state_=State::Idle;tabletActive_=false;updateCursor();
     }
     e->accept();return true;
@@ -426,6 +501,12 @@ bool CanvasItem::eventFilter(QObject* object,QEvent* e){
             }
         }
         // Capture the trigger state before Qt Quick dismisses an outside popup.
+        if(InputDiagnostics::enabled()&&(e->type()==QEvent::MouseButtonPress||e->type()==QEvent::MouseButtonRelease||e->type()==QEvent::MouseMove)){
+            const auto* mouse=static_cast<QMouseEvent*>(e);
+            InputDiagnostics::write({{"phase","mouse"},{"event",int(e->type())},{"source",int(mouse->source())},
+                {"button",int(mouse->button())},{"buttons",int(mouse->buttons().toInt())},
+                {"local",QJsonArray{mouse->position().x(),mouse->position().y()}},{"tool",tool_},{"visible",eraserVisible()}});
+        }
         if(e->type()==QEvent::MouseButtonPress){const auto* mouse=static_cast<QMouseEvent*>(e);if(mouse->button()==Qt::LeftButton)emit windowPointerPressed(mouse->position());}
         if(e->type()==QEvent::MouseButtonRelease){const auto* mouse=static_cast<QMouseEvent*>(e);if(mouse->button()==Qt::LeftButton)emit windowPointerReleased();}
         if(e->type()==QEvent::TouchBegin){const auto* touch=static_cast<QTouchEvent*>(e);if(!touch->points().isEmpty())emit windowPointerPressed(touch->points().front().position());}
@@ -443,7 +524,7 @@ bool CanvasItem::eventFilter(QObject* object,QEvent* e){
             }
         }
         if(e->type()==QEvent::TabletPress||e->type()==QEvent::TabletMove||e->type()==QEvent::TabletRelease){auto* t=static_cast<QTabletEvent*>(e);return tablet(t,mapFromScene(t->position()));}
-        if(e->type()==QEvent::WindowDeactivate){space_=false;cancelStroke();setTemporaryHand(false);setTabletEraser(false);}
+        if(e->type()==QEvent::WindowDeactivate){tabletInProximity_=false;tabletButtons_=Qt::NoButton;space_=false;cancelStroke();setTemporaryHand(false);setTabletEraser(false);}
         if(e->type()==QEvent::NativeGesture && isVisible() && isEnabled() && !drawing()) {
             auto* gesture=static_cast<QNativeGestureEvent*>(e);
             const auto local=mapFromScene(gesture->position());
@@ -489,6 +570,13 @@ void CanvasItem::mouseDoubleClickEvent(QMouseEvent* e){
 }
 void CanvasItem::mouseReleaseEvent(QMouseEvent* e){if(e->button()==Qt::RightButton){e->accept();return;}angleSnap_=e->modifiers().testFlag(Qt::ControlModifier);eraserCtrl_=angleSnap_;if(tool_=="eraser")shiftHeld_=e->modifiers().testFlag(Qt::ShiftModifier);if(tabletActive_){e->accept();return;}eraserCursorVisible_=false;emit selectionChanged();endPointer(InputManager::mouse(*e,world(e->position())));state_=State::Idle;updateCursor();e->accept();}
 void CanvasItem::hoverMoveEvent(QHoverEvent* e){
+    // X11 sends stale Virtual core pointer hover alongside genuine tablet events,
+    // even with MouseEventNotSynthesized. The tablet alone owns the cursor in proximity.
+    if(tabletInProximity_){
+        if(InputDiagnostics::enabled())InputDiagnostics::write({{"phase","hover-ignored"},{"local",QJsonArray{e->position().x(),e->position().y()}},{"tool",tool_}});
+        e->accept();return;
+    }
+    const auto before=InputDiagnostics::enabled()?eraserPosition():QPointF{};
     if(tool_=="select"&&state_==State::Idle){
         bool resizing=false;int corner=0;for(const auto& value:selectionHandles()){const auto handle=value.toMap();
             if(QLineF(e->position(),QPointF(handle["x"].toDouble(),handle["y"].toDouble())).length()<12){resizing=handle["type"].toString()=="resize";corner=handle["index"].toInt();break;}}
@@ -498,11 +586,18 @@ void CanvasItem::hoverMoveEvent(QHoverEvent* e){
         else updateCursor();
     }
     if(tool_=="eraser"&&state_==State::Idle){eraserCursorVisible_=contains(e->position());if(eraserCursorVisible_)eraserWorldPosition_=world(e->position());emit selectionChanged();}
+    if(InputDiagnostics::enabled()){
+        const auto after=eraserPosition();
+        InputDiagnostics::write({{"phase","hover"},{"pointer",int(e->pointerType())},
+            {"device",e->pointingDevice()?e->pointingDevice()->name():QString{}},
+            {"local",QJsonArray{e->position().x(),e->position().y()}},{"tool",tool_},{"visible",eraserVisible()},
+            {"cursor_before",QJsonArray{before.x(),before.y()}},{"cursor_after",QJsonArray{after.x(),after.y()}}});
+    }
     QQuickItem::hoverMoveEvent(e);
 }
-void CanvasItem::hoverLeaveEvent(QHoverEvent* e){eraserCursorVisible_=false;updateCursor();emit selectionChanged();QQuickItem::hoverLeaveEvent(e);}
+void CanvasItem::hoverLeaveEvent(QHoverEvent* e){if(tabletInProximity_){e->accept();return;}eraserCursorVisible_=false;updateCursor();emit selectionChanged();QQuickItem::hoverLeaveEvent(e);}
 void CanvasItem::mouseUngrabEvent(){
-    if(tabletActive_)return;
+    if(tabletActive_||tabletInProximity_)return;
     // A lost mouse grab must not discard ink already shown to the user.
     if(drawing()&&!current_.samples.empty())endPointer(current_.samples.back());
     else cancelStroke();
@@ -566,8 +661,8 @@ void CanvasItem::setTemporaryHand(bool enabled){
 }
 void CanvasItem::keyPressEvent(QKeyEvent* e){if(e->key()==Qt::Key_Shift){shiftHeld_=true;
     if(state_==State::ShapePreview&&previewShape_){previewShape_->style.pattern=LinePattern::Dashed;recognitionDashed_=true;emit drawingChanged();update();}e->accept();}
-    else if(e->key()==Qt::Key_H&&!textInputFocused()&&!(e->modifiers()&(Qt::ControlModifier|Qt::AltModifier|Qt::MetaModifier))){if(!e->isAutoRepeat())setTemporaryHand(true);e->accept();}else if(e->key()==Qt::Key_Control){eraserCtrl_=angleSnap_=true;if(state_==State::Rotating||state_==State::EditingHandle)updateSelection(lastPan_);else if(state_==State::CreatingShape){previewShape_=directShape(dragStart_,lastPan_);selectionUpdated();}else if(state_==State::ShapePreview)updateRecognizedLine(lastPan_);e->accept();}else if(e->key()==Qt::Key_Space){space_=true;updateCursor();e->accept();}else if(e->key()==Qt::Key_Escape){cancelStroke();e->accept();}else QQuickItem::keyPressEvent(e);}
-void CanvasItem::keyReleaseEvent(QKeyEvent* e){if(e->key()==Qt::Key_Shift){shiftHeld_=false;e->accept();}else if(e->key()==Qt::Key_H&&!handToolBefore_.isEmpty()){if(!e->isAutoRepeat())setTemporaryHand(false);e->accept();}else if(e->key()==Qt::Key_Control){eraserCtrl_=angleSnap_=false;if(state_==State::Rotating||state_==State::EditingHandle)updateSelection(lastPan_);else if(state_==State::CreatingShape){previewShape_=directShape(dragStart_,lastPan_);selectionUpdated();}else if(state_==State::ShapePreview)updateRecognizedLine(lastPan_);e->accept();}else if(e->key()==Qt::Key_Space){space_=false;updateCursor();e->accept();}else QQuickItem::keyReleaseEvent(e);}
+    else if(e->key()==Qt::Key_H&&!textInputFocused()&&!(e->modifiers()&(Qt::ControlModifier|Qt::AltModifier|Qt::MetaModifier))){if(!e->isAutoRepeat())setTemporaryHand(true);e->accept();}else if(e->key()==Qt::Key_Control){eraserCtrl_=angleSnap_=true;if(state_==State::RotatingRuler)moveGeometryPointer({lastPan_});else if(state_==State::Rotating||state_==State::EditingHandle)updateSelection(lastPan_);else if(state_==State::CreatingShape){previewShape_=directShape(dragStart_,lastPan_);selectionUpdated();}else if(state_==State::ShapePreview)updateRecognizedLine(lastPan_);e->accept();}else if(e->key()==Qt::Key_Space){space_=true;updateCursor();e->accept();}else if(e->key()==Qt::Key_Escape){cancelStroke();e->accept();}else QQuickItem::keyPressEvent(e);}
+void CanvasItem::keyReleaseEvent(QKeyEvent* e){if(e->key()==Qt::Key_Shift){shiftHeld_=false;e->accept();}else if(e->key()==Qt::Key_H&&!handToolBefore_.isEmpty()){if(!e->isAutoRepeat())setTemporaryHand(false);e->accept();}else if(e->key()==Qt::Key_Control){eraserCtrl_=angleSnap_=false;if(state_==State::RotatingRuler)moveGeometryPointer({lastPan_});else if(state_==State::Rotating||state_==State::EditingHandle)updateSelection(lastPan_);else if(state_==State::CreatingShape){previewShape_=directShape(dragStart_,lastPan_);selectionUpdated();}else if(state_==State::ShapePreview)updateRecognizedLine(lastPan_);e->accept();}else if(e->key()==Qt::Key_Space){space_=false;updateCursor();e->accept();}else QQuickItem::keyReleaseEvent(e);}
 void CanvasItem::geometryChange(const QRectF& current,const QRectF& previous){
     QQuickItem::geometryChange(current,previous);
     if(current.size()==previous.size()||current.isEmpty())return;

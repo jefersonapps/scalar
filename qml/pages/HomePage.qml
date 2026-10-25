@@ -111,7 +111,7 @@ Item {
             Layout.fillWidth: true; spacing: Theme.md
             visible: root.activeFolder==="" && root.viewMode==="folder" && searchField.text==="" && (!root.compactHome || App.folders.length===0)
             Repeater {
-                model: [{icon:"pen",title:"Começar agora",detail:"Um quadro com seu padrão",action:"quick"},{icon:"folder",title:"Abrir projeto",detail:"Retome um arquivo .board",action:"open"},{icon:"page",title:"Importar PDF",detail:"Anote sobre suas páginas",action:"pdf"}]
+                model: [{icon:"pen",title:"Começar agora",detail:"Um quadro com seu padrão",action:"quick"},{icon:"folder",title:"Importar quadro",detail:"Abra um arquivo .scalar ou .board",action:"open"},{icon:"page",title:"Importar PDF",detail:"Anote sobre suas páginas",action:"pdf"}]
                 AbstractButton {
                     required property var modelData
                     implicitHeight: Math.max(root.height<Theme.windowHeight+Theme.section*2 ? Theme.touch+Theme.lg : Theme.homeActionHeight, implicitContentHeight + topPadding + bottomPadding)

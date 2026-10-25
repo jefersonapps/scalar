@@ -22,6 +22,7 @@ C.GlassPopover {
         Text { text: root.compassMode ? "Compasso" : "Régua"; color: Theme.text; font.pixelSize: Theme.body; font.weight: Font.DemiBold }
         Text { text: root.compassMode ? "Raio (mm)" : "Comprimento (mm)"; color: Theme.secondary; font.pixelSize: Theme.caption }
         C.Field { objectName: "geometryMeasure"; Layout.fillWidth: true; text: root.compassMode ? root.canvas.compassRadius.toFixed(1) : root.canvas.rulerLength.toFixed(1); validator: DoubleValidator { bottom: root.compassMode ? 1 : 20; top: 500; locale: "en_US" } onEditingFinished: if(acceptableInput) { if(root.compassMode) root.canvas.compassRadius=Number(text); else root.canvas.rulerLength=Number(text) } }
+        C.ModernCheckBox { objectName: "compassMarkCenterToggle"; visible: root.compassMode; Layout.fillWidth: true; text: "Marcar centro"; checked: App.sessionCompassMarkCenter; onToggled: App.sessionCompassMarkCenter=checked }
         Text { visible: !root.compassMode; text: "Ângulo (graus)"; color: Theme.secondary; font.pixelSize: Theme.caption }
         C.Field { visible: !root.compassMode; Layout.fillWidth: true; text: root.canvas.rulerAngle.toFixed(1); validator: DoubleValidator { bottom: -360; top: 360; locale: "en_US" } onEditingFinished: if(acceptableInput) root.canvas.rulerAngle=Number(text) }
         C.ModernCheckBox { objectName: "rulerSnapToggle"; visible: !root.compassMode; text: "Snap nas bordas da régua"; checked: root.canvas.rulerSnap; onToggled: root.canvas.rulerSnap=checked }

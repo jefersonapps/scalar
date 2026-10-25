@@ -12,7 +12,7 @@ Item {
     width: geometry.length; height: geometry.width
     rotation: geometry.angle; transformOrigin: Item.TopLeft
     Rectangle { anchors.fill: parent; radius: Theme.xs; color: Theme.guideSurface; border.color: Theme.guideInk; border.width: root.canvas.selectedGuide === "ruler" ? Theme.focusBorder : Theme.hairline }
-    Text { x: (root.width-width)/2; y: -height-Theme.sm; text: root.geometry.mm.toFixed(0) + " mm · " + root.geometry.angle.toFixed(1) + "°"; color: Theme.guideInk; font.pixelSize: Theme.caption }
+    Text { x: (root.width-width)/2; y: -height-Theme.sm; text: root.geometry.mm.toFixed(0) + " mm · " + Number(root.geometry.angle.toFixed(1)) + "°"; color: Theme.guideInk; font.pixelSize: Theme.caption }
     Text { x: root.width-width-Theme.md; y: root.height-height-Theme.xs; text: "cm"; color: Theme.guideInk; font.pixelSize: Theme.caption }
     Repeater {
         model: Math.floor(root.geometry.mm/root.tickStep)+1

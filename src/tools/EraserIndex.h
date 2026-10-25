@@ -19,7 +19,7 @@ public:
     void insert(CanvasObjectView object){
         std::visit([&](const auto* value){
             if(!value->properties.visible||value->properties.locked){erase(value->id);return;}
-            auto b=bounds(CanvasObject(*value));
+            auto b=bounds(CanvasObjectView{value});
             if constexpr(requires {value->style;}){const double pad=value->style.maxWidthMm*.5;b={b.left-pad,b.top-pad,b.right+pad,b.bottom+pad};}
             insert(value->id,b);
         },object);
