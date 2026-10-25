@@ -5,7 +5,7 @@ Rectangle {
     id: root
     property bool bold: false
     property bool italic: false
-    property bool latexEnabled: true
+    property bool latexEnabled: false
     property bool showColors: true
     property color selectedColor: Theme.text
     property string formatButtonName: "textFormatButton"

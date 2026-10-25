@@ -14,6 +14,8 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QElapsedTimer>
+#include <QtConcurrent>
 using namespace scalar;
 class MathTests : public QObject {
     Q_OBJECT
@@ -101,6 +103,29 @@ private slots:
         TextObject equation;equation.source="$$\\int_a^b f(x)dx$$";const auto vectorEquation=prepareText(equation);QVERIFY2(vectorEquation.error.isEmpty(),qPrintable(vectorEquation.error));QVERIFY(!vectorEquation.geometry.empty());
         for(int y=0;y<vectorEquation.image.height();++y)for(int x=0;x<vectorEquation.image.width();++x)QVERIFY(qAlpha(vectorEquation.image.pixel(x,y))==0);
         TextObject t;t.source="Área $\\pi r^2$";const auto prepared=prepareText(t);QVERIFY2(prepared.error.isEmpty(),qPrintable(prepared.error));QVERIFY(!prepared.image.isNull());
+    }
+    void mathRuntimeReusesProcessAndRecoversFromInvalidLatex(){
+        if(!QFile::exists(mathRuntimeDirectory()+"/node_modules/mathjax-full/js/mathjax.js"))QSKIP("MathJax package unavailable");
+        auto first=mathFragments("$x^{17}$");QElapsedTimer timer;timer.start();
+        auto error=renderMath(first);QVERIFY2(error.isEmpty(),qPrintable(error));const auto cold=timer.elapsed();
+        auto second=mathFragments("$$x^{18}$$");timer.restart();
+        error=renderMath(second);QVERIFY2(error.isEmpty(),qPrintable(error));const auto warm=timer.elapsed();
+        auto repeated=mathFragments("Texto diferente: $x^{17}$");timer.restart();
+        error=renderMath(repeated);QVERIFY2(error.isEmpty(),qPrintable(error));const auto cached=timer.elapsed();
+        QCOMPARE(repeated[0].svg,first[0].svg);QVERIFY(repeated[0].start!=first[0].start);
+        QVERIFY(second[0].display);
+        auto invalid=mathFragments("$\\frac{$");QVERIFY(!renderMath(invalid).isEmpty());
+        auto macro=mathFragments("$\\newcommand{\\scalarprobe}{x}\\scalarprobe$");
+        error=renderMath(macro);QVERIFY2(error.isEmpty(),qPrintable(error));
+        auto isolated=mathFragments("$\\scalarprobe$");error=renderMath(isolated);QVERIFY2(error.isEmpty(),qPrintable(error));
+        // MathJax's noundefined package displays unknown commands literally.
+        QVERIFY(isolated[0].widthEm>macro[0].widthEm);
+        auto future=QtConcurrent::run([]{auto parts=mathFragments("$y^{19}$");return renderMath(parts);});
+        auto recovered=mathFragments("$z^{20}$");error=renderMath(recovered);QVERIFY2(error.isEmpty(),qPrintable(error));
+        future.waitForFinished();QVERIFY2(future.result().isEmpty(),qPrintable(future.result()));
+        TextObject text;text.source="$x^{17}$";timer.restart();const auto prepared=prepareText(text);
+        QVERIFY2(prepared.error.isEmpty(),qPrintable(prepared.error));QVERIFY(!prepared.geometry.empty());
+        qInfo("Math latency: first=%lld ms, new formula=%lld ms, cached=%lld ms, full cached text preparation=%lld ms",cold,warm,cached,timer.elapsed());
     }
 };
 QTEST_MAIN(MathTests)

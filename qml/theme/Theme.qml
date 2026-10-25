@@ -95,6 +95,9 @@ QtObject {
     readonly property color compassHighlight: "#e6edf3"
     readonly property color compassGrip: dark ? "#435363" : "#46586b"
     readonly property color compassPencil: dark ? "#75b6cc" : "#29859f"
+    readonly property color compassControl: "#075575"
+    readonly property color compassControlEdge: "#91d8ee"
+    readonly property color compassControlInk: "#ffffff"
     readonly property int toolbarHeight: 56
     readonly property int handleSize: 12
     readonly property int propertiesWidth: 280

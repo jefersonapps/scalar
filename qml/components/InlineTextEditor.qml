@@ -123,6 +123,7 @@ Item {
         }
         TextEditingToolbar {
             objectName: "inlineTextControls"
+            enabled: !root.committing
             x: 0; y: -height-Theme.xs
             bold: root.selectionStyle.bold || false; italic: root.selectionStyle.italic || false
             latexEnabled: root.draft.latexEnabled !== false
@@ -132,6 +133,27 @@ Item {
             onBoldRequested: root.toggleEmphasis(true)
             onItalicRequested: root.toggleEmphasis(false)
             onColorPicked: value => root.applyColor(value)
+        }
+        Rectangle {
+            objectName: "inlineTextBusyIndicator"
+            visible: root.committing && App.textBusy
+            x: 0; y: box.height+Theme.xs
+            width: busyContent.width+2*Theme.sm; height: busyContent.height+2*Theme.xs
+            radius: Theme.radiusSmall; color: Theme.surface; border.color: Theme.accent
+            Accessible.role: Accessible.StaticText
+            Accessible.name: busyLabel.text
+            Row {
+                id: busyContent
+                anchors.centerIn: parent; spacing: Theme.xs
+                BusyIndicator { width: 20; height: 20; running: parent.parent.visible }
+                Text {
+                    id: busyLabel
+                    objectName: "inlineTextBusyLabel"
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: root.draft.latexEnabled !== false ? "Compilando LaTeX…" : "Salvando texto…"
+                    color: Theme.text; font.pixelSize: Theme.caption
+                }
+            }
         }
         Rectangle {
             objectName: "inlineTextResizeHandle"

@@ -222,6 +222,7 @@ private:
     void finishGeometryPointer();
     void resetGeometryTools();
     ShapeObject compassCircle() const;
+    Point compassDrawHandle() const;
     void commitCompassObject(CanvasObject object);
     Point world(QPointF p) const {return view_.screenToWorld({p.x(),p.y()});}
     void begin(PointerSample sample);

@@ -312,7 +312,7 @@ private:
     QHash<QString,QSizeF> textSizes_;
     quint64 revision_=0;
     bool recognitionEnabled_=true;
-    bool sessionLatexEnabled_=true;
+    bool sessionLatexEnabled_=false;
     bool sessionCompassMarkCenter_=true;
     int holdDelay_=1000;
     bool imageImportPending_=false;

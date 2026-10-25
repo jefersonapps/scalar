@@ -116,7 +116,7 @@ C.ModernDialog {
                     }
                 }
                 Text {
-                    text: "Padrão salvo para novas caixas de texto. Alterações na caixa valem durante a sessão do quadro, em todas as páginas."
+                    text: "Padrão salvo para novas caixas de texto. Alterações na caixa valem durante a sessão do quadro, em todas as páginas.\nPara interpretar equações LaTeX, use $...$ no texto ou $$...$$ em destaque. Exemplo: $x^2$ ou $$x^2$$."
                     Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.secondary; font.pixelSize: Theme.caption
                 }
             }

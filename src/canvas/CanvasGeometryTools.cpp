@@ -5,9 +5,14 @@ QVariantMap CanvasItem::rulerGeometry() const {
     const auto origin=view_.worldToScreen(ruler_.origin);const double scale=view_.pixelsPerMm*view_.zoom;
     return {{"x",origin.x},{"y",origin.y},{"angle",rulerAngle()},{"length",ruler_.lengthMm*scale},{"width",RulerGeometry::widthMm*scale},{"scale",scale},{"mm",ruler_.lengthMm}};
 }
+Point CanvasItem::compassDrawHandle() const {
+    const auto tip=compass_.pencil(),direction=tip-compass_.hinge();
+    return tip+direction*(34./(view_.pixelsPerMm*view_.zoom*length(direction)));
+}
 QVariantMap CanvasItem::compassGeometry() const {
     const auto center=view_.worldToScreen(compass_.center),pencil=view_.worldToScreen(compass_.pencil()),hinge=view_.worldToScreen(compass_.hinge()),opening=view_.worldToScreen(compass_.openingHandle());
-    return {{"cx",center.x},{"cy",center.y},{"px",pencil.x},{"py",pencil.y},{"hx",hinge.x},{"hy",hinge.y},{"ox",opening.x},{"oy",opening.y},{"radius",compass_.radiusMm*view_.pixelsPerMm*view_.zoom},{"mm",compass_.radiusMm}};
+    const auto draw=view_.worldToScreen(compassDrawHandle());
+    return {{"cx",center.x},{"cy",center.y},{"px",pencil.x},{"py",pencil.y},{"dx",draw.x},{"dy",draw.y},{"hx",hinge.x},{"hy",hinge.y},{"ox",opening.x},{"oy",opening.y},{"radius",compass_.radiusMm*view_.pixelsPerMm*view_.zoom},{"mm",compass_.radiusMm}};
 }
 void CanvasItem::centerGeometryTools(){
     cancelStroke();const auto center=world({width()/2,height()/2});ruler_.origin=center-Point{ruler_.lengthMm/2,RulerGeometry::widthMm/2};ruler_.angle=0;compass_.center=center;emit geometryToolsChanged();
@@ -25,7 +30,7 @@ bool CanvasItem::beginGeometryPointer(PointerSample s){
     const double tolerance=12/(view_.pixelsPerMm*view_.zoom);const auto p=s.position;
     if(compassVisible_&&(tool_=="compass"||tool_=="select")){
         compassBefore_=compass_;dragStart_=p;
-        const double pencil=length(p-compass_.pencil()),center=length(p-compass_.center),opening=length(p-compass_.openingHandle()),hinge=length(p-compass_.hinge());
+        const double pencil=std::min(length(p-compass_.pencil()),length(p-compassDrawHandle())),center=length(p-compass_.center),opening=length(p-compass_.openingHandle()),hinge=length(p-compass_.hinge());
         const double nearest=std::min({pencil,center,opening,hinge});
         if(pencil==nearest&&nearest<tolerance){
             if(s.device==DeviceType::Touch){compassBefore_.reset();return false;}
@@ -71,7 +76,9 @@ bool CanvasItem::moveGeometryPointer(PointerSample s){
     }
     else if(state_==State::DrawingCompass){
         if(length(p-compass_.center)<.1)return true;
-        const double angle=std::atan2(p.y-compass_.center.y,p.x-compass_.center.x),previous=compassSweep_.angle(),delta=compassSweep_.advance(angle);
+        // Keep the initial angular offset when grabbing the control beyond the tip.
+        const auto start=dragStart_-compass_.center;
+        const double angle=compassBefore_->angle+std::atan2(p.y-compass_.center.y,p.x-compass_.center.x)-std::atan2(start.y,start.x),previous=compassSweep_.angle(),delta=compassSweep_.advance(angle);
         compass_.angle=compassSweep_.angle();
         if(!compassComplete_){const int steps=std::max(1,int(std::ceil(std::abs(delta)/(std::numbers::pi/90))));s=input_.filter(s);
             for(int i=1;i<=steps;++i){auto sample=s;const double a=previous+delta*i/steps;sample.position=compass_.center+Point{std::cos(a),std::sin(a)}*compass_.radiusMm;current_.samples.push_back(sample);}

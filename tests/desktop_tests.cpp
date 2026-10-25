@@ -201,7 +201,7 @@ private slots:
     }
     void tabletEraserReleaseKeepsLastPositionAndDistantInk(){
         QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();controller.setRecognitionEnabled(false);
-        StrokeObject near;near.id=newId();near.samples={{{50,50},1},{{55,50},1}};controller.addStroke(near);
+        StrokeObject nearbyStroke;nearbyStroke.id=newId();nearbyStroke.samples={{{50,50},1},{{55,50},1}};controller.addStroke(nearbyStroke);
         StrokeObject distant;distant.id=newId();distant.samples={{{80,80},1},{{85,80},1}};controller.addStroke(distant);
         QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
         QVERIFY(!engine.rootObjects().isEmpty());auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));
@@ -1225,9 +1225,10 @@ private slots:
         canvas->setTool("compass");canvas->setCompassRadius(25);canvas->setTool("select");const auto m=canvas->compassGeometry();
         const auto circlePoint=[&](double angle){return canvas->mapToScene({m["cx"].toDouble()+m["radius"].toDouble()*std::cos(angle),m["cy"].toDouble()+m["radius"].toDouble()*std::sin(angle)}).toPoint();};
         QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,circlePoint(0));QVERIFY(canvas->drawing());for(int i=1;i<=180;++i)QTest::mouseMove(window,circlePoint(i*std::numbers::pi/90));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,circlePoint(2*std::numbers::pi));QCOMPARE(controller.page()->shapes.size(),std::size_t(1));QCOMPARE(controller.page()->shapes[0].radiusX,25.);QCOMPARE(canvas->tool(),QString("select"));controller.undo();QVERIFY(controller.page()->shapes.empty());controller.redo();
+        const auto strokesBeforeRuler=controller.page()->strokes.size();
         canvas->setCompassVisible(false);canvas->setTool("ruler");canvas->setRulerAngle(0);const auto r=canvas->rulerGeometry();const double scale=r["scale"].toDouble();
         const auto edgePoint=[&](double x,double y){return canvas->mapToScene({r["x"].toDouble()+x*scale,r["y"].toDouble()+y*scale}).toPoint();};
-        canvas->setTool("pen");QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,edgePoint(20,-1));QTest::mouseMove(window,edgePoint(40,-1));QTest::mouseMove(window,edgePoint(60,-15));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,edgePoint(70,-15));QCOMPARE(controller.page()->strokes.size(),std::size_t(1));const auto& samples=controller.page()->strokes[0].samples;QVERIFY(samples.size()>=3);const double initialY=samples.front().position.y;QVERIFY(std::abs(samples[1].position.y-initialY)<1e-8);QVERIFY(samples.back().position.y<initialY-10);QCOMPARE(warnings.size(),0);QVERIFY(controller.shutdown());
+        canvas->setTool("pen");QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,edgePoint(20,-1));QTest::mouseMove(window,edgePoint(40,-1));QTest::mouseMove(window,edgePoint(60,-15));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,edgePoint(70,-15));QCOMPARE(controller.page()->strokes.size(),strokesBeforeRuler+1);const auto& samples=controller.page()->strokes.back().samples;QVERIFY(samples.size()>=3);const double initialY=samples.front().position.y;QVERIFY(std::abs(samples[1].position.y-initialY)<1e-8);QVERIFY(samples.back().position.y<initialY-10);QCOMPARE(warnings.size(),0);QVERIFY(controller.shutdown());
     }
     void rulerBlocksInkInsideBody(){
         QTemporaryDir dir;AppController controller(nullptr,dir.path());controller.newDefault();controller.setRecognitionEnabled(false);
@@ -1299,6 +1300,28 @@ private slots:
             QVERIFY(QLineF(center,rulerPoint(canvas.rulerLength()/2,RulerGeometry::widthMm/2)).length()<1e-8);
         }
         QVERIFY(controller.page()->strokes.empty());QVERIFY(controller.shutdown());
+    }
+    void compassOffsetDrawHandlePreservesTipAndRadius(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();canvas.setTool("compass");
+        for(double zoom:{1.,2.}){
+            canvas.setZoom(zoom);
+            const auto g=canvas.compassGeometry();
+            const QPointF tip(g["px"].toDouble(),g["py"].toDouble()),center(g["cx"].toDouble(),g["cy"].toDouble()),handle(g["dx"].toDouble(),g["dy"].toDouble());
+            QVERIFY(std::abs(QLineF(tip,handle).length()-34)<1e-8);
+            const auto send=[&](QEvent::Type type,QPointF local){QMouseEvent event(type,local,local,type==QEvent::MouseMove?Qt::NoButton:Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);if(type==QEvent::MouseButtonPress)canvas.mousePressEvent(&event);else canvas.mouseMoveEvent(&event);};
+            send(QEvent::MouseButtonPress,handle);QVERIFY(canvas.drawing());
+            send(QEvent::MouseMove,handle);
+            QVERIFY(std::abs(canvas.compassGeometry()["px"].toDouble()-tip.x())<1e-8);
+            QVERIFY(std::abs(canvas.compassGeometry()["py"].toDouble()-tip.y())<1e-8);
+            const auto offset=handle-center;send(QEvent::MouseMove,center+QPointF(-offset.y(),offset.x()));
+            const auto rotated=canvas.compassGeometry();const auto radius=tip-center;
+            QVERIFY(std::abs(rotated["px"].toDouble()-(center.x()-radius.y()))<1e-8);
+            QVERIFY(std::abs(rotated["py"].toDouble()-(center.y()+radius.x()))<1e-8);
+            QCOMPARE(rotated["mm"],g["mm"]);
+            QKeyEvent cancel(QEvent::KeyPress,Qt::Key_Escape,Qt::NoModifier);canvas.keyPressEvent(&cancel);
+        }
+        QVERIFY(controller.shutdown());
     }
     void rulerSnapAndCompassGestures(){
         QTemporaryDir dir;AppController controller(nullptr,dir.path());controller.setTheme("Dark");controller.newDefault();controller.setRecognitionEnabled(false);
@@ -1923,13 +1946,16 @@ private slots:
         QTemporaryDir directory;
         {
             AppController controller(nullptr,directory.path());
-            QVERIFY(controller.defaultLatexEnabled());QVERIFY(controller.sessionLatexEnabled());
+            QVERIFY(!controller.defaultLatexEnabled());QVERIFY(!controller.sessionLatexEnabled());
             QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);
             engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
             QVERIFY(!engine.rootObjects().isEmpty());auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));
             auto* settings=window->findChild<QObject*>("settingsDialog");QVERIFY(settings);
             QVERIFY(QMetaObject::invokeMethod(settings,"open"));QTRY_VERIFY(settings->property("opened").toBool());
             auto* latex=findVisualItem(window->contentItem(),"defaultLatexControl");QVERIFY(latex);
+            QCOMPARE(latex->property("currentIndex").toInt(),0);
+            QVERIFY(QMetaObject::invokeMethod(latex,"selected",Q_ARG(int,1)));
+            QVERIFY(controller.defaultLatexEnabled());QVERIFY(controller.sessionLatexEnabled());
             QCOMPARE(latex->property("currentIndex").toInt(),1);
             QVERIFY(QMetaObject::invokeMethod(latex,"selected",Q_ARG(int,0)));
             QVERIFY(!controller.defaultLatexEnabled());QCOMPARE(latex->property("currentIndex").toInt(),0);
@@ -1952,6 +1978,31 @@ private slots:
         AppController controller(nullptr,directory.path());
         QVERIFY(controller.defaultLatexEnabled());QVERIFY(controller.sessionLatexEnabled());QVERIFY(controller.shutdown());
     }
+    void inlineLatexShowsBusyFeedbackAndRecoversFromErrors(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();controller.setSessionLatexEnabled(true);
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);
+        auto* dialog=window->findChild<QObject*>("inlineTextEditor");QVERIFY(dialog);
+        int nextY=220;
+        const auto begin=[&]{canvas->setTool("text");QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,canvas->mapToScene(QPointF(400,nextY)).toPoint());nextY+=100;};
+        begin();auto* source=findVisualItem(window->contentItem(),"textSource");QVERIFY(source);QTRY_VERIFY(source->hasActiveFocus());
+        auto* indicator=findVisualItem(window->contentItem(),"inlineTextBusyIndicator");QVERIFY(indicator);
+        auto* label=findVisualItem(window->contentItem(),"inlineTextBusyLabel");QVERIFY(label);
+        auto* controls=findVisualItem(window->contentItem(),"inlineTextControls");QVERIFY(controls);
+        QVERIFY(!indicator->isVisible());source->setProperty("text","$x^2$");
+        QVERIFY(QMetaObject::invokeMethod(dialog,"finish"));QVERIFY(controller.textBusy());QVERIFY(indicator->isVisible());
+        QCOMPARE(label->property("text").toString(),QString::fromUtf8("Compilando LaTeX…"));QVERIFY(!source->isEnabled());QVERIFY(!controls->isEnabled());
+        QTRY_VERIFY(!controller.textBusy());QVERIFY(controller.textError().isEmpty());QVERIFY(!dialog->property("active").toBool());QVERIFY(!indicator->isVisible());
+        QCOMPARE(controller.page()->texts.size(),std::size_t(1));
+        begin();QTRY_VERIFY(source->hasActiveFocus());source->setProperty("text","$\\frac{$");
+        QVERIFY(QMetaObject::invokeMethod(dialog,"finish"));QVERIFY(indicator->isVisible());
+        QTRY_VERIFY(!controller.textBusy());QVERIFY(!controller.textError().isEmpty());QVERIFY(!indicator->isVisible());
+        QVERIFY(dialog->property("active").toBool());QVERIFY(source->isEnabled());QVERIFY(controls->isEnabled());
+        source->setProperty("text","$x^3$");QVERIFY(QMetaObject::invokeMethod(dialog,"finish"));QTRY_VERIFY(!controller.textBusy());
+        QVERIFY(controller.textError().isEmpty());QCOMPARE(controller.page()->texts.size(),std::size_t(2));
+        QVERIFY(warnings.isEmpty());QVERIFY(controller.shutdown());
+    }
     void inlineLatexToggleKeepsCurrencyLiteral(){
         QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
         QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
@@ -1961,7 +2012,7 @@ private slots:
         auto* source=findVisualItem(window->contentItem(),"textSource");QVERIFY(source);QTRY_VERIFY(source->hasActiveFocus());
         const auto currency=QStringLiteral("Investiu R$ 8.000,00 e recebeu R$ 10.464,98.");source->setProperty("text",currency);
         auto* latex=findVisualItem(window->contentItem(),"inlineLatexButton");QVERIFY(latex);QVERIFY(latex->isVisible());
-        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,latex->mapToScene({latex->width()/2,latex->height()/2}).toPoint());
+        QVERIFY(!latex->property("checked").toBool());
         QVERIFY(!source->property("latexEnabled").toBool());QVERIFY(source->hasActiveFocus());QCOMPARE(source->property("text").toString(),currency);
         QVERIFY(!canvas->isEnabled()); // Drawing is suspended while typing; navigation must still work.
         QVERIFY(QMetaObject::invokeMethod(source,"select",Q_ARG(int,0),Q_ARG(int,8)));
@@ -1981,7 +2032,7 @@ private slots:
         const auto& text=controller.page()->texts[0];QVERIFY(!text.latexEnabled);QVERIFY(text.math.empty());QCOMPARE(QString::fromStdString(text.source),currency);
         QVERIFY(!controller.textValues(QString::fromStdString(text.id))["latexEnabled"].toBool());
         controller.undo();QVERIFY(controller.page()->texts.empty());controller.redo();QVERIFY(!controller.page()->texts[0].latexEnabled);
-        QVERIFY(!controller.sessionLatexEnabled());QVERIFY(controller.defaultLatexEnabled());
+        QVERIFY(!controller.sessionLatexEnabled());QVERIFY(!controller.defaultLatexEnabled());
         const auto beginBox=[&]{
             canvas->setTool("text");
             QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,canvas->mapToScene(QPointF(400,350)).toPoint());

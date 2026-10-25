@@ -6,4 +6,5 @@ namespace scalar {
 std::vector<MathFragment> mathFragments(const std::string& source);
 QString renderMath(std::vector<MathFragment>& fragments);
 QString mathRuntimeDirectory();
+void warmMathRuntime();
 }

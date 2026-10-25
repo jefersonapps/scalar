@@ -51,28 +51,45 @@ Item {
         x: root.geometry.hx; y: root.geometry.hy
         rotation: root.heading; transformOrigin: Item.TopLeft
         Rectangle {
-            x: -width/2; y: -Theme.compassJointSize/2-Theme.compassGripLength
-            width: Theme.compassLegWidth; height: Theme.compassGripLength
-            radius: Theme.xs; color: Theme.compassGrip; border.color: Theme.compassMetalEdge
+            x: -width/2; y: -Theme.compassJointSize/2-Theme.compassGripLength+4
+            width: 14; height: Theme.compassGripLength
+            radius: 5; color: Theme.compassGrip; border.color: Theme.compassMetalEdge
+            Repeater {
+                model: 3
+                Rectangle { required property int index; x: 3; y: 5+index*4; width: 8; height: 1; color: Theme.compassMetal }
+            }
         }
         Rectangle {
             x: -width/2; y: -height/2; width: Theme.compassJointSize; height: width; radius: width/2
-            color: Theme.compassMetal; border.color: root.canvas.selectedGuide === "compass" ? Theme.guideInk : Theme.compassMetalEdge; border.width: Theme.focusBorder
-            Rectangle { anchors.centerIn: parent; width: Theme.compassLegWidth; height: Theme.hairline; rotation: -45; color: Theme.compassGrip }
+            gradient: Gradient {
+                GradientStop { position: 0; color: Theme.compassHighlight }
+                GradientStop { position: 1; color: Theme.compassMetal }
+            }
+            border.color: root.canvas.selectedGuide === "compass" ? Theme.compassControlEdge : Theme.compassMetalEdge
+            border.width: Theme.hairline
+            Rectangle {
+                anchors.centerIn: parent; width: 18; height: width; radius: width/2
+                color: Theme.compassGrip; border.color: Theme.compassMetalEdge
+                Rectangle {
+                    anchors.centerIn: parent; width: 8; height: width; radius: width/2
+                    color: Theme.compassMetal; border.color: Theme.compassHighlight
+                }
+            }
         }
     }
     Rectangle {
         x: root.geometry.ox-width/2; y: root.geometry.oy-height/2
-        width: Theme.guideHandle; height: width; radius: Theme.xs
-        rotation: root.heading; color: Theme.compassPencil; border.color: Theme.compassHighlight
-        Icon { anchors.centerIn: parent; width: Theme.guideHandle-Theme.xs; height: width; name: "resize"; color: Theme.compassHighlight }
+        objectName: "compassOpeningHandle"
+        width: 28; height: 24; radius: 7
+        rotation: root.heading; color: Theme.compassControl; border.color: Theme.compassControlEdge; border.width: Theme.focusBorder
+        Icon { anchors.centerIn: parent; width: 20; height: width; name: "resize"; color: Theme.compassControlInk }
     }
     Rectangle {
         objectName: "compassDrawHandle"
-        x: root.geometry.px-width/2; y: root.geometry.py-height/2
-        width: Theme.xl; height: width; radius: width/2
-        color: Theme.surface; border.color: Theme.compassPencil; border.width: Theme.focusBorder
-        Icon { anchors.centerIn: parent; width: Theme.guideHandle; height: width; name: "rotate"; color: Theme.guideInk }
+        x: root.geometry.dx-width/2; y: root.geometry.dy-height/2
+        width: 28; height: width; radius: width/2
+        color: Theme.compassControl; border.color: Theme.compassControlEdge; border.width: Theme.focusBorder
+        Icon { anchors.centerIn: parent; width: 18; height: width; name: "rotate"; color: Theme.compassControlInk }
     }
     Text {
         x: root.geometry.hx+Theme.compassJointSize; y: root.geometry.hy-height-Theme.sm

@@ -1,6 +1,7 @@
 #include "AppController.h"
 #include "tools/RegionFill.h"
 #include "documents/Backgrounds.h"
+#include "math/MathRenderer.h"
 #include "persistence/Thumbnail.h"
 #include <QStandardPaths>
 #include <QDir>
@@ -59,6 +60,7 @@ AppController::AppController(QObject* parent,const QString& dataDirectory):QObje
     QDir().mkpath(dataDir_+"/projects"); library_=std::make_unique<Library>(dataDir_+"/library.sqlite");
     recognitionEnabled_=library_->setting("recognitionEnabled",true).toBool();holdDelay_=std::clamp(library_->setting("holdDelay",1000).toInt(),250,1500);
     sessionLatexEnabled_=defaultLatexEnabled();
+    if(sessionLatexEnabled_)warmMathRuntime();
     qGuiApp->installEventFilter(this);
     connect(this,&AppController::preferencesChanged,this,[this]{
         const auto mode=theme();const bool dark=mode=="Dark"||(mode=="System"&&systemDark());
@@ -184,13 +186,13 @@ void AppController::setReducedEffects(bool v){library_->setSetting("reducedEffec
 bool AppController::disableToolbarBlur() const {return library_->setting("disableToolbarBlur",false).toBool();}
 void AppController::setDisableToolbarBlur(bool value){if(value==disableToolbarBlur())return;library_->setSetting("disableToolbarBlur",value);emit preferencesChanged();}
 QString AppController::defaultSize() const{return library_->setting("defaultSize","A4").toString();}
-bool AppController::defaultLatexEnabled() const {return library_->setting("defaultLatexEnabled",true).toBool();}
+bool AppController::defaultLatexEnabled() const {return library_->setting("defaultLatexEnabled",false).toBool();}
 QColor AppController::customPenColor() const {return QColor(library_->setting("customPenColor","#268fb5").toString());}
 void AppController::setCustomPenColor(const QColor& value){if(!value.isValid()||value==customPenColor())return;library_->setSetting("customPenColor",value.name(QColor::HexArgb));emit preferencesChanged();}
 QColor AppController::customMarkerColor() const {return QColor(library_->setting("customMarkerColor","#b98624").toString());}
 void AppController::setCustomMarkerColor(const QColor& value){if(!value.isValid()||value==customMarkerColor())return;library_->setSetting("customMarkerColor",value.name(QColor::HexArgb));emit preferencesChanged();}
 void AppController::setDefaultLatexEnabled(bool value){library_->setSetting("defaultLatexEnabled",value);setSessionLatexEnabled(value);emit preferencesChanged();}
-void AppController::setSessionLatexEnabled(bool value){if(sessionLatexEnabled_==value)return;sessionLatexEnabled_=value;emit sessionLatexEnabledChanged();}
+void AppController::setSessionLatexEnabled(bool value){if(sessionLatexEnabled_==value)return;sessionLatexEnabled_=value;if(value)warmMathRuntime();emit sessionLatexEnabledChanged();}
 void AppController::setDefaultSize(const QString& v){if(v!="A4"&&v!="Carta")return;library_->setSetting("defaultSize",v);emit preferencesChanged();}
 bool AppController::defaultLandscape() const{return library_->setting("defaultLandscape",false).toBool();}
 void AppController::setDefaultLandscape(bool v){library_->setSetting("defaultLandscape",v);emit preferencesChanged();}
