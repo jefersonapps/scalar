@@ -28,7 +28,7 @@ QtObject {
     readonly property int homeHeroCompactHeight: 168
     readonly property int homeHeroMediumHeight: 224
     readonly property int homeActionHeight: 80
-    readonly property color shadow: dark ? "#70000000" : "#1026384a"
+    readonly property color shadow: dark ? "#38000000" : "#2826384a"
     readonly property color scrim: dark ? "#80000000" : "#60202020"
     readonly property var backgroundColors: ["#ffffff","#fff7e6","#fef3c7","#dcfce7","#dbeafe","#fce7f3","#ede9fe","#214f43","#18221e","#000000"]
     readonly property var basicColors: ["#ffffff","#000000","#ef4444","#f97316","#eab308","#22c55e","#14b8a6","#3b82f6","#8b5cf6","#ec4899"]

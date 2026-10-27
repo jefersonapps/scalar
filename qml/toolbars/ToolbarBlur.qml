@@ -29,18 +29,28 @@ Item {
         color: "white"
         visible: false
         layer.enabled: true
-        layer.textureSize: Qt.size(Math.max(1, Math.ceil(width / 4)), Math.max(1, Math.ceil(height / 4)))
+        layer.smooth: true
+    }
+    Item {
+        id: blurredBackdrop
+        anchors.fill: parent
+        visible: false
+        MultiEffect {
+            // Downsample the blur, while preserving a full-resolution final mask.
+            width: root.width / 4
+            height: root.height / 4
+            scale: 4
+            transformOrigin: Item.TopLeft
+            source: backdrop
+            blurEnabled: true
+            blurMax: 8
+            blur: 1
+            autoPaddingEnabled: false
+        }
     }
     MultiEffect {
-        // Run every blur pass at quarter resolution, then upscale once.
-        width: root.width / 4
-        height: root.height / 4
-        scale: 4
-        transformOrigin: Item.TopLeft
-        source: backdrop
-        blurEnabled: true
-        blurMax: 8
-        blur: 1
+        anchors.fill: parent
+        source: blurredBackdrop
         autoPaddingEnabled: false
         maskEnabled: true
         maskSource: glassMask
