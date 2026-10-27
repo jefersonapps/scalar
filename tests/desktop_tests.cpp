@@ -20,6 +20,8 @@
 #include <QMimeData>
 #include <QCoreApplication>
 #include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDragLeaveEvent>
 #include <QDropEvent>
 #include <QTabletEvent>
 #include <QWheelEvent>
@@ -1882,6 +1884,136 @@ private slots:
         QCOMPARE(selector->property("fontFamily").toString(),controller.defaultTextFont());
         QVariant label;QVERIFY(QMetaObject::invokeMethod(selector.get(),"familyLabel",Q_RETURN_ARG(QVariant,label),Q_ARG(QVariant,controller.defaultTextFont())));QCOMPARE(label.toString(),QString("LaTeX"));
         QVERIFY(QMetaObject::invokeMethod(selector.get(),"familyLabel",Q_RETURN_ARG(QVariant,label),Q_ARG(QVariant,QString("Lobster Two"))));QCOMPARE(label.toString(),QString("Lobster Two"));
+    }
+    void scalarDropImportsIndependentSavedCopiesAcrossWindow(){
+        QTemporaryDir directory;const auto libraryPath=directory.filePath("library");
+        Project original{newId(),"Aula de geometria – revisão","created","updated",{}};
+        Page first;first.id=newId();first.size=PageSize::a4();first.backgroundStyle.gridType=GridType::Square;
+        StrokeObject stroke;stroke.id=newId();stroke.samples={{{10,20},.4},{{30,40},.8}};first.strokes.push_back(stroke);
+        ShapeObject shape;shape.id=newId();shape.kind=ShapeKind::Circle;shape.center={40,50};shape.radiusX=shape.radiusY=15;shape.properties.locked=true;first.shapes.push_back(shape);
+        Page second;second.id=newId();second.size=PageSize::letter();second.background=0x171719ff;
+        TextObject text;text.id=newId();text.source="Valor R$ 100,00";text.latexEnabled=false;text.corners={{10,10},{80,10},{80,30},{10,30}};second.texts.push_back(text);
+        QImage image(12,12,QImage::Format_ARGB32);image.fill(Qt::green);const auto encoded=encodeImage(image,{80,80},second.size);QVERIFY(encoded.error.isEmpty());second.images.push_back(encoded.object);
+        const auto pdfPath=directory.filePath("source.pdf");{QPdfWriter writer(pdfPath);QPainter painter(&writer);painter.drawText(100,100,"Embedded PDF");}
+        QFile pdf(pdfPath);QVERIFY(pdf.open(QIODevice::ReadOnly));const auto pdfBytes=pdf.readAll();pdf.close();
+        first.pdf=PdfPageObject{newId(),std::make_shared<const std::vector<std::uint8_t>>(pdfBytes.begin(),pdfBytes.end()),0,1,first.size};
+        original.pages={first,second};const auto source=directory.filePath("aula com espaço #1.SCALAR.ZIP");QVERIFY(ProjectStore::save(source,original).isEmpty());
+        QFile archive(source);QVERIFY(archive.open(QIODevice::ReadOnly));const auto sourceBytes=archive.readAll();archive.close();
+        QStringList importedPaths;QSet<QString> importedIds;
+        {
+            AppController controller(nullptr,libraryPath);
+            QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
+            QVERIFY(!engine.rootObjects().isEmpty());auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));
+            auto dropAt=[&](QPoint position){
+                QMimeData mime;mime.setUrls({QUrl::fromLocalFile(source)});
+                QDragEnterEvent enter(position,Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QCoreApplication::sendEvent(window,&enter);QVERIFY(enter.isAccepted());
+                QDragMoveEvent move(position,Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QCoreApplication::sendEvent(window,&move);QVERIFY(move.isAccepted());
+                QDropEvent drop(position,Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QCoreApplication::sendEvent(window,&drop);QVERIFY(drop.isAccepted());
+            };
+            // Home, canvas fallback, editor header, floating toolbar, and modal popup.
+            for(int area=0;area<5;++area){
+                QPoint position(window->width()/2,window->height()/2);
+                if(area==2)position={20,20};
+                if(area==3){auto* toolbar=findVisualItem(window->contentItem(),"floatingToolbar");QVERIFY(toolbar);position=toolbar->mapToScene({toolbar->width()/2,toolbar->height()/2}).toPoint();}
+                auto* projectDrop=findVisualItem(window->contentItem(),"projectImportDropArea");QVERIFY(projectDrop);
+                if(area==1)projectDrop->setEnabled(false);
+                QObject* settings=nullptr;
+                if(area==4){settings=window->findChild<QObject*>("settingsDialog");QVERIFY(settings);QVERIFY(QMetaObject::invokeMethod(settings,"open"));QTRY_VERIFY(settings->property("opened").toBool());}
+                dropAt(position);QTRY_VERIFY(!controller.leaving()&&!controller.loading());
+                if(area==1)projectDrop->setEnabled(true);
+                if(area==0)QVERIFY(!controller.active());
+                QCOMPARE(controller.recentProjects().size(),area+1);
+                for(const auto& value:controller.recentProjects()){
+                    const auto record=value.toMap();const auto id=record["id"].toString();if(importedIds.contains(id))continue;
+                    QVERIFY(id!=QString::fromStdString(original.id));importedIds.insert(id);const auto path=record["path"].toString();importedPaths.append(path);
+                    QVERIFY(QFileInfo(path).absoluteFilePath()!=QFileInfo(source).absoluteFilePath());
+                    const auto saved=ProjectStore::load(path);QVERIFY2(saved,qPrintable(saved.error));auto expected=original;expected.id=id.toStdString();
+                    QCOMPARE(ProjectStore::serialize(saved.project),ProjectStore::serialize(expected));
+                }
+                if(area==0){controller.openPath(importedPaths.front());QTRY_VERIFY(!controller.loading());}
+                QCOMPARE(controller.projectName(),QString::fromStdString(original.name));QCOMPARE(controller.pageCount(),2);QVERIFY(!controller.dirty());
+                if(settings)QVERIFY(QMetaObject::invokeMethod(settings,"close"));
+                controller.selectPage(1);QTRY_VERIFY(!controller.pageImagesLoading());QVERIFY(!controller.image(encoded.object.id).isNull());
+            }
+            QCOMPARE(importedIds.size(),5);QVERIFY(warnings.isEmpty());QVERIFY(controller.shutdown());
+        }
+        QVERIFY(archive.open(QIODevice::ReadOnly));QCOMPARE(archive.readAll(),sourceBytes);archive.close();QVERIFY(QFile::remove(source));QVERIFY(QFile::remove(pdfPath));
+        AppController reopened(nullptr,libraryPath);QCOMPARE(reopened.recentProjects().size(),5);reopened.openPath(importedPaths.front());QTRY_VERIFY(!reopened.loading());
+        QCOMPARE(reopened.projectName(),QString::fromStdString(original.name));QCOMPARE(reopened.pageCount(),2);QVERIFY(reopened.shutdown());
+    }
+    void scalarDropUsesCurrentProjectFolderOrBrowsedLibraryFolder(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.filePath("library"));
+        const auto firstFolder=controller.saveFolder({},"Aulas","#268fb5"),secondFolder=controller.saveFolder({},"Exercícios","#3ca889");QVERIFY(!firstFolder.isEmpty());QVERIFY(!secondFolder.isEmpty());
+        controller.newDefaultInFolder(firstFolder);QTRY_VERIFY(!controller.busy());const auto current=controller.recentProjects().front().toMap();QCOMPARE(current["folderId"].toString(),firstFolder);
+        const auto source=directory.filePath("source.scalar.zip");QVERIFY(QFile::copy(current["path"].toString(),source));
+        QQmlApplicationEngine engine;engine.rootContext()->setContextProperty("App",&controller);engine.rootContext()->setContextProperty("testFolder",secondFolder);engine.load(QUrl("qrc:/qml/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));
+        QSet<QString> existingIds{current["id"].toString()};
+        const auto importAndCheck=[&](const QString& expectedFolder,QPoint position=QPoint(20,20)){
+            const bool wasActive=controller.active();
+            QMimeData mime;mime.setUrls({QUrl::fromLocalFile(source)});
+            QDragEnterEvent enter(position,Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QCoreApplication::sendEvent(window,&enter);QVERIFY(enter.isAccepted());
+            QDropEvent drop(position,Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QCoreApplication::sendEvent(window,&drop);QVERIFY(drop.isAccepted());QTRY_VERIFY(!controller.busy());QCOMPARE(controller.active(),wasActive);
+            bool found=false;
+            for(const auto& value:controller.recentProjects()){const auto record=value.toMap();const auto id=record["id"].toString();if(existingIds.contains(id))continue;found=true;existingIds.insert(id);QCOMPARE(record["folderId"].toString(),expectedFolder);QVERIFY(QFile::exists(record["path"].toString()));}
+            QVERIFY(found);
+        };
+        StrokeObject stroke;stroke.id=newId();stroke.samples={{{10,10},1},{{30,30},1}};controller.addStroke(stroke);
+        importAndCheck(firstFolder);
+        for(const auto& value:controller.recentProjects()){const auto record=value.toMap();if(record["id"]==current["id"])QCOMPARE(record["folderId"].toString(),firstFolder);}
+        const auto saved=ProjectStore::load(current["path"].toString());QVERIFY2(saved,qPrintable(saved.error));QCOMPARE(saved.project.pages[0].strokes.size(),std::size_t(1));
+        controller.home();QVERIFY(!controller.active());
+        QQmlExpression browse(qmlContext(window),window,"pageLoader.item.activeFolder=testFolder");browse.evaluate();QVERIFY2(!browse.hasError(),qPrintable(browse.error().toString()));
+        importAndCheck(secondFolder);
+        controller.home();QVERIFY(!controller.active());
+        QQmlExpression root(qmlContext(window),window,"pageLoader.item.activeFolder=''");root.evaluate();QVERIFY2(!root.hasError(),qPrintable(root.error().toString()));
+        importAndCheck({});QCOMPARE(controller.recentProjects().size(),4);
+        auto* card=findVisualItem(window->contentItem(),"folderCard_"+firstFolder);QVERIFY(card);
+        auto* other=findVisualItem(window->contentItem(),"folderCard_"+secondFolder);QVERIFY(other);
+        const auto cardPoint=card->mapToScene({card->width()/2,card->height()/2}).toPoint(),otherPoint=other->mapToScene({other->width()/2,other->height()/2}).toPoint();
+        QMimeData hoverMime;hoverMime.setUrls({QUrl::fromLocalFile(source)});
+        QDragEnterEvent hover(cardPoint,Qt::CopyAction,&hoverMime,Qt::LeftButton,Qt::NoModifier);QCoreApplication::sendEvent(window,&hover);QVERIFY(hover.isAccepted());QVERIFY(card->property("importDropActive").toBool());QVERIFY(!other->property("importDropActive").toBool());
+        QDragMoveEvent move(otherPoint,Qt::CopyAction,&hoverMime,Qt::LeftButton,Qt::NoModifier);QCoreApplication::sendEvent(window,&move);QVERIFY(!card->property("importDropActive").toBool());QVERIFY(other->property("importDropActive").toBool());
+        QDragLeaveEvent leave;QCoreApplication::sendEvent(window,&leave);QVERIFY(!other->property("importDropActive").toBool());
+        importAndCheck(firstFolder,cardPoint);card=findVisualItem(window->contentItem(),"folderCard_"+firstFolder);QVERIFY(card);QVERIFY(!card->property("importDropActive").toBool());
+        auto* sidebar=findVisualItem(window->contentItem(),"sidebarFolder_"+secondFolder);QVERIFY(sidebar);
+        const auto sidebarPoint=sidebar->mapToScene({sidebar->width()/2,sidebar->height()/2}).toPoint();
+        QDragEnterEvent sidebarHover(sidebarPoint,Qt::CopyAction,&hoverMime,Qt::LeftButton,Qt::NoModifier);QCoreApplication::sendEvent(window,&sidebarHover);QVERIFY(sidebar->property("importDropActive").toBool());
+        QDragLeaveEvent sidebarLeave;QCoreApplication::sendEvent(window,&sidebarLeave);QVERIFY(!sidebar->property("importDropActive").toBool());
+        importAndCheck(secondFolder,sidebarPoint);QVERIFY(!controller.active());QCOMPARE(controller.recentProjects().size(),6);QVERIFY(controller.shutdown());
+    }
+    void scalarDropSavesPendingTextAndKeepsCurrentBoardOnInvalidArchive(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.filePath("library"));controller.newProject("Original","A4",210,297,false,"Branco");QTRY_VERIFY(!controller.busy());
+        const auto originalPath=controller.recentProjects().front().toMap()["path"].toString();
+        Project imported{newId(),"Imported","created","updated",{}};Page page;page.id=newId();page.size=PageSize::a4();imported.pages.push_back(page);
+        const auto path=directory.filePath("import.scalar");QVERIFY(ProjectStore::save(path,imported).isEmpty());
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);canvas->setTool("text");QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,canvas->mapToScene({canvas->width()/2,canvas->height()/2}).toPoint());
+        auto* editor=findVisualItem(window->contentItem(),"textSource");QVERIFY(editor);QTRY_VERIFY(editor->hasActiveFocus());editor->setProperty("text","Texto ainda em edição");
+        auto* inlineEditor=window->findChild<QObject*>("inlineTextEditor");QVERIFY(inlineEditor);QVERIFY(QMetaObject::invokeMethod(inlineEditor,"openFormatting"));
+        auto* formatting=window->findChild<QObject*>("textDialog");QVERIFY(formatting);QTRY_VERIFY(formatting->property("opened").toBool());QVERIFY(QMetaObject::invokeMethod(formatting,"change",Q_ARG(QVariant,QString("fontSizePt")),Q_ARG(QVariant,20)));
+        QMimeData mime;mime.setUrls({QUrl::fromLocalFile(path)});const QPoint position(20,20);
+        QDragEnterEvent enter(position,Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QCoreApplication::sendEvent(window,&enter);QVERIFY(enter.isAccepted());
+        QDropEvent drop(position,Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QCoreApplication::sendEvent(window,&drop);QVERIFY(drop.isAccepted());
+        QTRY_COMPARE(controller.projectName(),QString("Imported"));QTRY_VERIFY(!controller.busy());
+        const auto saved=ProjectStore::load(originalPath);QVERIFY2(saved,qPrintable(saved.error));QCOMPARE(saved.project.pages[0].texts.size(),std::size_t(1));QCOMPARE(saved.project.pages[0].texts[0].source,std::string("Texto ainda em edição"));
+        QCOMPARE(saved.project.pages[0].texts[0].fontSizePt,20.);
+        StrokeObject stroke;stroke.id=newId();stroke.samples={{{20,20},1},{{40,40},1}};controller.addStroke(stroke);
+        const auto invalid=directory.filePath("broken.zip");QFile broken(invalid);QVERIFY(broken.open(QIODevice::WriteOnly));broken.write("not a project");broken.close();
+        controller.requestImportProject(QUrl::fromLocalFile(invalid));QTRY_VERIFY(!controller.busy());QCOMPARE(controller.projectName(),QString("Imported"));QCOMPARE(controller.page()->strokes.size(),std::size_t(1));QVERIFY(!controller.dirty());QCOMPARE(controller.recentProjects().size(),2);
+        QVERIFY(!controller.canImportProject(QUrl("https://example.com/project.scalar")));QVERIFY(!controller.canImportProject(QUrl::fromLocalFile(directory.filePath("missing.scalar"))));
+        QVERIFY(warnings.isEmpty());QVERIFY(controller.shutdown());
+    }
+    void scalarImportWaitsForSaveAndCanCancelAfterFailure(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.filePath("library"));controller.newDefault();QTRY_VERIFY(!controller.busy());
+        const auto current=controller.recentProjects().front().toMap();const auto currentPath=current["path"].toString();
+        const auto source=directory.filePath("source.scalar");QVERIFY(QFile::copy(currentPath,source));QVERIFY(QFile::remove(currentPath));QVERIFY(QDir().mkdir(currentPath));
+        StrokeObject stroke;stroke.id=newId();stroke.samples={{{10,10},1},{{20,20},1}};controller.addStroke(stroke);
+        controller.requestImportProject(QUrl::fromLocalFile(source));QTRY_VERIFY(!controller.leaveError().isEmpty());QVERIFY(controller.leaving());QVERIFY(controller.dirty());QVERIFY(!controller.loading());QCOMPARE(controller.page()->strokes.size(),std::size_t(1));QCOMPARE(controller.recentProjects().size(),1);
+        controller.cancelLeaving();QVERIFY(!controller.leaving());QVERIFY(QDir().rmdir(currentPath));
+        controller.requestImportProject(QUrl::fromLocalFile(source));QTRY_VERIFY(!controller.busy());QVERIFY(!controller.dirty());QCOMPARE(controller.recentProjects().size(),2);
+        const auto saved=ProjectStore::load(currentPath);QVERIFY2(saved,qPrintable(saved.error));QCOMPARE(saved.project.pages[0].strokes.size(),std::size_t(1));QVERIFY(controller.shutdown());
     }
     void scalarFileTransfersCompleteBoardBetweenLibraries(){
         QTemporaryDir source,transfer,destination;

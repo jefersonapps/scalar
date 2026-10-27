@@ -49,6 +49,46 @@ ApplicationWindow {
             onFullScreenRequested: window.toggleFullScreen()
         }
     }
+    DropArea {
+        id: projectDrop
+        objectName: "projectImportDropArea"
+        parent: Overlay.overlay
+        anchors.fill: parent
+        z: 10000
+        enabled: !App.leaving && !App.loading
+        property Item targetFolder: null
+        function clearTarget() {
+            if(targetFolder)targetFolder.importDropActive=false
+            targetFolder=null
+        }
+        function updateTarget(event) {
+            const point=pageLoader.item ? mapToItem(pageLoader.item,event.x,event.y) : Qt.point(0,0)
+            const target=!App.active && pageLoader.item ? pageLoader.item.importFolderAt(point.x,point.y) : null
+            if(target===targetFolder)return
+            clearTarget();targetFolder=target
+            if(targetFolder)targetFolder.importDropActive=true
+        }
+        onEntered: drag => {
+            drag.accepted=drag.hasUrls && drag.urls.length===1 && App.canImportProject(drag.urls[0])
+            if(drag.accepted){drag.accept(Qt.CopyAction);updateTarget(drag)}
+        }
+        onPositionChanged: drag => updateTarget(drag)
+        onExited: clearTarget()
+        onEnabledChanged: if(!enabled)clearTarget()
+        onDropped: drop => {
+            if(!drop.hasUrls || drop.urls.length!==1 || !App.canImportProject(drop.urls[0]))return
+            updateTarget(drop)
+            const url=drop.urls[0]
+            const folder=targetFolder ? targetFolder.importFolderId : pageLoader.item && !App.active ? pageLoader.item.activeFolder : ""
+            clearTarget()
+            drop.accept(Qt.CopyAction)
+            if(App.active && pageLoader.item)pageLoader.item.importDroppedProject(url)
+            else {
+                window.homeFolder=pageLoader.item ? pageLoader.item.activeFolder : ""
+                App.requestImportProject(url,folder)
+            }
+        }
+    }
     Component {
         id: editor
         EditorPage { overlaysOpen: App.leaving || settings.visible || saveFile.visible || openFile.visible || imageFile.visible || pdfFile.visible || exportFile.visible || pdfImport.visible || newProject.visible || recovery.visible; onBackRequested: App.requestHome(); onSaveAsRequested: saveFile.open(); onImportBoardRequested: openFile.open(); onImageRequested: imageFile.open(); onImportPdfRequested: pdfFile.open(); onExportPdfRequested: exportFile.open(); onSettingsRequested: settings.open();onFullScreenRequested: window.toggleFullScreen() }
@@ -57,7 +97,7 @@ ApplicationWindow {
     SettingsDialog { id: settings }
     ImportPdfDialog { id: pdfImport }
     FileDialog { id: pdfFile; title: "Importar PDF"; nameFilters: ["PDF (*.pdf)"]; onAccepted: App.inspectPdfFile(selectedFile) }
-    FileDialog { id: openFile; objectName: "importBoardFileDialog"; title: "Importar quadro"; nameFilters: ["Quadros Scalar (*.scalar *.board)"]; onAccepted: { window.homeFolder=""; App.open(selectedFile) } }
+    FileDialog { id: openFile; objectName: "importBoardFileDialog"; title: "Importar quadro"; nameFilters: ["Quadros Scalar (*.scalar *.board *.zip)"]; onAccepted: { window.homeFolder=""; App.open(selectedFile) } }
     FileDialog { id: saveFile; objectName: "saveBoardFileDialog"; title: "Salvar quadro completo como"; fileMode: FileDialog.SaveFile; defaultSuffix: "scalar"; nameFilters: ["Quadro Scalar (*.scalar)"]; onAccepted: App.saveAs(selectedFile) }
     FileDialog { id: exportFile; objectName: "exportPdfFileDialog"; title: "Exportar todas as páginas como PDF"; fileMode: FileDialog.SaveFile; defaultSuffix: "pdf"; nameFilters: ["PDF (*.pdf)"]; onAccepted: App.exportPdf(selectedFile) }
     FileDialog { id: imageFile; title: "Importar imagens"; fileMode: FileDialog.OpenFiles; nameFilters: ["Imagens (*.png *.jpg *.jpeg *.webp *.bmp *.svg)"]; onAccepted: { if(pageLoader.item) pageLoader.item.insertImages(selectedFiles) } }

@@ -64,6 +64,11 @@ Item {
         finishTextThen(function(){root.Window.window.close()})
         return false
     }
+    function importDroppedProject(url) {
+        finishNameEdit()
+        if(inlineText.active){afterTextEdit=function(){App.requestImportProject(url)};inlineText.finishForImport()}
+        else App.requestImportProject(url)
+    }
     readonly property bool inlineNavigation: width >= Theme.navigationInlineBreakpoint
     readonly property real headerRowHeight: fullScreen ? Theme.touch+Theme.sm*2 : Theme.topbarHeight
     readonly property real headerHeight: inlineNavigation ? headerRowHeight : headerRowHeight + navigator.implicitHeight + Theme.lg
@@ -182,7 +187,8 @@ Item {
         }
         onDropped: drop => {
             if(drop.hasUrls && drop.urls.length > 0) {
-                if(drop.urls[0].toString().toLowerCase().endsWith(".pdf")) App.inspectPdfFile(drop.urls[0])
+                if(drop.urls.length===1 && App.canImportProject(drop.urls[0]))root.importDroppedProject(drop.urls[0])
+                else if(drop.urls[0].toString().toLowerCase().endsWith(".pdf")) App.inspectPdfFile(drop.urls[0])
                 else board.importImages(drop.urls)
                 drop.acceptProposedAction()
             }

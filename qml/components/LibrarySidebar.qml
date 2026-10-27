@@ -66,12 +66,21 @@ Rectangle {
                 Repeater {
                     model: root.treeRows
                     AbstractButton {
+                        id: folderRow
                         required property var modelData
+                        objectName: "sidebarFolder_"+importFolderId
+                        readonly property string importFolderId: modelData.folder.id
+                        property bool importDropActive: false
                         Layout.fillWidth: true; Layout.preferredHeight: Theme.touch
                         hoverEnabled: true; padding: Theme.sm
                         leftPadding: Theme.sm+Math.min(modelData.depth,4)*Theme.sm
                         Accessible.name: "Abrir pasta "+modelData.folder.name
-                        background: Rectangle { radius: Theme.radiusSmall; color: drop.containsDrag ? Theme.accentSoft : root.activeFolder===parent.modelData.folder.id ? Theme.hover : parent.hovered ? Theme.hover : "transparent" }
+                        background: Rectangle {
+                            radius: Theme.radiusSmall
+                            color: folderRow.importDropActive || drop.containsDrag ? Theme.accentSoft : root.activeFolder===parent.modelData.folder.id ? Theme.hover : parent.hovered ? Theme.hover : "transparent"
+                            border.width: folderRow.importDropActive ? Theme.focusBorder : 0
+                            border.color: folderRow.modelData.folder.color
+                        }
                         contentItem: RowLayout {
                             spacing: Theme.sm
                             IconButton { compact: true; visible: modelData.folder.childCount>0; iconName: root.expanded[modelData.folder.id] ? "minus" : "plus"; label: "Mostrar subpastas"; onClicked: { const next=Object.assign({},root.expanded); next[modelData.folder.id]=!next[modelData.folder.id]; root.expanded=next } }

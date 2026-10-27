@@ -9,6 +9,7 @@ Item {
     signal finished()
     property bool active: false
     property bool committing: false
+    property bool finishAfterFormatting: false
     readonly property bool formattingOpen: formatting.visible
     property string objectId: ""
     property var draft: ({})
@@ -76,6 +77,10 @@ Item {
         committing=true
         App.upsertText(objectId,origin,draft)
         if(!App.textBusy)committing=false
+    }
+    function finishForImport() {
+        if(formatting.visible){finishAfterFormatting=true;formatting.applied(formatting.draft);formatting.close()}
+        else finish()
     }
     function cancel() { active=false;canvas.editingTextId="";canvas.forceActiveFocus();finished() }
     Connections {
@@ -185,7 +190,10 @@ Item {
             if(changedColor)root.applyColor(values.color,root.formatStart,root.formatEnd)
             else { editor.forceActiveFocus();editor.select(root.formatStart,root.formatEnd) }
         }
-        onClosed: editor.forceActiveFocus()
+        onClosed: {
+            editor.forceActiveFocus()
+            if(root.finishAfterFormatting){root.finishAfterFormatting=false;Qt.callLater(root.finish)}
+        }
     }
     Text {
         visible: App.textError!=="";text: App.textError;color: Theme.text

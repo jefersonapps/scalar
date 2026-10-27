@@ -26,6 +26,18 @@ Item {
     signal projectRequested(string path, string folderId)
     signal folderProjectCreated(string folderId)
     function enterFolder(folderId) { viewMode="folder"; activeFolder=folderId }
+    function importFolderAt(x,y) {
+        function find(item) {
+            if(!item.visible)return null
+            const p=item.mapFromItem(root,x,y)
+            const inside=p.x>=0 && p.y>=0 && p.x<item.width && p.y<item.height
+            if(item.clip && !inside)return null
+            if(inside && item.importFolderId!==undefined)return item
+            for(let i=item.children.length-1;i>=0;--i){const target=find(item.children[i]);if(target)return target}
+            return null
+        }
+        return find(root)
+    }
     DeleteProjectDialog { id: deletion }
     EditProjectDialog { id: projectEditor; onTrashRequested: project => deletion.ask(project,false) }
     FolderDialog { id: folderDialog; onDeleteRequested: folderId => { const entry=App.folders.find(folder => folder.id===folderId); folderDialog.close(); if(entry)folderDeletion.ask(entry) } }
@@ -111,7 +123,7 @@ Item {
             Layout.fillWidth: true; spacing: Theme.md
             visible: root.activeFolder==="" && root.viewMode==="folder" && searchField.text==="" && (!root.compactHome || App.folders.length===0)
             Repeater {
-                model: [{icon:"pen",title:"Começar agora",detail:"Um quadro com seu padrão",action:"quick"},{icon:"folder",title:"Importar quadro",detail:"Abra um arquivo .scalar ou .board",action:"open"},{icon:"page",title:"Importar PDF",detail:"Anote sobre suas páginas",action:"pdf"}]
+                model: [{icon:"pen",title:"Começar agora",detail:"Um quadro com seu padrão",action:"quick"},{icon:"folder",title:"Importar quadro",detail:"Abra um arquivo .scalar, .board ou .zip",action:"open"},{icon:"page",title:"Importar PDF",detail:"Anote sobre suas páginas",action:"pdf"}]
                 AbstractButton {
                     required property var modelData
                     implicitHeight: Math.max(root.height<Theme.windowHeight+Theme.section*2 ? Theme.touch+Theme.lg : Theme.homeActionHeight, implicitContentHeight + topPadding + bottomPadding)

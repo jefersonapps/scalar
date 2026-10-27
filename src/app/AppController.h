@@ -209,6 +209,8 @@ public:
     Q_INVOKABLE void saveAs(const QUrl& url);
     Q_INVOKABLE void open(const QUrl& url);
     Q_INVOKABLE void openPath(const QString& path);
+    Q_INVOKABLE bool canImportProject(const QUrl& url) const;
+    Q_INVOKABLE void requestImportProject(const QUrl& url,const QString& folderId={});
     Q_INVOKABLE void home();
     Q_INVOKABLE void recover();
     Q_INVOKABLE void discardRecovery();
@@ -250,7 +252,7 @@ private:
     void beginSave();
     bool flush();
     void finishSave();
-    enum class LeaveAction { None, Home, Shutdown };
+    enum class LeaveAction { None, Home, Shutdown, ImportProject };
     LeaveAction leaveAction_=LeaveAction::None;
     QString leaveError_;
     QTimer leaveTimer_;
@@ -258,6 +260,11 @@ private:
     bool coverDirty_=true;
     void beginLeaving(LeaveAction action);
     void continueLeaving();
+    void beginProjectImport();
+    QString pendingImportSource_;
+    QString pendingImportFolder_;
+    bool importingProject_=false;
+    bool openImportedProject_=false;
     void install(Project project,const QString& path);
     Page& current(){return project_.pages[currentPage_];}
     History& history(){return histories_[current().id];}

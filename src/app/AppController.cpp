@@ -153,13 +153,18 @@ AppController::AppController(QObject* parent,const QString& dataDirectory):QObje
     connect(&renameWatcher_,&QFutureWatcher<SaveResult>::finished,this,&AppController::finishRename);
     connect(&loadWatcher_,&QFutureWatcher<LoadResult>::finished,this,[this]{
         loading_=false; const auto result=loadWatcher_.result();
+        const bool imported=importingProject_;importingProject_=false;
         if(result){
             const bool recovered=pendingOpenPath_==dataDir_+"/session.board";
             const auto target=recovered ? dataDir_+"/projects/"+QString::fromStdString(result.project.id)+".board" : pendingOpenPath_;
-            install(result.project,target);images_=result.images;refreshTextTextures(textRasterRequestedScale_);emit documentChanged();library_->remember(QString::fromStdString(result.project.id),QString::fromStdString(result.project.name),target,QString::fromStdString(result.project.updatedAt));emit recentChanged();status_=recovered?"Quadro recuperado":"Projeto aberto";
-            if(recovered||result.compacted){mutate();beginSave();}
+            if(!imported||openImportedProject_){install(result.project,target);images_=result.images;refreshTextTextures(textRasterRequestedScale_);emit documentChanged();}
+            library_->remember(QString::fromStdString(result.project.id),QString::fromStdString(result.project.name),target,QString::fromStdString(result.project.updatedAt));
+            if(imported&&!pendingImportFolder_.isEmpty())library_->moveToFolder(QString::fromStdString(result.project.id),pendingImportFolder_);
+            emit recentChanged();status_=recovered?"Quadro recuperado":"Projeto aberto";
+            if(imported)status_="Projeto importado e salvo neste dispositivo";
+            if(recovered||(!imported&&result.compacted)){mutate();beginSave();}
         } else {status_=result.error;qCWarning(appLog)<<status_;}
-        emit changed();
+        pendingImportFolder_.clear();emit changed();
     });
 }
 bool AppController::eventFilter(QObject* watched,QEvent* event){
@@ -371,6 +376,32 @@ bool AppController::flush(){
     return !dirty_;
 }
 void AppController::open(const QUrl& url){if(url.isLocalFile())openPath(url.toLocalFile());}
+bool AppController::canImportProject(const QUrl& url) const {
+    if(!url.isLocalFile())return false;
+    const QFileInfo file(url.toLocalFile());const auto suffix=file.suffix();
+    return file.isFile()&&file.isReadable()&&(suffix.compare("scalar",Qt::CaseInsensitive)==0||suffix.compare("board",Qt::CaseInsensitive)==0||suffix.compare("zip",Qt::CaseInsensitive)==0);
+}
+void AppController::requestImportProject(const QUrl& url,const QString& folderId){
+    if(leaving()||loading_||!canImportProject(url))return;
+    openImportedProject_=active();
+    pendingImportFolder_=folderId;
+    if(active())for(const auto& value:library_->recent()){
+        const auto record=value.toMap();if(record["id"].toString()==QString::fromStdString(project_.id)){pendingImportFolder_=record["folderId"].toString();break;}
+    }
+    pendingImportSource_=url.toLocalFile();beginLeaving(LeaveAction::ImportProject);
+}
+void AppController::beginProjectImport(){
+    const auto source=pendingImportSource_;pendingImportSource_.clear();
+    const auto id=newId();const auto target=dataDir_+"/projects/"+QString::fromStdString(id)+".scalar";
+    loading_=true;importingProject_=true;pendingOpenPath_=target;pendingFolderId_.clear();status_="Importando projeto…";
+    loadWatcher_.setFuture(QtConcurrent::run([source,target,id]{
+        auto result=ProjectStore::load(source,ImageLoading::FirstPage);if(!result)return result;
+        // Keep all document metadata and assets, with an independent library identity.
+        result.project.id=id;result.error=ProjectStore::save(target,result.project);
+        if(result.error.isEmpty())saveThumbnail(result.project,target+".png");
+        return result;
+    }));emit changed();
+}
 void AppController::openPath(const QString& path){
     for(const auto& value:library_->trash()){const auto e=value.toMap();if(QFileInfo(e["originalPath"].toString()).absoluteFilePath()==QFileInfo(path).absoluteFilePath()||QFileInfo(e["trashPath"].toString()).absoluteFilePath()==QFileInfo(path).absoluteFilePath()){status_="Restaure o quadro na lixeira antes de abri-lo.";emit changed();return;}}
     if(trashPending_||loading_||!flush())return;loading_=true;pendingOpenPath_=path;status_="Abrindo projeto…";
@@ -388,7 +419,7 @@ void AppController::beginLeaving(LeaveAction action){
     leaveTimer_.start();emit changed();
 }
 void AppController::retryLeaving(){if(!leaving()||leaveError_.isEmpty())return;leaveError_.clear();leaveTimer_.start();emit changed();}
-void AppController::cancelLeaving(){leaveTimer_.stop();leaveAction_=LeaveAction::None;leaveError_.clear();emit changed();}
+void AppController::cancelLeaving(){leaveTimer_.stop();leaveAction_=LeaveAction::None;leaveError_.clear();pendingImportSource_.clear();pendingImportFolder_.clear();emit changed();}
 void AppController::continueLeaving(){
     if(!leaving()||!leaveError_.isEmpty())return;
     // Let pending edits finish and keep the event loop free to animate the
@@ -399,6 +430,7 @@ void AppController::continueLeaving(){
     if(active()&&dirty_){beginSave();return;}
     const auto action=leaveAction_;leaveTimer_.stop();leaveAction_=LeaveAction::None;
     if(action==LeaveAction::Home)home();
+    else if(action==LeaveAction::ImportProject)beginProjectImport();
     else if(shutdown()){emit changed();emit shutdownReady();}
 }
 void AppController::recover(){if(!recovery_)return;recovery_=false;openPath(dataDir_+"/session.board");}

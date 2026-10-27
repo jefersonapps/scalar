@@ -6,6 +6,9 @@ AbstractButton {
     id: root
     objectName: "folderCard_" + folderId
     property string folderId: ""
+    readonly property string importFolderId: folderId
+    property bool importDropActive: false
+    readonly property bool dropHighlighted: drop.containsDrag || importDropActive
     property string folderName: ""
     property color folderColor: Theme.accent
     property int projectCount: 0
@@ -15,9 +18,9 @@ AbstractButton {
     Accessible.name: "Abrir pasta " + folderName
     background: Rectangle {
         radius: Theme.radiusMedium
-        color: Qt.rgba(root.folderColor.r,root.folderColor.g,root.folderColor.b,drop.containsDrag ? .24 : root.hovered ? .16 : .08)
-        border.color: drop.containsDrag ? root.folderColor : Theme.border
-        border.width: drop.containsDrag ? Theme.focusBorder : Theme.hairline
+        color: Qt.rgba(root.folderColor.r,root.folderColor.g,root.folderColor.b,root.dropHighlighted ? .3 : root.hovered ? .16 : .08)
+        border.color: root.dropHighlighted ? root.folderColor : Theme.border
+        border.width: root.dropHighlighted ? Theme.focusBorder : Theme.hairline
     }
     contentItem: RowLayout {
         spacing: Theme.sm
