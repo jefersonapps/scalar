@@ -174,9 +174,10 @@ if(SCALAR_BUILD_DESKTOP)
         set(CPACK_NSIS_MUI_FINISHPAGE_RUN "scalar.exe")
         # Use Modern UI's second finish-page checkbox for the desktop shortcut.
         set(CPACK_NSIS_DEFINES [=[
+Unicode True
 !define MUI_FINISHPAGE_RUN_TEXT "Executar o Scalar"
 !define MUI_FINISHPAGE_SHOWREADME ""
-!define MUI_FINISHPAGE_SHOWREADME_TEXT "Criar atalho na area de trabalho"
+!define MUI_FINISHPAGE_SHOWREADME_TEXT "Criar atalho na área de trabalho"
 !define MUI_FINISHPAGE_SHOWREADME_FUNCTION ScalarCreateDesktopShortcut
 Function ScalarCreateDesktopShortcut
   CreateShortCut "$DESKTOP\Scalar.lnk" "$INSTDIR\bin\scalar.exe" "" "$INSTDIR\bin\scalar.exe" 0
@@ -191,6 +192,8 @@ FunctionEnd
         set(CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS [=[
   Delete "$DESKTOP\Scalar.lnk"
 ]=])
+        include(cmake/LocalizeWindowsInstaller.cmake)
+        scalar_localize_windows_installer()
     elseif(UNIX AND NOT APPLE)
         set(CPACK_GENERATOR "DEB;TGZ")
         set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Scalar maintainers")

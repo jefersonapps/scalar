@@ -1,0 +1,28 @@
+# Derive the installer from the active CMake version rather than maintaining a
+# full copy of CPack's template. Some CPack prompts bypass NSIS language files.
+function(scalar_localize_windows_installer)
+    set(_source "${CMAKE_ROOT}/Modules/Internal/CPack/NSIS.template.in")
+    if(NOT EXISTS "${_source}")
+        set(_source "${CMAKE_ROOT}/Modules/NSIS.template.in")
+    endif()
+    file(READ "${_source}" _template)
+    set(_english [=["$1 is already installed. $\n$\nDo you want to uninstall the old version before installing the new one?"]=])
+    set(_portuguese [=["$1 já está instalado. $\n$\nDeseja desinstalar a versão anterior antes de instalar a nova?"]=])
+    string(FIND "${_template}" "${_english}" _prompt_position)
+    if(_prompt_position EQUAL -1)
+        message(FATAL_ERROR "O modelo NSIS do CPack mudou. Atualize a tradução da confirmação de reinstalação.")
+    endif()
+    string(REPLACE "${_english}" "${_portuguese}" _template "${_template}")
+    string(REPLACE "Uninstall failed." "Não foi possível desinstalar a versão anterior." _template "${_template}")
+    string(REPLACE "Download failed: $1" "Falha no download: $1" _template "${_template}")
+    string(REGEX REPLACE "!insertmacro MUI_LANGUAGE \"[^\"]+\"[^\n]*" "" _template "${_template}")
+    string(REPLACE ";Languages" ";Languages\n  !insertmacro MUI_LANGUAGE \"PortugueseBR\"" _template "${_template}")
+
+    set(_directory "${CMAKE_CURRENT_BINARY_DIR}/cpack-portuguese")
+    file(MAKE_DIRECTORY "${_directory}")
+    # NSIS must read accented strings as UTF-8 even on non-Portuguese Windows.
+    string(ASCII 239 187 191 _bom)
+    string(REGEX REPLACE "^${_bom}" "" _template "${_template}")
+    file(WRITE "${_directory}/NSIS.template.in" "${_bom}${_template}")
+    set(CPACK_MODULE_PATH "${_directory};${CPACK_MODULE_PATH}" PARENT_SCOPE)
+endfunction()
