@@ -26,7 +26,11 @@ QColor fromRgba(std::uint32_t c){return QColor((c>>24)&255,(c>>16)&255,(c>>8)&25
 struct SceneRoot : QSGTransformNode {
     QSGSimpleRectNode* paper=new QSGSimpleRectNode;
     QSGClipNode* clip=new QSGClipNode;
-    struct Entry {QSGNode* node;std::uint64_t revision;std::size_t kind;bool editing=false;double rasterScale=0;QRectF rasterBounds;QRectF objectBounds;};
+    struct Entry {
+        QSGNode* node;std::uint64_t revision;std::size_t kind;bool editing=false;double rasterScale=0;QRectF rasterBounds;QRectF objectBounds;
+        QSGTransformNode* preview=nullptr;
+        QSGNode* container() const {return preview?preview:node;}
+    };
     std::unordered_map<std::string,Entry> strokes;
     struct RasterShape {
         ShapeRasterCache raster;
@@ -194,7 +198,7 @@ QSGNode* CanvasItem::updatePaintNode(QSGNode* old,UpdatePaintNodeData*){
     root->clip->setClipRect(paper);
     const QRectF visible=viewport.intersected(paper);
     const double scale=view_.pixelsPerMm*view_.zoom;
-    const bool navigating=viewRefinementTimer_.isActive();
+    const bool navigating=viewRefinementTimer_.isActive()||affineSelectionPreview_;
     // Resolution bands avoid rebuilding masks for every 5% wheel step. While
     // navigating, existing textures are transformed; refinement runs at rest.
     const double physicalScale=scale*(window()?window()->devicePixelRatio():1.);
@@ -236,7 +240,8 @@ QSGNode* CanvasItem::updatePaintNode(QSGNode* old,UpdatePaintNodeData*){
         QSGNode* previous=root->grid?root->grid:root->pdf;
         for(const auto& object:all){const auto& props=std::visit([](const auto* s)->const ObjectProperties&{return s->properties;},object);const auto id=std::visit([](const auto* s){return s->id;},object);
             if(!props.visible||QString::fromStdString(id)==editingTextId_)continue;
-            const bool editing=!editPreview_.empty()&&selection_.contains(id);
+            const bool affineEditing=affineSelectionPreview_&&selection_.contains(id);
+            const bool editing=!affineSelectionPreview_&&!editPreview_.empty()&&selection_.contains(id);
             const bool raster=window()&&std::visit([](const auto* s){if constexpr(std::is_same_v<std::decay_t<decltype(*s)>,StrokeObject>)return s->marker||(!s->erasedRegions.empty()||s->eraseMask.has_value());else if constexpr(std::is_same_v<std::decay_t<decltype(*s)>,ShapeObject>||std::is_same_v<std::decay_t<decltype(*s)>,ImageObject>)return (!s->erasedRegions.empty()||s->eraseMask.has_value());else return false;},object);
             const auto* stroke=std::get_if<const StrokeObject*>(&object);
             const bool marker=raster&&stroke&&(*stroke)->marker;
@@ -256,6 +261,7 @@ QSGNode* CanvasItem::updatePaintNode(QSGNode* old,UpdatePaintNodeData*){
             const auto needed=unchanged?visible.intersected(it->second.objectBounds):visible;
             if(marker&&navigating&&unchanged)rasterScale=it->second.rasterScale;
             auto rasterBounds=unchanged&&it->second.rasterScale==rasterScale&&(needed.isEmpty()||it->second.rasterBounds.contains(needed))?it->second.rasterBounds:bufferedVisible;
+            if(affineEditing&&raster&&unchanged){rasterScale=it->second.rasterScale;rasterBounds=it->second.rasterBounds;}
             if(marker&&unchanged&&needed.isEmpty()){rasterScale=it->second.rasterScale;rasterBounds=it->second.rasterBounds;}
             bool acceptMarker=false;
             if(marker){auto& cache=root->rasterShapes[id];
@@ -286,7 +292,7 @@ QSGNode* CanvasItem::updatePaintNode(QSGNode* old,UpdatePaintNodeData*){
                     node->setCorners((*image)->corners);it->second.revision=props.revision;it->second.editing=editing;reuseImage=true;
                 }
             }
-            if(!reuseImage&&it!=root->strokes.end()&&(imageTextureChanged||it->second.revision!=props.revision||it->second.kind!=object.index()||it->second.editing||editing||(raster&&(it->second.rasterScale!=rasterScale||it->second.rasterBounds!=rasterBounds)))){root->clip->removeChildNode(it->second.node);delete it->second.node;root->strokes.erase(it);it=root->strokes.end();}
+            if(!reuseImage&&it!=root->strokes.end()&&(imageTextureChanged||it->second.revision!=props.revision||it->second.kind!=object.index()||it->second.editing||editing||(raster&&(it->second.rasterScale!=rasterScale||it->second.rasterBounds!=rasterBounds)))){auto* container=it->second.container();root->clip->removeChildNode(container);delete container;root->strokes.erase(it);it=root->strokes.end();}
             if(it==root->strokes.end()){auto* node=std::visit([&](const auto* s)->QSGNode*{
                 using T=std::decay_t<decltype(*s)>;
                 if constexpr(std::is_same_v<T,TextObject>){
@@ -312,8 +318,16 @@ QSGNode* CanvasItem::updatePaintNode(QSGNode* old,UpdatePaintNodeData*){
             // A view transform does not change stacking. Detaching every object
             // here invalidates the renderer's batches on every wheel event.
             // Touch the child list only when an edit really changes its order.
-            auto* node=it->second.node;
-            if(!raster)for(auto* child=node->firstChild();child;child=child->nextSibling())if(auto* ink=dynamic_cast<InkGeometryNode*>(child))ink->setVisibleIn(visible.adjusted(-1/physicalScale,-1/physicalScale,1/physicalScale,1/physicalScale));
+            auto& entry=it->second;
+            if(affineEditing){
+                if(!entry.preview){entry.preview=new QSGTransformNode;root->clip->insertChildNodeBefore(entry.preview,entry.node);root->clip->removeChildNode(entry.node);entry.preview->appendChildNode(entry.node);}
+                const QMatrix4x4 preview(selectionPreviewTransform_);if(entry.preview->matrix()!=preview)entry.preview->setMatrix(preview);
+            }else if(entry.preview){
+                entry.preview->removeChildNode(entry.node);root->clip->insertChildNodeBefore(entry.node,entry.preview);root->clip->removeChildNode(entry.preview);delete entry.preview;entry.preview=nullptr;
+            }
+            const auto objectVisible=affineEditing?selectionPreviewTransform_.inverted().mapRect(visible):visible;
+            if(!raster)for(auto* child=entry.node->firstChild();child;child=child->nextSibling())if(auto* ink=dynamic_cast<InkGeometryNode*>(child))ink->setVisibleIn(objectVisible.adjusted(-1/physicalScale,-1/physicalScale,1/physicalScale,1/physicalScale));
+            auto* node=entry.container();
             if(node->previousSibling()!=previous){
                 root->clip->removeChildNode(node);
                 if(previous)root->clip->insertChildNodeAfter(node,previous);
@@ -323,7 +337,7 @@ QSGNode* CanvasItem::updatePaintNode(QSGNode* old,UpdatePaintNodeData*){
         }
     }
     if(refinementPending)QMetaObject::invokeMethod(this,[this]{QTimer::singleShot(16,this,[this]{update();});},Qt::QueuedConnection);
-    for(auto it=root->strokes.begin();it!=root->strokes.end();){if(!present.contains(QString::fromStdString(it->first))){root->clip->removeChildNode(it->second.node);delete it->second.node;it=root->strokes.erase(it);}else ++it;}
+    for(auto it=root->strokes.begin();it!=root->strokes.end();){if(!present.contains(QString::fromStdString(it->first))){auto* container=it->second.container();root->clip->removeChildNode(container);delete container;it=root->strokes.erase(it);}else ++it;}
     std::erase_if(root->rasterShapes,[&](const auto& entry){return !rasterPresent.contains(QString::fromStdString(entry.first));});
     const bool liveMarker=drawing()&&!previewShape_&&current_.marker&&window();
     if(liveMarker){

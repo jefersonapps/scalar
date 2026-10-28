@@ -111,11 +111,12 @@ CanvasItem::CanvasItem(QQuickItem* parent):QQuickItem(parent){
 }
 CanvasItem::~CanvasItem(){if(filteredWindow_)filteredWindow_->removeEventFilter(this);}
 void CanvasItem::setController(AppController* c){
+    selectedObjectsCacheValid_=false;
     if(controller_==c)return;if(controller_)disconnect(controller_,nullptr,this,nullptr);controller_=c;viewPageId_.clear();
     if(c)connect(c,&AppController::documentChanged,this,[this]{
         // An external edit/undo invalidates the gesture's spatial snapshot.
         // commitErase switches to Idle before publishing its own changes.
-        if(state_==State::Erasing)cancelStroke();
+        if(state_==State::Erasing||affineSelectionPreview_)cancelStroke();
         if(controller_->page()){selection_.prune(*controller_->page());const auto ids=selection_.ids();for(const auto& id:ids)if(auto object=findObject(*controller_->page(),id);object&&!hasVisibleInk(*object))selection_.select(id,true);}else selection_.clear();selectionUpdated();update();
     });
     if(c)connect(c,&AppController::pageChanged,this,[this]{cancelStroke();resetGeometryTools();selection_.clear();selectionUpdated();restorePageView();});
@@ -257,7 +258,7 @@ void CanvasItem::cancelStroke(){
     if(rulerBefore_)ruler_=*rulerBefore_;if(compassBefore_)compass_=*compassBefore_;rulerBefore_.reset();compassBefore_.reset();guidedEdge_.reset();
     const bool was=drawing();holdTimer_.stop();++inputEpoch_;state_=State::Idle;current_={};previewShape_.reset();editBefore_.clear();editPreview_.clear();eraseBefore_.clear();erasePreview_.clear();eraseShapesBefore_.clear();eraseShapesPreview_.clear();eraseFillsBefore_.clear();eraseFillsPreview_.clear();recoverableInk_.clear();tabletActive_=false;touchDistance_=0;
     updateCursor();
-    textResizeVisual_.reset();if(was)emit drawingChanged();emit geometryToolsChanged();selectionUpdated();update();
+    affineSelectionPreview_=false;selectionPreviewTransform_.reset();textResizeVisual_.reset();if(was)emit drawingChanged();emit geometryToolsChanged();selectionUpdated();update();
 }
 ShapeObject CanvasItem::directShape(Point a,Point b) const{
     ShapeObject s;s.id=current_.id;s.style=style_;s.style.pattern=manualShapePattern_;

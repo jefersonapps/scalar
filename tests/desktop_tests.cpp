@@ -278,6 +278,46 @@ private slots:
         qInfo()<<"32 markers / 128,000 samples; maximum refinement CPU scene synchronization:"<<canvas->maxSyncNs/1000000.<<"ms";
         controller.redo();QCOMPARE(controller.page()->strokes.size(),std::size_t(32));canvas->fitPage();QVERIFY(!window.grabWindow().isNull());QVERIFY(findObject(*controller.page(),ids.back()));window.hide();delete canvas;QVERIFY(controller.shutdown());
     }
+    void largeMixedSelectionReusesGeometryDuringResizeAndCancel(){
+        QTemporaryDir directory;Project project{newId(),"Large selection","created","updated",{}};Page page;page.id=newId();page.size=PageSize::a4();
+        for(int i=0;i<250;++i){
+            StrokeObject stroke;stroke.id=newId();stroke.style.minWidthMm=.15;stroke.style.maxWidthMm=.4;
+            for(int j=0;j<512;++j){const double x=10+(i%10)*18+j*.025,y=10+(i/10)*9+std::sin(j*.08)*1.5;stroke.samples.push_back({{x,y},.4+.2*std::sin(j*.03)});}
+            page.strokes.push_back(std::move(stroke));
+        }
+        for(int i=0;i<40;++i){ShapeObject shape;shape.id=newId();shape.kind=ShapeKind::Circle;shape.center={15+(i%10)*18.,245+(i/10)*10.};shape.radiusX=shape.radiusY=2;page.shapes.push_back(shape);}
+        project.pages.push_back(page);const auto path=directory.filePath("selection.scalar");QVERIFY(ProjectStore::save(path,project).isEmpty());
+        AppController controller(nullptr,directory.filePath("library"));controller.openPath(path);QTRY_VERIFY(!controller.loading());
+        InspectableCanvas canvas;canvas.setWidth(1200);canvas.setHeight(1000);canvas.setController(&controller);canvas.fitPage();canvas.setTool("select");
+        const auto send=[&](QEvent::Type type,QPointF point){QMouseEvent event(type,point,point,type==QEvent::MouseMove?Qt::NoButton:Qt::LeftButton,type==QEvent::MouseButtonRelease?Qt::NoButton:Qt::LeftButton,Qt::NoModifier);if(type==QEvent::MouseButtonPress)canvas.mousePressEvent(&event);else if(type==QEvent::MouseMove)canvas.mouseMoveEvent(&event);else canvas.mouseReleaseEvent(&event);};
+        send(QEvent::MouseButtonPress,canvas.screenPoint({1,1}));send(QEvent::MouseMove,canvas.screenPoint({209,296}));send(QEvent::MouseButtonRelease,canvas.screenPoint({209,296}));QCOMPARE(canvas.selectedCount(),290);
+        std::unique_ptr<QSGNode> scene(canvas.updatePaintNode(nullptr,nullptr));auto* clip=scene->firstChild()->nextSibling();std::vector<QSGNode*> originalNodes;for(auto* node=clip->firstChild();node;node=node->nextSibling())originalNodes.push_back(node);QCOMPARE(originalNodes.size(),std::size_t(290));
+        const auto frame=canvas.selectionFrame();const QPointF anchor=frame.topLeft();const auto diagonal=frame.bottomRight()-anchor;
+        QElapsedTimer reference;reference.start();std::size_t referenceVertices=0;
+        for(const auto& stroke:page.strokes){const auto resized=transformed(CanvasObject(stroke),{10,10},{},1.2,1.2);referenceVertices+=strokeDisplayMesh(std::get<StrokeObject>(resized)).size();}
+        const auto referenceMs=reference.nsecsElapsed()/1000000.;QVERIFY(referenceVertices>0);
+        send(QEvent::MouseButtonPress,frame.bottomRight());QElapsedTimer timer;qint64 worst=0;
+        for(int step=1;step<=24;++step){
+            timer.start();send(QEvent::MouseMove,anchor+diagonal*(1+step*.015));
+            QCOMPARE(canvas.selectionName(),QString("290 objetos"));QCOMPARE(canvas.selectionHandles().size(),5);QVERIFY(canvas.selectionRect().isValid());canvas.selectedWidth();canvas.selectedPattern();canvas.selectedFill();canvas.segmentGuide();
+            scene.reset(canvas.updatePaintNode(scene.release(),nullptr));worst=std::max(worst,timer.nsecsElapsed());
+            std::size_t index=0;for(auto* node=clip->firstChild();node;node=node->nextSibling()){
+                auto* transform=dynamic_cast<QSGTransformNode*>(node);QVERIFY(transform);QCOMPARE(transform->firstChild(),originalNodes[index++]);
+            }QCOMPARE(index,originalNodes.size());
+            QCOMPARE(controller.page()->strokes.front().samples[100].position,page.strokes.front().samples[100].position);
+        }
+        send(QEvent::MouseButtonRelease,anchor+diagonal*1.36);scene.reset(canvas.updatePaintNode(scene.release(),nullptr));
+        const auto originalLength=length(page.strokes.front().samples.back().position-page.strokes.front().samples.front().position),resizedLength=length(controller.page()->strokes.front().samples.back().position-controller.page()->strokes.front().samples.front().position);
+        QVERIFY(std::abs(resizedLength/originalLength-1.36)<1e-8);QCOMPARE(controller.page()->strokes.front().style.maxWidthMm,page.strokes.front().style.maxWidthMm);
+        const auto resizedPosition=controller.page()->strokes.front().samples[100].position;
+        const auto currentFrame=canvas.selectionFrame();send(QEvent::MouseButtonPress,currentFrame.bottomRight());send(QEvent::MouseMove,currentFrame.center());scene.reset(canvas.updatePaintNode(scene.release(),nullptr));
+        QKeyEvent cancel(QEvent::KeyPress,Qt::Key_Escape,Qt::NoModifier);canvas.keyPressEvent(&cancel);scene.reset(canvas.updatePaintNode(scene.release(),nullptr));
+        QCOMPARE(controller.page()->strokes.front().samples[100].position,resizedPosition);
+        controller.undo();const auto undone=findObject(*controller.page(),page.strokes.front().id);QVERIFY(undone);QCOMPARE(std::get<StrokeObject>(*undone).samples[100].position,page.strokes.front().samples[100].position);QCOMPARE(controller.page()->shapes.front().radiusX,page.shapes.front().radiusX);
+        controller.redo();const auto redone=findObject(*controller.page(),page.strokes.front().id);QVERIFY(redone);QCOMPARE(std::get<StrokeObject>(*redone).samples[100].position,resizedPosition);
+        qInfo("290 objects / 128000 samples: reference stroke mesh rebuild %.2f ms; worst cached drag and scene sync %.2f ms",referenceMs,worst/1000000.);
+        QVERIFY(controller.shutdown());
+    }
     void selectionFramesRotateAndTextResizeReflows(){
         QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
         TextObject text;text.id=newId();text.source="A sentence with enough words to wrap onto several lines when the text box becomes narrow.";text.fontFamily="Lobster Two";text.boxWidthMm=80;text.corners={{50,80},{130,80},{130,100},{50,100}};

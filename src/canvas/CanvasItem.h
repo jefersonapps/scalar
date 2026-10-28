@@ -8,6 +8,7 @@
 #include <QQuickItem>
 #include <QQuickWindow>
 #include <QPointer>
+#include <QTransform>
 #include "rendering/ShapeRasterCache.h"
 #include "rendering/TextRenderer.h"
 namespace scalar {
@@ -238,7 +239,7 @@ private:
     void updateSelection(Point point);
     void commitSelection();
     Bounds selectedBounds() const;
-    std::vector<CanvasObject> selectedObjects() const;
+    const std::vector<CanvasObject>& selectedObjects() const;
     void selectionUpdated();
     ShapeObject directShape(Point start,Point end) const;
     void updateRecognizedLine(Point end);
@@ -266,6 +267,12 @@ private:
     Point holdAnchor_;
     SelectionModel selection_;
     std::vector<CanvasObject> editBefore_,editPreview_;
+    mutable std::vector<CanvasObject> selectedObjectsCache_;
+    mutable bool selectedObjectsCacheValid_=false;
+    bool affineSelectionPreview_=false;
+    QTransform selectionPreviewTransform_;
+    Point previewTransformCenter_,previewTranslation_;
+    double previewScale_=1,previewRotation_=0;
     Point dragStart_;
     Bounds editBounds_;
     struct SelectionFrame {Point origin;double width=0,height=0,angle=0;};
