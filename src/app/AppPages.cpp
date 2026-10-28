@@ -5,7 +5,20 @@
 #include <QtConcurrent>
 #include <QBuffer>
 #include <QDateTime>
+#include <QDir>
+#include <QRegularExpression>
+#include <QStandardPaths>
 namespace scalar {
+QUrl AppController::suggestedPdfExportFile(const QUrl& folder) const{
+    auto name=projectName().trimmed();
+    name.replace(QRegularExpression("[<>:\"/\\\\|?*\\x00-\\x1f]"),"_");
+    while(name.endsWith('.')||name.endsWith(' '))name.chop(1);
+    if(name.isEmpty())name="Quadro";
+    if(QRegularExpression("^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\\.|$)",QRegularExpression::CaseInsensitiveOption).match(name).hasMatch())name.prepend('_');
+    if(!name.endsWith(".pdf",Qt::CaseInsensitive))name+=".pdf";
+    const auto directory=folder.isLocalFile()&&!folder.toLocalFile().isEmpty()?folder.toLocalFile():QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    return QUrl::fromLocalFile(QDir(directory).filePath(name));
+}
 void AppController::exportSelection(std::vector<CanvasObject> selected,const QUrl& url,bool svg){
     if(documentBusy()||exportPending_||selected.empty()||!url.isLocalFile())return;
     auto path=url.toLocalFile();const QString suffix=svg?".svg":".pdf";if(!path.endsWith(suffix,Qt::CaseInsensitive))path+=suffix;

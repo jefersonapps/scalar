@@ -173,6 +173,7 @@ public:
     Q_INVOKABLE void cancelPdfImport();
     bool exporting() const {return exportPending_;}
     Q_INVOKABLE void exportPdf(const QUrl& url);
+    Q_INVOKABLE QUrl suggestedPdfExportFile(const QUrl& folder) const;
     void exportSelection(std::vector<CanvasObject> selected,const QUrl& url,bool svg);
     void refreshPdf(double scale){if(page())pdfCache_.request(page()->pdf,page()->size,scale);}
     QImage pdfImage() const {return pdfCache_.image();}

@@ -91,7 +91,7 @@ ApplicationWindow {
     }
     Component {
         id: editor
-        EditorPage { overlaysOpen: App.leaving || settings.visible || saveFile.visible || openFile.visible || imageFile.visible || pdfFile.visible || exportFile.visible || pdfImport.visible || newProject.visible || recovery.visible; onBackRequested: App.requestHome(); onSaveAsRequested: saveFile.open(); onImportBoardRequested: openFile.open(); onImageRequested: imageFile.open(); onImportPdfRequested: pdfFile.open(); onExportPdfRequested: exportFile.open(); onSettingsRequested: settings.open();onFullScreenRequested: window.toggleFullScreen() }
+        EditorPage { overlaysOpen: App.leaving || settings.visible || saveFile.visible || openFile.visible || imageFile.visible || pdfFile.visible || exportFile.visible || pdfImport.visible || newProject.visible || recovery.visible; onBackRequested: App.requestHome(); onSaveAsRequested: saveFile.open(); onImportBoardRequested: openFile.open(); onImageRequested: imageFile.open(); onImportPdfRequested: pdfFile.open(); onExportPdfRequested: exportFile.openForProject(); onSettingsRequested: settings.open();onFullScreenRequested: window.toggleFullScreen() }
     }
     NewProjectDialog { id: newProject }
     SettingsDialog { id: settings }
@@ -99,7 +99,13 @@ ApplicationWindow {
     FileDialog { id: pdfFile; title: "Importar PDF"; nameFilters: ["PDF (*.pdf)"]; onAccepted: App.inspectPdfFile(selectedFile) }
     FileDialog { id: openFile; objectName: "importBoardFileDialog"; title: "Importar quadro"; nameFilters: ["Quadros Scalar (*.scalar *.board *.zip)"]; onAccepted: { window.homeFolder=""; App.open(selectedFile) } }
     FileDialog { id: saveFile; objectName: "saveBoardFileDialog"; title: "Salvar quadro completo como"; fileMode: FileDialog.SaveFile; defaultSuffix: "scalar"; nameFilters: ["Quadro Scalar (*.scalar)"]; onAccepted: App.saveAs(selectedFile) }
-    FileDialog { id: exportFile; objectName: "exportPdfFileDialog"; title: "Exportar todas as páginas como PDF"; fileMode: FileDialog.SaveFile; defaultSuffix: "pdf"; nameFilters: ["PDF (*.pdf)"]; onAccepted: App.exportPdf(selectedFile) }
+    FileDialog {
+        id: exportFile; objectName: "exportPdfFileDialog"
+        title: "Exportar todas as páginas como PDF"
+        fileMode: FileDialog.SaveFile; defaultSuffix: "pdf"; nameFilters: ["PDF (*.pdf)"]
+        function openForProject() { selectedFile=App.suggestedPdfExportFile(currentFolder);open() }
+        onAccepted: App.exportPdf(selectedFile)
+    }
     FileDialog { id: imageFile; title: "Importar imagens"; fileMode: FileDialog.OpenFiles; nameFilters: ["Imagens (*.png *.jpg *.jpeg *.webp *.bmp *.svg)"]; onAccepted: { if(pageLoader.item) pageLoader.item.insertImages(selectedFiles) } }
     C.ModernDialog {
         id: savingDialog
