@@ -12,6 +12,7 @@ ToolButton {
             anchors.horizontalCenter: parent.horizontalCenter
             anchors.bottom: colorIndicator.top
             color: root.selected ? Theme.accent : Theme.text
+            Behavior on color { ColorAnimation { duration: Theme.normal } }
             opacity: root.enabled ? 1 : 0.3
         }
         Rectangle {

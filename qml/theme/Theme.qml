@@ -64,6 +64,7 @@ QtObject {
     readonly property int caption: 13
     readonly property int fast: App.reducedEffects ? 0 : 100
     readonly property int normal: App.reducedEffects ? 0 : 160
+    readonly property int hoverFade: App.reducedEffects ? 0 : 180
     readonly property int windowWidth: 1200
     readonly property int windowHeight: 800
     readonly property int minimumWidth: 520

@@ -15,12 +15,21 @@ AbstractButton {
     ToolTip.text: tooltip
     ToolTip.delay: Theme.tooltipDelay
     background: Rectangle {
+        id: buttonBackground
         radius: root.cornerRadius
-        color: root.primary ? Theme.accent : root.down ? Theme.pressed : root.checked ? Theme.accentSoft : root.hovered ? Theme.hover : Theme.surface
+        color: root.primary ? Theme.accent : root.checked ? Theme.accentSoft : Theme.surface
         border.width: root.primary ? 0 : 1
         border.color: Theme.border
-        opacity: root.enabled ? (root.down ? 0.8 : 1) : 0.4
-        Behavior on color { ColorAnimation { duration: Theme.fast } }
+        opacity: root.enabled ? 1 : 0.4
+        Behavior on color { ColorAnimation { duration: Theme.normal } }
+        Rectangle {
+            anchors.fill: parent; anchors.margins: buttonBackground.border.width
+            radius: Math.max(0,buttonBackground.radius-buttonBackground.border.width)
+            color: root.primary ? Theme.accentText : root.down ? Theme.pressed : Theme.hover
+            opacity: !root.enabled ? 0 : root.down ? (root.primary ? .18 : 1) : root.hovered ? (root.primary ? .1 : root.checked ? .45 : 1) : 0
+            Behavior on opacity { NumberAnimation { duration: root.down ? Theme.fast : Theme.hoverFade; easing.type: root.down ? Easing.OutCubic : Easing.InOutQuad } }
+            Behavior on color { ColorAnimation { duration: Theme.fast } }
+        }
     }
     contentItem: Text {
         id: label
