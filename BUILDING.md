@@ -137,7 +137,7 @@ Esse teste abre janelas temporárias, compara a tinta antes e depois de soltar o
 Instale as dependências de desenvolvimento:
 
 ```sh
-sudo apt install build-essential cmake ninja-build python3 qt6-base-dev qt6-declarative-dev qt6-pdf-dev qt6-svg-dev \
+sudo apt install build-essential cmake ninja-build python3 libwebkit2gtk-4.1-dev xwayland qt6-base-dev qt6-declarative-dev qt6-pdf-dev qt6-svg-dev \
   libqt6sql6-sqlite qt6-image-formats-plugins qml6-module-qtquick qml6-module-qtquick-controls \
   qml6-module-qtquick-layouts qml6-module-qtquick-dialogs qml6-module-qt-labs-folderlistmodel qml6-module-qtquick-shapes \
   qml6-module-qtquick-templates qml6-module-qtquick-window qml6-module-qtqml qml6-module-qtqml-workerscript

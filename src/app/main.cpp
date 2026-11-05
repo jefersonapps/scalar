@@ -17,6 +17,11 @@
 #include <QTemporaryDir>
 #include <memory>
 int main(int argc,char** argv){
+#ifdef Q_OS_LINUX
+    // GTK3 foreign child windows use X11; Wayland desktops provide XWayland.
+    if(qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM") && !qEnvironmentVariableIsEmpty("DISPLAY"))
+        qputenv("QT_QPA_PLATFORM", "xcb");
+#endif
     QSurfaceFormat format;format.setSamples(4);QSurfaceFormat::setDefaultFormat(format);
     QGuiApplication app(argc,argv);app.setOrganizationName("Scalar");app.setApplicationName("Scalar");app.setApplicationVersion(SCALAR_VERSION);
     app.setDesktopFileName(QStringLiteral("scalar"));

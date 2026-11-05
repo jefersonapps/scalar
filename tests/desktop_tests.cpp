@@ -161,16 +161,17 @@ private slots:
         auto* address=findVisualItem(window->contentItem(),"browserAddressField");QVERIFY(address);address->forceActiveFocus();canvas->setTool("select");
         QTest::keyClick(window,Qt::Key_P);QTest::keyClick(window,Qt::Key_E);QCOMPARE(canvas->tool(),QString("select"));
         auto* close=findVisualItem(window->contentItem(),"closeBrowserButton");QVERIFY(close);QVERIFY(QMetaObject::invokeMethod(close,"clicked"));QTRY_COMPARE(canvas->width(),initialWidth);
-        canvas->forceActiveFocus();QTest::keyClick(window,Qt::Key_P);QTRY_COMPARE(canvas->tool(),QString("pen"));
+        canvas->forceActiveFocus();window->requestActivate();QTRY_VERIFY(window->isActive());QTest::keyClick(window,Qt::Key_P);QTRY_COMPARE(canvas->tool(),QString("pen"));
         QVERIFY(QMetaObject::invokeMethod(toggle,"clicked"));QTRY_VERIFY(loader->isVisible());QCOMPARE(window->findChild<SystemBrowser*>("systemBrowser"),browser);
         QTest::qWait(50);QCOMPARE(warnings.size(),0);QVERIFY(controller.shutdown());
     }
     void systemBrowserUsesInstalledRuntimeForLocalNavigation(){
-        if(QGuiApplication::platformName()!="windows")QSKIP("Native WebView2 requires the Windows platform plugin.");
+        if(QGuiApplication::platformName()!="windows" && QGuiApplication::platformName()!="xcb")QSKIP("Native browser requires Windows or X11/XWayland.");
+        int requests=0;
         QTcpServer server;QVERIFY(server.listen(QHostAddress::LocalHost));
         connect(&server,&QTcpServer::newConnection,&server,[&]{while(server.hasPendingConnections()){
             auto* socket=server.nextPendingConnection();connect(socket,&QTcpSocket::disconnected,socket,&QObject::deleteLater);
-            connect(socket,&QTcpSocket::readyRead,socket,[socket]{const auto request=socket->readAll();if(request.isEmpty()||socket->property("sent").toBool())return;socket->setProperty("sent",true);
+            connect(socket,&QTcpSocket::readyRead,socket,[socket,&requests]{const auto request=socket->readAll();if(request.isEmpty()||socket->property("sent").toBool())return;socket->setProperty("sent",true);++requests;
                 const auto title=request.startsWith("GET /second")?QByteArray("Second local page"):QByteArray("First local page");
                 const auto html="<html><head><title>"+title+"</title></head><body>Scalar system browser test</body></html>";
                 socket->write("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: "+QByteArray::number(html.size())+"\r\nConnection: close\r\n\r\n"+html);socket->disconnectFromHost();
@@ -183,6 +184,13 @@ private slots:
         browser->navigate(QString("http://127.0.0.1:%1/second").arg(server.serverPort()));QTRY_COMPARE_WITH_TIMEOUT(browser->title(),QString("Second local page"),10000);QTRY_VERIFY(browser->canGoBack());
         browser->goBack();QTRY_COMPARE_WITH_TIMEOUT(browser->title(),QString("First local page"),10000);QTRY_VERIFY(browser->canGoForward());
         browser->setSuspended(true);browser->setX(300);browser->setWidth(590);QTest::qWait(30);browser->setSuspended(false);browser->goForward();QTRY_COMPARE_WITH_TIMEOUT(browser->title(),QString("Second local page"),10000);
+        const int beforeReload=requests;browser->reload();
+        QTRY_VERIFY(requests>beforeReload);QTRY_VERIFY(!browser->loading());QVERIFY(browser->error().isEmpty());
+        QTcpServer unused;QVERIFY(unused.listen(QHostAddress::LocalHost));const auto unusedPort=unused.serverPort();unused.close();
+        browser->navigate(QString("http://127.0.0.1:%1/").arg(unusedPort));
+        QTRY_VERIFY_WITH_TIMEOUT(!browser->error().isEmpty(),10000);QVERIFY(!browser->loading());
+        browser->navigate(first);QTRY_COMPARE_WITH_TIMEOUT(browser->title(),QString("First local page"),10000);
+        QTRY_VERIFY(!browser->loading());QVERIFY(browser->error().isEmpty());
         delete browser;
     }
     void browserAddressesAndImageDragSources(){

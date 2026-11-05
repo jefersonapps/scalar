@@ -8,9 +8,15 @@ No Windows, o painel usa o **Microsoft Edge WebView2 Evergreen Runtime** instala
 
 Na primeira configuração Windows, o CMake baixa do NuGet o SDK `Microsoft.Web.WebView2` 1.0.2903.40, com SHA-256 fixado. Esse SDK serve à compilação; o diretório do SDK não é instalado nem distribuído com o app. Para compilar sem acesso à rede, extraia esse pacote e configure `-DSCALAR_WEBVIEW2_SDK=<diretório extraído>`.
 
-No Linux, esta implementação oferece abrir o navegador padrão externamente. Ela não adiciona um motor web ao pacote Linux. O quadro continua aceitando imagens arrastadas do navegador externo.
+No Linux, o painel usa a biblioteca compartilhada **WebKitGTK 4.1** do sistema. O pacote Scalar não inclui Chromium, Qt WebEngine ou uma cópia privada do WebKit. Um pequeno executável `scalar-webkit-host` mantém o loop GTK separado do Qt Quick; ele usa o WebKit compartilhado e não contém um motor web. O APT resolve `libwebkit2gtk-4.1-0` como dependência; se ela não estiver instalada, haverá download e uso de disco adicionais. Para compilar, instale `libwebkit2gtk-4.1-dev`.
+
+A integração de janelas GTK3 usa X11. Em desktops Wayland, o aplicativo seleciona XWayland automaticamente quando `DISPLAY` está disponível e `QT_QPA_PLATFORM` não foi definido. A dependência `xwayland` é declarada no pacote. Se o backend Qt for forçado para Wayland, o painel explica como iniciar com `QT_QPA_PLATFORM=xcb`. Backends sem X11 mantêm a opção de abrir externamente.
+
+No Linux, o host sincroniza ativação e foco pelo protocolo XEmbed para que campos dos sites exibam o cursor de texto. Ao focar a barra de endereço, o quadro ou ocultar o painel, o foco do conteúdo web é liberado.
 
 O perfil web (cookies/cache) fica em `AppLocalDataLocation/web-profile`, separado dos arquivos dos quadros. A visualização nativa é ocultada enquanto um diálogo/painel sobreposto precisa aparecer. Links que solicitam outra janela são abertos no mesmo painel. Recursos que dependem de janelas separadas, DRM ou políticas particulares do site podem ter limitações.
+
+O host aplica uma configuração Fontconfig própria que ignora fontes locais WOFF/WOFF2, evitando o [travamento do Skia/WebKit 325185](https://bugs.webkit.org/show_bug.cgi?id=325185) em entradas sem família. As fontes do sistema e a configuração do quadro não são alteradas; fontes web carregadas pelos sites continuam disponíveis. Há um limite de 30 segundos para apresentar uma opção de tentar novamente em carregamentos sem resposta.
 
 ## Arrastar imagens
 

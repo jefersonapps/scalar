@@ -29,6 +29,7 @@ dpkg-deb --contents "$package" >/dev/null
 # files or confirm that the desktop launcher points to the installed command.
 dpkg-deb --extract "$package" "$staging_dir/extracted"
 test -x "$staging_dir/extracted/usr/bin/scalar-whiteboard"
+test -x "$staging_dir/extracted/usr/libexec/scalar/scalar-webkit-host"
 test ! -e "$staging_dir/extracted/usr/bin/scalar"
 grep -Fxq 'Exec=scalar-whiteboard' "$staging_dir/extracted/usr/share/applications/scalar.desktop"
 

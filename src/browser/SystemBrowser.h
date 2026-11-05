@@ -4,7 +4,8 @@
 #include <memory>
 
 namespace scalar {
-// A native system web view. No browser engine is linked or shipped by Scalar.
+// Native system web view: WebView2 on Windows, shared WebKitGTK on Linux.
+// No private browser engine is shipped by Scalar.
 class SystemBrowser : public QQuickItem {
     Q_OBJECT
     Q_PROPERTY(QUrl url READ url NOTIFY changed)

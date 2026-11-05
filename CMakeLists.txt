@@ -35,7 +35,17 @@ if(SCALAR_BUILD_DESKTOP)
         src/persistence/ProjectStore.cpp src/persistence/ProjectStore.h
         src/persistence/Library.cpp src/persistence/Library.h src/persistence/Thumbnail.cpp src/persistence/TrashStore.cpp src/clipboard/ImageImporter.cpp src/documents/Backgrounds.cpp src/math/MathRenderer.cpp src/math/SvgValidation.cpp src/rendering/TextRenderer.cpp src/rendering/MathMesh.cpp src/pdf/PdfService.cpp src/pdf/PdfRenderCache.cpp src/app/AppPages.cpp)
     target_link_libraries(scalar_desktop PUBLIC scalar_core Qt6::Core Qt6::Gui Qt6::Quick Qt6::QuickControls2 Qt6::Sql Qt6::Concurrent)
-    target_sources(scalar_desktop PRIVATE src/browser/SystemBrowser.cpp src/browser/SystemBrowser.h)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(SYSTEM_WEBKIT REQUIRED IMPORTED_TARGET webkit2gtk-4.1 x11)
+        target_sources(scalar_desktop PRIVATE src/browser/SystemBrowserLinux.cpp src/browser/SystemBrowser.h)
+        add_executable(scalar-webkit-host src/browser/WebKitHost.cpp)
+        target_link_libraries(scalar-webkit-host PRIVATE Qt6::Core PkgConfig::SYSTEM_WEBKIT)
+        add_dependencies(scalar_desktop scalar-webkit-host)
+        install(TARGETS scalar-webkit-host RUNTIME DESTINATION libexec/scalar)
+    else()
+        target_sources(scalar_desktop PRIVATE src/browser/SystemBrowser.cpp src/browser/SystemBrowser.h)
+    endif()
     target_link_libraries(scalar_desktop PUBLIC Qt6::Network)
     if(WIN32)
         target_link_libraries(scalar_desktop PRIVATE dwmapi)
@@ -232,7 +242,7 @@ FunctionEnd
         set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
         # QML imports and image codecs are loaded at runtime and are therefore
         # not visible to dpkg-shlibdeps; declare them explicitly for apt.
-        set(CPACK_DEBIAN_PACKAGE_DEPENDS "libqt6sql6-sqlite, qt6-image-formats-plugins, qml6-module-qtquick, qml6-module-qtquick-controls, qml6-module-qtquick-layouts, qml6-module-qtquick-dialogs, qml6-module-qt-labs-folderlistmodel, qml6-module-qtquick-shapes, qml6-module-qtquick-templates, qml6-module-qtquick-window, qml6-module-qtqml, qml6-module-qtqml-workerscript")
+        set(CPACK_DEBIAN_PACKAGE_DEPENDS "libwebkit2gtk-4.1-0, xwayland, libqt6sql6-sqlite, qt6-image-formats-plugins, qml6-module-qtquick, qml6-module-qtquick-controls, qml6-module-qtquick-layouts, qml6-module-qtquick-dialogs, qml6-module-qt-labs-folderlistmodel, qml6-module-qtquick-shapes, qml6-module-qtquick-templates, qml6-module-qtquick-window, qml6-module-qtqml, qml6-module-qtqml-workerscript")
         # Qt Quick Effects is optional and detected once at UI startup.
         # Do not require a package unavailable on Qt 6.4 distributions.
         set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
