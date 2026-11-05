@@ -136,7 +136,7 @@ ApplicationWindow {
         App.detectToolbarBlurSupport(window)
         if(App.recoveryAvailable) recovery.open()
     }
-    Shortcut { sequence: "Ctrl+O"; enabled: !App.leaving && !settings.visible && !newProject.visible && !recovery.visible; onActivated: openFile.open() }
-    Shortcut { sequence: "Ctrl+N"; enabled: !App.leaving && !settings.visible && !newProject.visible && !recovery.visible; onActivated: newProject.open() }
+    Shortcut { sequence: "Ctrl+O"; enabled: !(App.active && pageLoader.item && pageLoader.item.browserFocused) && !App.leaving && !settings.visible && !newProject.visible && !recovery.visible; onActivated: openFile.open() }
+    Shortcut { sequence: "Ctrl+N"; enabled: !(App.active && pageLoader.item && pageLoader.item.browserFocused) && !App.leaving && !settings.visible && !newProject.visible && !recovery.visible; onActivated: newProject.open() }
     Shortcut { sequence: "F11";onActivated: window.toggleFullScreen() }
 }

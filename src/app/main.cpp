@@ -1,5 +1,6 @@
 #include "AppController.h"
 #include "Branding.h"
+#include "browser/SystemBrowser.h"
 #include "canvas/CanvasItem.h"
 #include "input/InputDiagnostics.h"
 #include <QGuiApplication>
@@ -28,6 +29,7 @@ int main(int argc,char** argv){
     scalar::InputDiagnostics::write({{"phase","session"},{"binary",QCoreApplication::applicationFilePath()},
         {"build",__DATE__ " " __TIME__},{"qt",qVersion()},{"platform",QGuiApplication::platformName()}});
     qmlRegisterType<scalar::CanvasItem>("Scalar",1,0,"BoardCanvas");
+    qmlRegisterType<scalar::SystemBrowser>("Scalar",1,0,"SystemBrowser");
     qmlRegisterType<scalar::ApplicationLogo>("Scalar",1,0,"ApplicationLogo");
     qmlRegisterUncreatableType<scalar::AppController>("Scalar",1,0,"ApplicationController","Use the App singleton context.");
     // Smoke checks must not write projects/settings into the user's library.

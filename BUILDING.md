@@ -4,6 +4,8 @@ Execute os comandos abaixo na raiz do projeto (`scalar/`).
 
 ## Gerar o instalador Windows
 
+O navegador lateral usa o WebView2 do Windows, sem empacotar um motor web. A compilação baixa apenas o SDK leve; veja [runtime, compilação offline e limitações](docs/SYSTEM_BROWSER.md).
+
 No PowerShell:
 
 ```powershell

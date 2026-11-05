@@ -209,9 +209,14 @@ void CanvasItem::beginSelection(Point p,Qt::KeyboardModifiers modifiers){
 }
 void CanvasItem::updateSelection(Point p){
     if(state_==State::Marquee){lastPan_=p;selectionUpdated();return;}
-    // Ctrl rotation may snap individual line segments by different angles.
-    // Keep that non-affine operation on the existing geometry editing path.
-    if(affineSelectionPreview_&&state_==State::Rotating&&angleSnap_){affineSelectionPreview_=false;selectionPreviewTransform_.reset();}
+    const auto center=editFrame_.origin+rotatePoint({editFrame_.width/2,editFrame_.height/2},{},editFrame_.angle);
+    if(state_==State::Rotating){
+        const auto a=dragStart_-center,b=p-center;
+        previewRotation_=std::atan2(b.y,b.x)-std::atan2(a.y,a.x);
+        // Snap the selection's absolute orientation. A group keeps a single
+        // rigid transform, preserving the angles and spacing between its objects.
+        if(angleSnap_){const double step=std::numbers::pi/12;previewRotation_=std::round((editFrame_.angle+previewRotation_)/step)*step-editFrame_.angle;}
+    }
     if(affineSelectionPreview_){
         lastPan_=p;previewTransformCenter_=editFrame_.origin+rotatePoint({editFrame_.width/2,editFrame_.height/2},{},editFrame_.angle);
         if(state_==State::Moving)previewTranslation_=p-dragStart_;
@@ -220,13 +225,13 @@ void CanvasItem::updateSelection(Point p){
             previewTransformCenter_=editFrame_.origin+rotatePoint({right?0:editFrame_.width,bottom?0:editFrame_.height},{},editFrame_.angle);
             auto local=rotatePoint(p-previewTransformCenter_,{},-editFrame_.angle);local.x*=right?1:-1;local.y*=bottom?1:-1;
             previewScale_=std::min(std::clamp(local.x/std::max(.1,editFrame_.width),.05,20.),std::clamp(local.y/std::max(.1,editFrame_.height),.05,20.));
-        }else if(state_==State::Rotating){const auto a=dragStart_-previewTransformCenter_,b=p-previewTransformCenter_;previewRotation_=std::atan2(b.y,b.x)-std::atan2(a.y,a.x);}
+        }
         QTransform transform;transform.translate(previewTransformCenter_.x+previewTranslation_.x,previewTransformCenter_.y+previewTranslation_.y);transform.rotateRadians(previewRotation_);transform.scale(previewScale_,previewScale_);transform.translate(-previewTransformCenter_.x,-previewTransformCenter_.y);selectionPreviewTransform_=transform;
         const auto origin=transform.map(QPointF(editFrame_.origin.x,editFrame_.origin.y));
         selectionFrame_={{origin.x(),origin.y()},editFrame_.width*previewScale_,editFrame_.height*previewScale_,editFrame_.angle+previewRotation_};
         emit selectionChanged();update();return;
     }
-    lastPan_=p;editPreview_=editBefore_;const auto center=editFrame_.origin+rotatePoint({editFrame_.width/2,editFrame_.height/2},{},editFrame_.angle);
+    lastPan_=p;editPreview_=editBefore_;
     for(auto& o:editPreview_){
         if(state_==State::Moving)o=transformed(o,center,p-dragStart_);
         else if(state_==State::Resizing){
@@ -249,9 +254,7 @@ void CanvasItem::updateSelection(Point p){
                 const auto scale=std::min(sx,sy);o=transformed(o,anchor,{},scale,scale);
             }
         }
-        else if(state_==State::Rotating){const auto a=dragStart_-center,b=p-center;double rotation=std::atan2(b.y,b.x)-std::atan2(a.y,a.x);
-            if(angleSnap_)if(const auto* line=std::get_if<ShapeObject>(&o);line&&line->kind==ShapeKind::Line&&line->vertices.size()==2){const auto delta=line->vertices[1]-line->vertices[0];const double original=std::atan2(delta.y,delta.x),step=std::numbers::pi/12;rotation=std::round((original+rotation)/step)*step-original;}
-            o=transformed(o,center,{},1,1,rotation);}
+        else if(state_==State::Rotating)o=transformed(o,center,{},1,1,previewRotation_);
         else if(state_==State::EditingHandle){auto* shape=std::get_if<ShapeObject>(&o);if(!shape)continue;
             const auto handles=selectionHandles();if(handleIndex_<0||handleIndex_>=handles.size())continue;const auto handle=handles[handleIndex_].toMap();const auto type=handle["type"].toString();
             if(type=="vertex"){auto point=p;const int index=handle["index"].toInt();if(angleSnap_&&shape->kind==ShapeKind::Line&&shape->vertices.size()==2){const auto anchor=shape->vertices[1-index],delta=p-anchor;const double step=std::numbers::pi/12,angle=std::round(std::atan2(delta.y,delta.x)/step)*step;point=anchor+Point{std::cos(angle),std::sin(angle)}*length(delta);}shape->vertices[index]=point;}
@@ -268,7 +271,7 @@ void CanvasItem::commitSelection(){
     }
     std::vector<ObjectChange> changes;
     for(std::size_t i=0;i<editBefore_.size();++i){
-        bool changed=length(lastPan_-dragStart_)>0.01;
+        bool changed=length(lastPan_-dragStart_)>0.01||(state_==State::Rotating&&std::abs(previewRotation_)>1e-12);
         // Ctrl can snap a segment even when the pointer has not moved.
         if(const auto* before=std::get_if<ShapeObject>(&editBefore_[i]);before&&before->kind==ShapeKind::Line)
             if(const auto* after=std::get_if<ShapeObject>(&editPreview_[i]))changed|=before->vertices!=after->vertices;

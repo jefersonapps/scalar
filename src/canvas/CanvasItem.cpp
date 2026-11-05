@@ -1,6 +1,7 @@
 #include "CanvasItem.h"
 #include "tools/StrokeEraser.h"
 #include "rendering/StrokeMesh.h"
+#include "clipboard/ImageImporter.h"
 #include "input/InputDiagnostics.h"
 #include <QJsonArray>
 #include <QtConcurrent>
@@ -12,6 +13,8 @@
 #include <QHoverEvent>
 #include <QCursor>
 #include <QGuiApplication>
+#include <QDropEvent>
+#include <QMimeData>
 #include <functional>
 namespace scalar {
 namespace {
@@ -75,6 +78,7 @@ private:
 };
 }
 CanvasItem::CanvasItem(QQuickItem* parent):QQuickItem(parent){
+    connect(this,&CanvasItem::drawingChanged,this,[this]{if(controller_)controller_->setInkActive(drawing());});
     if(InputDiagnostics::enabled()){
         auto* heartbeat=new QTimer(this);heartbeat->setInterval(16);
         auto last=std::make_shared<QElapsedTimer>();last->start();
@@ -102,14 +106,20 @@ CanvasItem::CanvasItem(QQuickItem* parent):QQuickItem(parent){
     });
     connect(this,&QQuickItem::enabledChanged,this,[this]{if(!isEnabled()){tabletInProximity_=false;tabletButtons_=Qt::NoButton;space_=false;cancelStroke();setTemporaryHand(false);setTabletEraser(false);}});
     connect(this,&QQuickItem::visibleChanged,this,[this]{if(!isVisible()){tabletInProximity_=false;tabletButtons_=Qt::NoButton;space_=false;cancelStroke();setTemporaryHand(false);setTabletEraser(false);}});
-    connect(this,&QQuickItem::windowChanged,this,[this](QQuickWindow* w){
+    const auto attachWindow=[this](QQuickWindow* w){
         disconnect(handFocusConnection_);
         if(filteredWindow_)filteredWindow_->removeEventFilter(this);
         filteredWindow_=w;if(w)w->installEventFilter(this);
         if(w)handFocusConnection_=connect(w,&QQuickWindow::activeFocusItemChanged,this,[this]{if(textInputFocused())setTemporaryHand(false);});
-    });
+    };
+    connect(this,&QQuickItem::windowChanged,this,attachWindow);
+    if(window())attachWindow(window());
 }
-CanvasItem::~CanvasItem(){if(filteredWindow_)filteredWindow_->removeEventFilter(this);}
+CanvasItem::~CanvasItem(){
+    disconnect(this,nullptr,this,nullptr);
+    if(controller_&&drawing())controller_->setInkActive(false);
+    if(filteredWindow_){filteredWindow_->removeEventFilter(this);disconnect(filteredWindow_,nullptr,this,nullptr);}
+}
 void CanvasItem::setController(AppController* c){
     selectedObjectsCacheValid_=false;
     if(controller_==c)return;if(controller_)disconnect(controller_,nullptr,this,nullptr);controller_=c;viewPageId_.clear();
@@ -182,6 +192,11 @@ bool CanvasItem::setZoom(double value){
     if(!std::isfinite(value)||value<.05||value>8||drawing()||state_==State::Erasing)return false;
     view_.zoomAt({width()/2,height()/2},value/view_.zoom);viewUpdated();return true;
 }
+void CanvasItem::importDroppedImages(const QVariantList& urls,const QString& html,QPointF position){
+    // Browser drags may carry a link URL and the actual image in text/html.
+    // Prefer the image source so linked thumbnails don't import the target page.
+    const auto sources=imageDropSources(urls,html);importImagesAt(sources,position);
+}
 void CanvasItem::begin(PointerSample s){
     if(!controller_||!controller_->active())return;
     if(!controller_->pageInfinite()&&(s.position.x<0||s.position.y<0||s.position.x>controller_->pageWidth()||s.position.y>controller_->pageHeight()))return;
@@ -192,6 +207,7 @@ void CanvasItem::begin(PointerSample s){
     recognitionDashed_=false;input_.reset();current_={newId(),ink,{input_.filter(s,smoothFreehand_)}};holdAnchor_=lastPan_=s.position;
     freehandSamples_=current_.samples;
     liveCurveStableSamples_=current_.samples.size();
+    liveCurveReleasePrefix_=1;liveCurveReleaseSegment_=0;
     current_.marker=tool_=="marker";
     state_=State::Drawing;if(!guidedEdge_&&tool_=="pen"&&controller_->recognitionEnabled())holdTimer_.start(controller_->holdDelay());emit drawingChanged();update();
 }
@@ -220,7 +236,10 @@ void CanvasItem::append(PointerSample s){
             // Finalize one segment once its five-point smoothing window is complete.
             // A new input point never rebuilds the already smoothed prefix.
             current_.samples.resize(liveCurveStableSamples_);
-            if(samples.size()>=5){appendSmoothStrokeSegment(samples,samples.size()-5,current_.samples);liveCurveStableSamples_=current_.samples.size();}
+            if(samples.size()>=5){
+                liveCurveReleasePrefix_=liveCurveStableSamples_;liveCurveReleaseSegment_=samples.size()-5;
+                appendSmoothStrokeSegment(samples,samples.size()-5,current_.samples);liveCurveStableSamples_=current_.samples.size();
+            }
             for(std::size_t segment=samples.size()>4?samples.size()-4:0;segment+1<samples.size();++segment)
                 appendSmoothStrokeSegment(samples,segment,current_.samples);
         }else current_.samples.push_back(samples.back());
@@ -317,7 +336,15 @@ void CanvasItem::endPointer(PointerSample s){
         movePointer(s);
         if(smoothFreehand_&&!previewShape_&&!freehandSamples_.empty()){
             // Preserve the pen-up endpoint instead of leaving the filter's lag.
-            freehandSamples_.back().position=s.position;current_.samples=smoothStrokeSamples(freehandSamples_);
+            freehandSamples_.back().position=s.position;
+            if(current_.marker)current_.samples=smoothStrokeSamples(freehandSamples_);
+            else {
+                // Pen-up only changes the final smoothing window. Retain the
+                // exact finalized prefix instead of smoothing the full stroke.
+                current_.samples.resize(liveCurveReleasePrefix_);
+                for(auto segment=liveCurveReleaseSegment_;segment+1<freehandSamples_.size();++segment)
+                    appendSmoothStrokeSegment(freehandSamples_,segment,current_.samples);
+            }
         }
         commit();
     }
@@ -490,6 +517,17 @@ bool CanvasItem::tablet(QTabletEvent* e,QPointF local){
 }
 bool CanvasItem::eventFilter(QObject* object,QEvent* e){
     if(object==filteredWindow_){
+        if((e->type()==QEvent::DragEnter||e->type()==QEvent::DragMove||e->type()==QEvent::Drop)&&isVisible()&&isEnabled()&&controller_&&controller_->active()){
+            auto* drop=static_cast<QDropEvent*>(e);const auto position=mapFromScene(drop->position());
+            if(QRectF(0,0,width(),height()).contains(position)&&drop->mimeData()->hasImage()){
+                // Native browser drags often provide the bitmap directly. Use
+                // it without a second download (also works for protected/blob images).
+                if(e->type()==QEvent::Drop){
+                    const auto image=qvariant_cast<QImage>(drop->mimeData()->imageData());
+                    if(!image.isNull()){const auto world=view_.screenToWorld({position.x(),position.y()});controller_->importImageData(image,{world.x,world.y});drop->acceptProposedAction();return true;}
+                }else {drop->acceptProposedAction();return true;}
+            }
+        }
         if(e->type()==QEvent::KeyPress||e->type()==QEvent::KeyRelease){
             auto* key=static_cast<QKeyEvent*>(e);
             if(key->key()==Qt::Key_H){

@@ -178,12 +178,15 @@ public:
     void refreshPdf(double scale){if(page())pdfCache_.request(page()->pdf,page()->size,scale);}
     QImage pdfImage() const {return pdfCache_.image();}
     quint64 pdfImageRevision() const {return pdfCache_.revision();}
+    quint64 documentRevision() const {return revision_;}
+    void setInkActive(bool active){inkActive_=active;}
     void addStroke(StrokeObject stroke);
     void addRecognizedStroke(StrokeObject stroke,ShapeObject shape);
     void addShape(ShapeObject shape);
     Q_INVOKABLE void importImage(const QUrl& url,QPointF center);
     Q_INVOKABLE void importImages(const QVariantList& urls,QPointF center);
     Q_INVOKABLE void pasteImage(QPointF center);
+    void importImageData(QImage image,QPointF center);
     void cacheImage(const std::string& id,const QImage& image){images_.insert(QString::fromStdString(id),image);}
     void aliasImage(const std::string& from,const std::string& to){images_.insert(QString::fromStdString(to),image(from));textMeshes_.insert(QString::fromStdString(to),textMeshes_.value(QString::fromStdString(from)));textMathColors_.insert(QString::fromStdString(to),textMathColors_.value(QString::fromStdString(from)));textSizes_.insert(QString::fromStdString(to),textSize(from));}
     std::span<const Point> mathGeometry(const std::string& id) const {const auto i=textMeshes_.constFind(QString::fromStdString(id));return i==textMeshes_.cend()?std::span<const Point>{}:std::span<const Point>{i.value()};}
@@ -319,6 +322,7 @@ private:
     QHash<QString,std::vector<MathColorRun>> textMathColors_;
     QHash<QString,QSizeF> textSizes_;
     quint64 revision_=0;
+    bool inkActive_=false;
     bool recognitionEnabled_=true;
     bool sessionLatexEnabled_=false;
     bool sessionCompassMarkCenter_=true;

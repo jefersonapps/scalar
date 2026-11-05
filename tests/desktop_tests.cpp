@@ -1,5 +1,6 @@
 #include <QtTest>
 #include "app/Branding.h"
+#include "browser/SystemBrowser.h"
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQmlComponent>
@@ -38,6 +39,9 @@
 #include <QtConcurrent>
 #include <QSemaphore>
 #include <QThreadPool>
+#include <QTcpServer>
+#include <QTcpSocket>
+#include <QBuffer>
 #ifdef Q_OS_WIN
 #include <qt_windows.h>
 #include <dwmapi.h>
@@ -130,6 +134,129 @@ private:
 class DesktopTests : public QObject {
     Q_OBJECT
 private slots:
+    void autosaveWaitsForPenUp(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();controller.setRecognitionEnabled(false);QTRY_VERIFY(!controller.busy());
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();
+        SaveWorkerBlock blocked;StrokeObject previous;previous.id=newId();previous.samples={{{10,10},1},{{20,20},1}};controller.addStroke(previous);
+        const auto point=canvas.screenPoint({50,80});QMouseEvent press(QEvent::MouseButtonPress,point,point,Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);canvas.mousePressEvent(&press);QVERIFY(canvas.drawing());
+        QTest::qWait(1850);QVERIFY(controller.dirty());QVERIFY(!controller.busy());
+        QMouseEvent release(QEvent::MouseButtonRelease,point,point,Qt::LeftButton,Qt::NoButton,Qt::NoModifier);canvas.mouseReleaseEvent(&release);blocked.unblock();
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.dirty(),5000);QCOMPARE(controller.page()->strokes.size(),std::size_t(2));QVERIFY(controller.shutdown());
+    }
+    void browserPanelResizesAndDoesNotStealBoardShortcuts(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);
+        engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());
+        auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(window);QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);const auto initialWidth=canvas->width();
+        auto* toggle=findVisualItem(window->contentItem(),"openBrowserButton");QVERIFY(toggle);QVERIFY(QMetaObject::invokeMethod(toggle,"clicked"));
+        auto* loader=findVisualItem(window->contentItem(),"browserPanelLoader");QVERIFY(loader);QTRY_VERIFY(loader->isVisible());
+        auto* browser=window->findChild<SystemBrowser*>("systemBrowser");QVERIFY(browser);
+        browser->navigate("http://127.0.0.1:1"); // No external browsing in UI tests.
+        QTRY_VERIFY(canvas->width()<initialWidth-300);QCOMPARE(qRound(canvas->width()+loader->width()+6),qRound(initialWidth));
+        auto* divider=findVisualItem(window->contentItem(),"browserDivider");QVERIFY(divider);const auto previous=loader->width();
+        const auto start=divider->mapToScene({3,divider->height()/2}).toPoint();
+        QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,start);QTest::mouseMove(window,start-QPoint(70,0));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,start-QPoint(70,0));
+        QTRY_VERIFY(loader->width()>previous+40);QCOMPARE(qRound(canvas->width()+loader->width()+6),qRound(initialWidth));
+        auto* address=findVisualItem(window->contentItem(),"browserAddressField");QVERIFY(address);address->forceActiveFocus();canvas->setTool("select");
+        QTest::keyClick(window,Qt::Key_P);QTest::keyClick(window,Qt::Key_E);QCOMPARE(canvas->tool(),QString("select"));
+        auto* close=findVisualItem(window->contentItem(),"closeBrowserButton");QVERIFY(close);QVERIFY(QMetaObject::invokeMethod(close,"clicked"));QTRY_COMPARE(canvas->width(),initialWidth);
+        canvas->forceActiveFocus();QTest::keyClick(window,Qt::Key_P);QTRY_COMPARE(canvas->tool(),QString("pen"));
+        QVERIFY(QMetaObject::invokeMethod(toggle,"clicked"));QTRY_VERIFY(loader->isVisible());QCOMPARE(window->findChild<SystemBrowser*>("systemBrowser"),browser);
+        QTest::qWait(50);QCOMPARE(warnings.size(),0);QVERIFY(controller.shutdown());
+    }
+    void systemBrowserUsesInstalledRuntimeForLocalNavigation(){
+        if(QGuiApplication::platformName()!="windows")QSKIP("Native WebView2 requires the Windows platform plugin.");
+        QTcpServer server;QVERIFY(server.listen(QHostAddress::LocalHost));
+        connect(&server,&QTcpServer::newConnection,&server,[&]{while(server.hasPendingConnections()){
+            auto* socket=server.nextPendingConnection();connect(socket,&QTcpSocket::disconnected,socket,&QObject::deleteLater);
+            connect(socket,&QTcpSocket::readyRead,socket,[socket]{const auto request=socket->readAll();if(request.isEmpty()||socket->property("sent").toBool())return;socket->setProperty("sent",true);
+                const auto title=request.startsWith("GET /second")?QByteArray("Second local page"):QByteArray("First local page");
+                const auto html="<html><head><title>"+title+"</title></head><body>Scalar system browser test</body></html>";
+                socket->write("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: "+QByteArray::number(html.size())+"\r\nConnection: close\r\n\r\n"+html);socket->disconnectFromHost();
+            });
+        }});
+        QQuickWindow window;window.resize(900,600);auto* browser=new SystemBrowser(window.contentItem());browser->setX(450);browser->setY(80);browser->setWidth(440);browser->setHeight(500);
+        const auto first=QString("http://127.0.0.1:%1/first").arg(server.serverPort());browser->navigate(first);window.show();QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QTRY_VERIFY_WITH_TIMEOUT(browser->ready()||!browser->error().isEmpty(),15000);QVERIFY2(browser->ready(),qPrintable(browser->error()));
+        QTRY_COMPARE_WITH_TIMEOUT(browser->title(),QString("First local page"),10000);QTRY_VERIFY(!browser->loading());QVERIFY(browser->error().isEmpty());
+        browser->navigate(QString("http://127.0.0.1:%1/second").arg(server.serverPort()));QTRY_COMPARE_WITH_TIMEOUT(browser->title(),QString("Second local page"),10000);QTRY_VERIFY(browser->canGoBack());
+        browser->goBack();QTRY_COMPARE_WITH_TIMEOUT(browser->title(),QString("First local page"),10000);QTRY_VERIFY(browser->canGoForward());
+        browser->setSuspended(true);browser->setX(300);browser->setWidth(590);QTest::qWait(30);browser->setSuspended(false);browser->goForward();QTRY_COMPARE_WITH_TIMEOUT(browser->title(),QString("Second local page"),10000);
+        delete browser;
+    }
+    void browserAddressesAndImageDragSources(){
+        QCOMPARE(SystemBrowser::addressUrl("example.com/path"),QUrl("http://example.com/path"));
+        QCOMPARE(SystemBrowser::addressUrl("https://example.com/a?q=1"),QUrl("https://example.com/a?q=1"));
+        QVERIFY(SystemBrowser::addressUrl("estudo de geometria").toString().startsWith("https://www.google.com/search?q="));
+        QVERIFY(SystemBrowser::addressUrl("javascript:alert(1)").host()=="www.google.com");
+        QVERIFY(SystemBrowser::addressUrl("  ").isEmpty());
+        const QVariantList link{QUrl("https://example.com/page")};
+        const auto sources=imageDropSources(link,"<a href='page'><img data-src='wrong' src=\"https://example.com/picture?a=1&amp;b=2\"></a>");
+        QCOMPARE(sources.size(),1);QCOMPARE(sources.front().toUrl(),QUrl("https://example.com/picture?a=1&b=2"));
+        QCOMPARE(imageDropSources(link,"<span>plain link</span>"),link);
+        QVERIFY(!importImageUrl(QUrl("ftp://example.com/picture.png"),{},PageSize{}).error.isEmpty());
+    }
+    void nativeBrowserBitmapDropAvoidsDownloadingTheLink(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        QQuickWindow window;window.resize(1000,700);auto* canvas=new CanvasItem(window.contentItem());canvas->setWidth(600);canvas->setHeight(700);canvas->setController(&controller);canvas->restorePageView();
+        QImage bitmap(24,18,QImage::Format_ARGB32);bitmap.fill(Qt::cyan);QMimeData mime;mime.setImageData(bitmap);mime.setUrls({QUrl("https://invalid.example/protected-image")});
+        const auto position=canvas->screenPoint({50,120});
+        QDragEnterEvent enter(position.toPoint(),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QCoreApplication::sendEvent(&window,&enter);QVERIFY(enter.isAccepted());
+        QDropEvent drop(position,Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QCoreApplication::sendEvent(&window,&drop);QVERIFY(drop.isAccepted());
+        QTRY_COMPARE(controller.page()->images.size(),std::size_t(1));QCOMPARE(controller.page()->images.front().pixelWidth,24);
+        const auto& corners=controller.page()->images.front().corners;QVERIFY(length((corners[0]+corners[2])*.5-Point{50,120})<1e-8);
+        // A drop in the browser's area must never be imported by the canvas.
+        QDropEvent outside(QPointF(800,300),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QCoreApplication::sendEvent(&window,&outside);QTest::qWait(30);QCOMPARE(controller.page()->images.size(),std::size_t(1));
+        delete canvas;QVERIFY(controller.shutdown());
+    }
+    void webImageImportRunsWithoutBlockingInputAndPreservesDropPosition(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        QImage bitmap(16,12,QImage::Format_ARGB32);bitmap.fill(Qt::magenta);QByteArray png;QBuffer buffer(&png);buffer.open(QIODevice::WriteOnly);QVERIFY(bitmap.save(&buffer,"PNG"));
+        QTcpServer server;QVERIFY(server.listen(QHostAddress::LocalHost));
+        connect(&server,&QTcpServer::newConnection,&server,[&]{while(server.hasPendingConnections()){
+            auto* socket=server.nextPendingConnection();connect(socket,&QTcpSocket::disconnected,socket,&QObject::deleteLater);
+            connect(socket,&QTcpSocket::readyRead,socket,[&,socket]{
+                const auto request=socket->readAll();if(request.isEmpty()||socket->property("sent").toBool())return;socket->setProperty("sent",true);
+                QTimer::singleShot(120,socket,[socket,png]{socket->write("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: "+QByteArray::number(png.size())+"\r\nConnection: close\r\n\r\n"+png);socket->disconnectFromHost();});
+            });
+        }});
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();
+        const auto point=canvas.screenPoint({70,90});
+        canvas.importImagesAt({QUrl(QString("http://127.0.0.1:%1/image").arg(server.serverPort()))},point);
+        // Ink remains usable while the network response is outstanding.
+        StrokeObject ink;ink.id=newId();ink.samples={{{10,10},1},{{20,20},1}};controller.addStroke(ink);
+        QCOMPARE(controller.page()->strokes.size(),std::size_t(1));QVERIFY(controller.page()->images.empty());
+        QTRY_COMPARE_WITH_TIMEOUT(controller.page()->images.size(),std::size_t(1),5000);
+        const auto& image=controller.page()->images.front();QCOMPARE(image.pixelWidth,16);QCOMPARE(image.pixelHeight,12);
+        const auto center=(image.corners[0]+image.corners[2])*.5;QVERIFY(length(center-Point{70,90})<1e-8);
+        const auto imported=importImageUrl(QUrl("data:image/png;base64,"+QString::fromLatin1(png.toBase64())),{},PageSize{});QVERIFY2(imported.error.isEmpty(),qPrintable(imported.error));QCOMPARE(imported.image.size(),bitmap.size());
+        controller.undo();QVERIFY(controller.page()->images.empty());QCOMPARE(controller.page()->strokes.size(),std::size_t(1));QVERIFY(controller.shutdown());
+    }
+    void longLivePenKeepsSealedGeometryAndExactFinalSmoothing(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();controller.setRecognitionEnabled(false);
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();
+        InputManager input;std::vector<PointerSample> filtered;std::unique_ptr<QSGNode> scene;
+        QSGNode* sealed=nullptr;int retained=0;
+        QElapsedTimer timer;timer.start();
+        for(int i=0;i<1600;++i){
+            const Point world{20+double(i)*.1,80+5*std::sin(i*.035)};const auto position=canvas.screenPoint({world.x,world.y});
+            QMouseEvent event(i?QEvent::MouseMove:QEvent::MouseButtonPress,position,position,i?Qt::NoButton:Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);event.setTimestamp(8*i);
+            filtered.push_back(input.filter(InputManager::mouse(event,world),true));
+            if(i)canvas.mouseMoveEvent(&event);else canvas.mousePressEvent(&event);
+            scene.reset(canvas.updatePaintNode(scene.release(),nullptr));
+            auto* live=scene->firstChild()->nextSibling()->lastChild();
+            if(live&&live->childCount()>1){if(!sealed)sealed=live->firstChild();else {QCOMPARE(live->firstChild(),sealed);++retained;}}
+        }
+        QVERIFY(retained>1000);qInfo()<<"1600 live pen samples and scene synchronizations:"<<timer.elapsed()<<"ms; sealed geometry reused:"<<retained;
+        const auto endpoint=Point{179.91,80+5*std::sin(1599*.035)};const auto position=canvas.screenPoint({endpoint.x,endpoint.y});
+        QMouseEvent release(QEvent::MouseButtonRelease,position,position,Qt::LeftButton,Qt::NoButton,Qt::NoModifier);release.setTimestamp(1600*8);
+        const auto last=input.filter(InputManager::mouse(release,endpoint),true);if(length(last.position-filtered.back().position)>.005)filtered.push_back(last);filtered.back().position=endpoint;
+        canvas.mouseReleaseEvent(&release);scene.reset(canvas.updatePaintNode(scene.release(),nullptr));
+        QCOMPARE(controller.page()->strokes.size(),std::size_t(1));const auto expected=smoothStrokeSamples(filtered);const auto& actual=controller.page()->strokes.front().samples;
+        QCOMPARE(actual.size(),expected.size());for(std::size_t i=0;i<actual.size();++i)QVERIFY(length(actual[i].position-expected[i].position)<1e-8);
+        QVERIFY(!canvas.drawing());QVERIFY(controller.shutdown());
+    }
     void erasureRecoveryEndsWhenBoardCloses(){
         QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
         StrokeObject marker;marker.id=newId();marker.marker=true;marker.style.minWidthMm=marker.style.maxWidthMm=6;marker.samples={{{40,60},1},{{100,60},1}};controller.addStroke(marker);
@@ -166,7 +293,10 @@ private slots:
         ShapeObject sector;sector.id=newId();sector.kind=ShapeKind::CircularSector;sector.center={100,100};sector.radiusX=sector.radiusY=20;sector.vertices={sector.center};for(int i=0;i<=32;++i){const double a=i*std::numbers::pi/64;sector.vertices.push_back(sector.center+Point{20*std::cos(a),20*std::sin(a)});}controller.addShape(sector);canvas->setTool("select");
         QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,canvas->mapToScene(canvas->screenPoint({107,107})).toPoint());QCOMPARE(canvas->selectionName(),QString::fromUtf8("Setor circular"));auto* toggle=findVisualItem(window->contentItem(),"showSectorAngleToggle");QVERIFY(toggle);QVERIFY(toggle->isVisible());QVERIFY(!canvas->selectedShowAngle());QVERIFY(QMetaObject::invokeMethod(toggle,"toggle"));QVERIFY(QMetaObject::invokeMethod(toggle,"toggled"));QVERIFY(canvas->selectedShowAngle());QCOMPARE(canvas->sectorAngles().size(),1);QVERIFY(std::abs(canvas->sectorAngles().front().toMap()["angle"].toDouble()-90)<1e-8);
         QTRY_VERIFY(findVisualItem(window->contentItem(),"sectorAngleLabel"));const auto position=canvas->sectorAngles().front().toMap();canvas->zoomBy(1.5);QVERIFY(canvas->sectorAngles().front().toMap()!=position);controller.undo();QVERIFY(canvas->sectorAngles().isEmpty());controller.redo();QCOMPARE(canvas->sectorAngles().size(),1);
-        const auto path=directory.filePath("angle.board");controller.saveAs(QUrl::fromLocalFile(path));QTRY_VERIFY(!controller.busy());controller.home();controller.openPath(path);QTRY_VERIFY(!controller.loading());QVERIFY(controller.page()->shapes.front().showAngle);QCOMPARE(canvas->sectorAngles().size(),1);QVERIFY(warnings.isEmpty());QVERIFY(controller.shutdown());
+        const auto path=directory.filePath("angle.board");controller.saveAs(QUrl::fromLocalFile(path));QTRY_VERIFY(!controller.busy());controller.home();controller.openPath(path);QTRY_VERIFY(!controller.loading());
+        // Returning home destroys the editor. Reopening creates a new canvas.
+        canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);
+        QVERIFY(controller.page()->shapes.front().showAngle);QCOMPARE(canvas->sectorAngles().size(),1);QVERIFY(warnings.isEmpty());QVERIFY(controller.shutdown());
     }
     void tabletEraserIgnoresStaleX11CorePointerHover(){
 #ifndef Q_OS_LINUX
@@ -317,6 +447,56 @@ private slots:
         controller.redo();const auto redone=findObject(*controller.page(),page.strokes.front().id);QVERIFY(redone);QCOMPARE(std::get<StrokeObject>(*redone).samples[100].position,resizedPosition);
         qInfo("290 objects / 128000 samples: reference stroke mesh rebuild %.2f ms; worst cached drag and scene sync %.2f ms",referenceMs,worst/1000000.);
         QVERIFY(controller.shutdown());
+    }
+    void rotationControlSnapsEveryObjectType_data(){
+        QTest::addColumn<QString>("kind");
+        for(const auto* kind:{"rectangle","ellipse","line","stroke","image","text"})QTest::newRow(kind)<<QString(kind);
+    }
+    void rotationControlSnapsEveryObjectType(){
+        QFETCH(QString,kind);QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        CanvasObject object;const std::vector<Point> corners{{50,80},{90,80},{90,100},{50,100}};
+        if(kind=="image"){QImage bitmap(40,20,QImage::Format_ARGB32);bitmap.fill(Qt::blue);auto image=encodeImage(bitmap,{70,90},PageSize{});QVERIFY(image.error.isEmpty());image.object.corners=corners;object=image.object;controller.cacheImage(image.object.id,bitmap);}
+        else if(kind=="text"){TextObject text;text.id=newId();text.source="Rotation";text.fontFamily="Lobster Two";text.corners=corners;object=text;}
+        else if(kind=="stroke"){StrokeObject stroke;stroke.id=newId();stroke.samples={{{50,80},1},{{90,100},1}};object=stroke;}
+        else {ShapeObject shape;shape.id=newId();shape.fillOpacity=1;
+            if(kind=="ellipse"){shape.kind=ShapeKind::Ellipse;shape.center={70,90};shape.radiusX=20;shape.radiusY=10;}
+            else if(kind=="line"){shape.kind=ShapeKind::Line;shape.vertices={{50,90},{90,90}};}
+            else {shape.kind=ShapeKind::Rectangle;shape.vertices=corners;}object=shape;}
+        object=transformed(object,{70,90},{},1,1,7*std::numbers::pi/180);
+        controller.changeObjects({{{},object}},CommandKind::AddObject);
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(800);canvas.setController(&controller);canvas.restorePageView();canvas.setTool("select");
+        const auto send=[&](QEvent::Type type,QPointF p,Qt::KeyboardModifiers mods=Qt::NoModifier){QMouseEvent event(type,p,p,type==QEvent::MouseMove?Qt::NoButton:Qt::LeftButton,type==QEvent::MouseButtonRelease?Qt::NoButton:Qt::LeftButton,mods);if(type==QEvent::MouseButtonPress)canvas.mousePressEvent(&event);else if(type==QEvent::MouseMove)canvas.mouseMoveEvent(&event);else canvas.mouseReleaseEvent(&event);};
+        const auto pivot=canvas.screenPoint({70,90});send(QEvent::MouseButtonPress,pivot);send(QEvent::MouseButtonRelease,pivot);QCOMPARE(canvas.selectedCount(),1);
+        const auto rotateHandle=[&]{for(const auto& value:canvas.selectionHandles()){const auto h=value.toMap();if(h["type"].toString()=="rotate")return QPointF(h["x"].toDouble(),h["y"].toDouble());}return QPointF{};};
+        const auto initial=canvas.selectionRotation();const auto start=rotateHandle();QVERIFY(!start.isNull());const auto d=start-pivot;const double angle=17*std::numbers::pi/180;
+        const auto target=pivot+QPointF(d.x()*std::cos(angle)-d.y()*std::sin(angle),d.x()*std::sin(angle)+d.y()*std::cos(angle));
+        send(QEvent::MouseButtonPress,start);send(QEvent::MouseMove,target);QVERIFY(std::abs(canvas.selectionRotation()-initial-17)<1e-6);
+        const auto snapped=std::round((initial+17)/15)*15;
+        QKeyEvent controlDown(QEvent::KeyPress,Qt::Key_Control,Qt::ControlModifier);canvas.keyPressEvent(&controlDown);QVERIFY(std::abs(canvas.selectionRotation()-snapped)<1e-6);
+        QKeyEvent controlUp(QEvent::KeyRelease,Qt::Key_Control,Qt::NoModifier);canvas.keyReleaseEvent(&controlUp);QVERIFY(std::abs(canvas.selectionRotation()-initial-17)<1e-6);
+        canvas.keyPressEvent(&controlDown);send(QEvent::MouseButtonRelease,target,Qt::ControlModifier);QVERIFY(std::abs(canvas.selectionRotation()-snapped)<1e-6);
+        controller.undo();QVERIFY(std::abs(canvas.selectionRotation()-initial)<1e-6);controller.redo();QVERIFY(std::abs(canvas.selectionRotation()-snapped)<1e-6);controller.undo();
+        // Ctrl may change an already rotated object even without a pointer move.
+        const auto stationary=rotateHandle();send(QEvent::MouseButtonPress,stationary);canvas.keyPressEvent(&controlDown);send(QEvent::MouseButtonRelease,stationary,Qt::ControlModifier);
+        QVERIFY(std::abs(canvas.selectionRotation()-std::round(initial/15)*15)<1e-6);
+        if(std::abs(initial)>1e-6){controller.undo();QVERIFY(std::abs(canvas.selectionRotation()-initial)<1e-6);}
+        QVERIFY(controller.shutdown());
+    }
+    void groupRotationControlPreservesRelativeGeometry(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        ShapeObject first;first.id=newId();first.kind=ShapeKind::Line;first.vertices={{40,80},{80,90}};auto second=first;second.id=newId();second.vertices={{40,130},{80,150}};controller.addShape(first);controller.addShape(second);
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(800);canvas.setController(&controller);canvas.restorePageView();canvas.setTool("select");
+        const auto send=[&](QEvent::Type type,QPointF p,Qt::KeyboardModifiers mods=Qt::NoModifier){QMouseEvent event(type,p,p,type==QEvent::MouseMove?Qt::NoButton:Qt::LeftButton,type==QEvent::MouseButtonRelease?Qt::NoButton:Qt::LeftButton,mods);if(type==QEvent::MouseButtonPress)canvas.mousePressEvent(&event);else if(type==QEvent::MouseMove)canvas.mouseMoveEvent(&event);else canvas.mouseReleaseEvent(&event);};
+        for(const auto& [point,mods]:std::vector<std::pair<QPointF,Qt::KeyboardModifiers>>{{{60,85},Qt::NoModifier},{{60,140},Qt::ShiftModifier}}){const auto p=canvas.screenPoint(point);send(QEvent::MouseButtonPress,p,mods);send(QEvent::MouseButtonRelease,p,mods);}QCOMPARE(canvas.selectedCount(),2);
+        QPointF handle;for(const auto& value:canvas.selectionHandles()){const auto h=value.toMap();if(h["type"].toString()=="rotate")handle={h["x"].toDouble(),h["y"].toDouble()};}QVERIFY(!handle.isNull());
+        const auto pivot=canvas.selectionFrame().center(),delta=handle-pivot;const double turn=22*std::numbers::pi/180;
+        const auto target=pivot+QPointF(delta.x()*std::cos(turn)-delta.y()*std::sin(turn),delta.x()*std::sin(turn)+delta.y()*std::cos(turn));
+        send(QEvent::MouseButtonPress,handle);send(QEvent::MouseMove,target,Qt::ControlModifier);QVERIFY(std::abs(canvas.selectionRotation()-15)<1e-6);send(QEvent::MouseButtonRelease,target,Qt::ControlModifier);
+        const auto rotation=[](const ShapeObject& shape){const auto d=shape.vertices[1]-shape.vertices[0];return std::atan2(d.y,d.x);};
+        const auto& a=controller.page()->shapes[0];const auto& b=controller.page()->shapes[1];
+        QVERIFY(std::abs(rotation(a)-rotation(first)-std::numbers::pi/12)<1e-8);QVERIFY(std::abs(rotation(b)-rotation(second)-std::numbers::pi/12)<1e-8);
+        QVERIFY(std::abs(length(a.vertices[0]-b.vertices[0])-length(first.vertices[0]-second.vertices[0]))<1e-8);
+        controller.undo();const auto restored=findObject(*controller.page(),first.id);QVERIFY(restored);QVERIFY(std::get<ShapeObject>(*restored).vertices==first.vertices);controller.redo();QVERIFY(std::abs(canvas.selectionRotation()-15)<1e-6);QVERIFY(controller.shutdown());
     }
     void selectionFramesRotateAndTextResizeReflows(){
         QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
@@ -2841,6 +3021,7 @@ int main(int argc,char** argv){
     QGuiApplication app(argc,argv);app.setOrganizationName("ScalarTests");app.setApplicationName("Desktop");
     QQuickStyle::setStyle("Basic");
     qmlRegisterType<CanvasItem>("Scalar",1,0,"BoardCanvas");
+    qmlRegisterType<SystemBrowser>("Scalar",1,0,"SystemBrowser");
     qmlRegisterType<scalar::ApplicationLogo>("Scalar",1,0,"ApplicationLogo");
     qmlRegisterUncreatableType<AppController>("Scalar",1,0,"ApplicationController","Use App");
     DesktopTests tests;return QTest::qExec(&tests,argc,argv);

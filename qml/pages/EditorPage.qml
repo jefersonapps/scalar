@@ -11,6 +11,12 @@ import "../dialogs"
 Item {
     id: root
     property bool overlaysOpen: false
+    property bool browserOpen: false
+    property bool browserCreated: false
+    property real browserPreferredWidth: 460
+    readonly property real browserWidth: browserOpen ? Math.min(Math.max(300,browserPreferredWidth),Math.max(300,width-320)) : 0
+    readonly property bool browserFocused: browserOpen && browserLoader.item && browserLoader.item.browserFocused
+    function closeBrowser() { browserOpen=false;board.forceActiveFocus() }
     function exportSelection(svg) {
         selectionMenu.close()
         selectionExport.svg = svg
@@ -102,6 +108,7 @@ Item {
         objectName: "boardCanvas"
         anchors.fill: parent
         anchors.topMargin: root.headerHeight
+        anchors.rightMargin: root.browserOpen ? root.browserWidth+6 : 0
         onWindowPointerPressed: position => root.rememberPanelTrigger(position)
         onWindowPointerReleased: Qt.callLater(function(){root.pressedTogglePanel=null})
         controller: App
@@ -180,22 +187,52 @@ Item {
         }
     }
     DropArea {
+        objectName: "boardImageDropArea"
         anchors.fill: board; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active
         onEntered: drag => {
-            if(drag.hasUrls) drag.acceptProposedAction()
+            if(drag.hasUrls || drag.formats.indexOf("text/html")>=0) drag.acceptProposedAction()
             else drag.accepted = false
         }
         onDropped: drop => {
-            if(drop.hasUrls && drop.urls.length > 0) {
-                if(drop.urls.length===1 && App.canImportProject(drop.urls[0]))root.importDroppedProject(drop.urls[0])
-                else if(drop.urls[0].toString().toLowerCase().endsWith(".pdf")) App.inspectPdfFile(drop.urls[0])
-                else board.importImages(drop.urls)
-                drop.acceptProposedAction()
+            if(drop.hasUrls || drop.formats.indexOf("text/html")>=0) {
+                if(drop.hasUrls && drop.urls.length===1 && App.canImportProject(drop.urls[0]))root.importDroppedProject(drop.urls[0])
+                else if(drop.hasUrls && drop.urls.length>0 && drop.urls[0].toString().toLowerCase().endsWith(".pdf")) App.inspectPdfFile(drop.urls[0])
+                else board.importDroppedImages(drop.hasUrls ? drop.urls : [], drop.getDataAsString("text/html"),Qt.point(drop.x,drop.y))
+                drop.accept(Qt.CopyAction)
+            }
+        }
+    }
+    Loader {
+        id: browserLoader; objectName: "browserPanelLoader"
+        anchors.top: parent.top; anchors.topMargin: root.headerHeight
+        anchors.right: parent.right; anchors.bottom: parent.bottom
+        width: root.browserWidth; visible: root.browserOpen; active: root.browserCreated
+        sourceComponent: BrowserPanel {
+            suspended: root.overlaysOpen || selectionExport.visible || selectionMenu.visible || fileOptions.visible || pagesPanel.visible
+                || geometryOptions.visible || penOptions.visible || penOptions.colorDialogOpen || shapeOptions.visible
+                || eraserOptions.visible || backgroundOptions.visible || backgroundOptions.colorDialogOpen
+            onCloseRequested: root.closeBrowser()
+        }
+    }
+    Rectangle {
+        id: browserDivider; objectName: "browserDivider"
+        visible: root.browserOpen
+        anchors.top: board.top; anchors.bottom: board.bottom
+        x: board.width; width: 6
+        color: dividerDrag.containsMouse || dividerDrag.pressed ? Theme.accent : "transparent"
+        Rectangle { anchors.centerIn: parent; width: 2; height: Theme.section; radius: 1; color: Theme.border }
+        MouseArea {
+            id: dividerDrag; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.SplitHCursor
+            property real startX: 0
+            property real startWidth: 0
+            onPressed: mouse => { startX=mapToItem(root,mouse.x,mouse.y).x;startWidth=root.browserWidth;board.cancelStroke() }
+            onPositionChanged: mouse => {
+                if(pressed)root.browserPreferredWidth=Math.max(300,Math.min(root.width-320,startWidth+startX-mapToItem(root,mouse.x,mouse.y).x))
             }
         }
     }
     BusyIndicator { objectName: "pageImagesLoadingIndicator"; anchors.centerIn: board; visible: App.pageImagesLoading; running: visible }
-    PropertiesPanel { id: properties; canvas: board; onExportRequested: svg => root.exportSelection(svg); visible: board.selectedCount > 0 && board.tool === "select" && !inlineText.active; anchors.top: parent.top; anchors.right: parent.right; anchors.topMargin: root.headerHeight+Theme.lg; anchors.rightMargin: Theme.lg }
+    PropertiesPanel { id: properties; canvas: board; onExportRequested: svg => root.exportSelection(svg); visible: board.selectedCount > 0 && board.tool === "select" && !inlineText.active; anchors.top: parent.top; anchors.right: board.right; anchors.topMargin: root.headerHeight+Theme.lg; anchors.rightMargin: Theme.lg }
     RowLayout {
         id: topbar
         anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
@@ -253,6 +290,7 @@ Item {
         C.IconButton { iconName: "fit"; label: "Ajustar página"; onClicked: board.fitPage() }
         C.IconButton { objectName: "fullScreenButton";iconName: root.fullScreen ? "restoreScreen" : "fullScreen";label: root.fullScreen ? "Sair da tela cheia (F11)" : "Tela cheia (F11)";selected: root.fullScreen;onClicked: root.fullScreenRequested() }
         C.IconButton { id: backgroundButton;objectName: "backgroundOptionsButton";iconName: "background"; label: "Personalizar fundo e grade da página"; onClicked: root.finishTextThen(function(){board.cancelStroke();root.togglePanel(backgroundOptions)}) }
+        C.IconButton { objectName: "openBrowserButton"; iconName: "planet"; label: root.browserOpen ? "Fechar navegador lateral" : "Abrir navegador lateral"; selected: root.browserOpen; onClicked: root.finishTextThen(function(){board.cancelStroke();root.browserCreated=true;root.browserOpen=!root.browserOpen;if(!root.browserOpen)board.forceActiveFocus()}) }
         C.IconButton { iconName: "settings"; label: "Configurações"; onClicked: root.finishTextThen(function(){board.cancelStroke();root.settingsRequested()}) }
     }
     C.GlassPopover {
@@ -272,8 +310,9 @@ Item {
     }
     FloatingToolbar {
         id: toolbar
+        width: Math.min(implicitWidth,Math.max(0,board.width-Theme.xxl))
         backdropSource: board
-        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.horizontalCenter: board.horizontalCenter
         anchors.bottom: parent.bottom; anchors.bottomMargin: Theme.xxl
         activeTool: board.tool
         penColor: board.penColor
@@ -287,7 +326,7 @@ Item {
     }
     C.PageNavigator {
         id: navigator
-        x: root.inlineNavigation ? topbar.x + navigationSpace.x : (root.width-width)/2
+        x: root.inlineNavigation ? topbar.x + navigationSpace.x : (board.width-width)/2
         y: root.inlineNavigation ? topbar.y+(topbar.height-height)/2 : root.headerRowHeight + Theme.sm
         onPreviousRequested: root.finishTextThen(function(){board.cancelStroke();App.selectPage(App.currentPage-1);board.forceActiveFocus()})
         onNextRequested: root.finishTextThen(function(){board.cancelStroke();App.selectPage(App.currentPage+1);board.forceActiveFocus()})
@@ -313,7 +352,7 @@ Item {
     GeometryOptions {
         id: geometryOptions; canvas: board
         maximumHeight: Math.max(Theme.section*3,toolbar.y-root.headerHeight-Theme.lg*3)
-        function reposition() { x=Math.max(Theme.lg,(root.width-width)/2); y=Math.max(Theme.lg,toolbar.y-height-Theme.md) }
+        function reposition() { x=Math.max(Theme.lg,(board.width-width)/2); y=Math.max(Theme.lg,toolbar.y-height-Theme.md) }
         onAboutToShow: reposition()
         onHeightChanged: Qt.callLater(reposition)
         Connections {
@@ -327,7 +366,7 @@ Item {
     BackgroundOptions { id: backgroundOptions; x: Math.max(Theme.lg,root.width-width-Theme.lg); y: root.headerHeight;onPageSizeChanged: board.fitPage() }
     PenOptions {
         id: penOptions; canvas: board
-        function reposition() { x = Math.max(Theme.lg,(root.width-width)/2); y = Math.max(Theme.lg,toolbar.y-height-Theme.md) }
+        function reposition() { x = Math.max(Theme.lg,(board.width-width)/2); y = Math.max(Theme.lg,toolbar.y-height-Theme.md) }
         onAboutToShow: reposition()
         onHeightChanged: Qt.callLater(reposition)
         Connections {
@@ -336,9 +375,9 @@ Item {
             function onHeightChanged() { Qt.callLater(penOptions.reposition) }
         }
     }
-    ShapeOptions { id: shapeOptions; canvas: board; x: Math.max(Theme.lg, (root.width-width)/2); y: Math.max(Theme.lg,toolbar.y-height-Theme.md) }
+    ShapeOptions { id: shapeOptions; canvas: board; x: Math.max(Theme.lg, (board.width-width)/2); y: Math.max(Theme.lg,toolbar.y-height-Theme.md) }
     C.GlassPopover {
-        id: eraserOptions; objectName: "eraserOptions"; x: Math.max(Theme.lg,(root.width-width)/2); y: toolbar.y-height-Theme.md
+        id: eraserOptions; objectName: "eraserOptions"; x: Math.max(Theme.lg,(board.width-width)/2); y: toolbar.y-height-Theme.md
         contentItem: ColumnLayout {
             Text { text: "Borracha por trecho"; color: Theme.text; font.pixelSize: Theme.body }
             Text { text: "Raio · " + board.eraserRadius.toFixed(1) + " mm"; color: Theme.secondary; font.pixelSize: Theme.caption }
@@ -351,12 +390,12 @@ Item {
     }
     Text {
         anchors.left: parent.left; anchors.bottom: parent.bottom; anchors.margins: Theme.lg
-        width: Math.min(implicitWidth, root.width-Theme.xxl)
+        width: Math.min(implicitWidth, board.width-Theme.xxl)
         text: board.drawing ? board.interactionHint : App.status
         color: Theme.secondary; font.pixelSize: Theme.caption; elide: Text.ElideRight
     }
-    Text { anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.margins: Theme.lg; visible: root.width > Theme.hintBreakpoint; text: "Rolagem para mover · Alt + rolagem na horizontal · Ctrl + rolagem para zoom"; color: Theme.secondary; font.pixelSize: Theme.caption }
-    Shortcut { sequence: "E"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.tool = "eraser" }
+    Text { anchors.right: board.right; anchors.bottom: parent.bottom; anchors.margins: Theme.lg; visible: board.width > Theme.hintBreakpoint; text: "Rolagem para mover · Alt + rolagem na horizontal · Ctrl + rolagem para zoom"; color: Theme.secondary; font.pixelSize: Theme.caption }
+    Shortcut { sequence: "E"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.tool = "eraser" }
     readonly property bool penColorShortcutsEnabled: {
         const focus=root.Window.window ? root.Window.window.activeFocusItem : null
         const typing=focus && (focus.hasOwnProperty("textDocument") || focus.hasOwnProperty("acceptableInput"))
@@ -369,26 +408,26 @@ Item {
         model: 7
         delegate: Item {
             required property int index
-            Shortcut { sequence: String(index+1); context: Qt.ApplicationShortcut; enabled: root.penColorShortcutsEnabled; onActivated: penOptions.pickColor(index) }
+            Shortcut { sequence: String(index+1); context: Qt.ApplicationShortcut; enabled: !root.browserFocused && root.penColorShortcutsEnabled; onActivated: penOptions.pickColor(index) }
         }
     }
     readonly property bool eraserSizeShortcutsEnabled: board.tool === "eraser" && (board.enabled || eraserOptions.visible) && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && !projectTitle.editing && !zoomControl.editing
-    Shortcut { sequences: ["+", "]"]; enabled: root.eraserSizeShortcutsEnabled; autoRepeat: true; onActivated: board.adjustEraserSize(true) }
-    Shortcut { sequences: ["-", "["]; enabled: root.eraserSizeShortcutsEnabled; autoRepeat: true; onActivated: board.adjustEraserSize(false) }
-    Shortcut { sequence: "Ctrl+C"; enabled: board.enabled && !projectTitle.editing && !zoomControl.editing && board.selectedCount > 0; onActivated: board.copySelection() }
-    Shortcut { sequence: "Ctrl+V"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && !projectTitle.editing && !zoomControl.editing; onActivated: board.pasteSelection() }
-    Shortcut { sequence: "V"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.tool = "select" }
-    Shortcut { sequence: "Delete"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && (board.selectedCount > 0 || board.selectedGuide !== ""); onActivated: board.deleteSelection() }
-    Shortcut { sequence: "Ctrl+D"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && board.selectedCount > 0; onActivated: board.duplicateSelection() }
-    Shortcut { sequence: "Ctrl+Up"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && board.selectedCount > 0; onActivated: board.moveSelectionLayer(true) }
-    Shortcut { sequence: "Ctrl+Down"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && board.selectedCount > 0; onActivated: board.moveSelectionLayer(false) }
-    Shortcut { sequence: "T"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.tool = "text" }
-    Shortcut { sequence: "P"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.tool = "pen" }
-    Shortcut { sequence: "M"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.tool = "marker" }
-    Shortcut { sequence: "Ctrl+Z"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && !board.drawing; onActivated: App.undo() }
-    Shortcut { sequence: "Ctrl+Shift+Z"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && !board.drawing; onActivated: App.redo() }
-    Shortcut { sequence: "Ctrl+S"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible; onActivated: root.finishTextThen(function(){App.save()}) }
-    Shortcut { sequence: "Ctrl+Shift+S"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: root.saveAsRequested() }
-    Shortcut { sequence: "Ctrl+PgDown"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: { board.cancelStroke(); App.selectPage(App.currentPage+1) } }
-    Shortcut { sequence: "Ctrl+PgUp"; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: { board.cancelStroke(); App.selectPage(App.currentPage-1) } }
+    Shortcut { sequences: ["+", "]"]; enabled: !root.browserFocused && root.eraserSizeShortcutsEnabled; autoRepeat: true; onActivated: board.adjustEraserSize(true) }
+    Shortcut { sequences: ["-", "["]; enabled: !root.browserFocused && root.eraserSizeShortcutsEnabled; autoRepeat: true; onActivated: board.adjustEraserSize(false) }
+    Shortcut { sequence: "Ctrl+C"; enabled: !root.browserFocused && board.enabled && !projectTitle.editing && !zoomControl.editing && board.selectedCount > 0; onActivated: board.copySelection() }
+    Shortcut { sequence: "Ctrl+V"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && !projectTitle.editing && !zoomControl.editing; onActivated: board.pasteSelection() }
+    Shortcut { sequence: "V"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.tool = "select" }
+    Shortcut { sequence: "Delete"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && (board.selectedCount > 0 || board.selectedGuide !== ""); onActivated: board.deleteSelection() }
+    Shortcut { sequence: "Ctrl+D"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && board.selectedCount > 0; onActivated: board.duplicateSelection() }
+    Shortcut { sequence: "Ctrl+Up"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && board.selectedCount > 0; onActivated: board.moveSelectionLayer(true) }
+    Shortcut { sequence: "Ctrl+Down"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && board.selectedCount > 0; onActivated: board.moveSelectionLayer(false) }
+    Shortcut { sequence: "T"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.tool = "text" }
+    Shortcut { sequence: "P"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.tool = "pen" }
+    Shortcut { sequence: "M"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.tool = "marker" }
+    Shortcut { sequence: "Ctrl+Z"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && !board.drawing; onActivated: App.undo() }
+    Shortcut { sequence: "Ctrl+Shift+Z"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && !board.drawing; onActivated: App.redo() }
+    Shortcut { sequence: "Ctrl+S"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible; onActivated: root.finishTextThen(function(){App.save()}) }
+    Shortcut { sequence: "Ctrl+Shift+S"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: root.saveAsRequested() }
+    Shortcut { sequence: "Ctrl+PgDown"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: { board.cancelStroke(); App.selectPage(App.currentPage+1) } }
+    Shortcut { sequence: "Ctrl+PgUp"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: { board.cancelStroke(); App.selectPage(App.currentPage-1) } }
 }

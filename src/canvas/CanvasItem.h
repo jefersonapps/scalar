@@ -155,6 +155,8 @@ public:
     Q_INVOKABLE QPointF viewportCenter() const {const auto p=view_.screenToWorld({width()/2,height()/2});return {p.x,p.y};}
     Q_INVOKABLE void importImage(const QUrl& url){if(controller_)controller_->importImage(url,viewportCenter());}
     Q_INVOKABLE void importImages(const QVariantList& urls){if(controller_)controller_->importImages(urls,viewportCenter());}
+    Q_INVOKABLE void importImagesAt(const QVariantList& urls,QPointF position){if(controller_){const auto p=view_.screenToWorld({position.x(),position.y()});controller_->importImages(urls,{p.x,p.y});}}
+    Q_INVOKABLE void importDroppedImages(const QVariantList& urls,const QString& html,QPointF position);
     Q_INVOKABLE void pasteImage(){if(controller_)controller_->pasteImage(viewportCenter());}
     Q_INVOKABLE void zoomBy(double factor);
     Q_INVOKABLE void restorePageView();
@@ -257,6 +259,7 @@ private:
     QString viewPageId_;
     std::vector<PointerSample> freehandSamples_;
     std::size_t liveCurveStableSamples_=1;
+    std::size_t liveCurveReleasePrefix_=1,liveCurveReleaseSegment_=0;
     bool smoothFreehand_=false;
     StrokeObject current_;
     std::optional<ShapeObject> previewShape_;

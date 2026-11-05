@@ -9,6 +9,7 @@ Item {
     implicitHeight: Theme.icon
     readonly property var paths: ({
         home: "M3 10 L12 3 L21 10 M5 9 V21 H10 V15 H14 V21 H19 V9",
+        planet: "M20 12 A8 8 0 1 1 4 12 A8 8 0 1 1 20 12 M4 12 H20 M12 4 C7 8 7 16 12 20 C17 16 17 8 12 4 M2 18 Q10 15 22 6",
         search: "M18 18 L22 22 M19 11 A8 8 0 1 1 3 11 A8 8 0 1 1 19 11",
         ruler: "M4 7 H20 Q22 7 22 9 V16 Q22 18 20 18 H4 Q2 18 2 16 V9 Q2 7 4 7 Z M6 7 V12 M10 7 V10 M14 7 V12 M18 7 V10",
         compass: "M12 3 V6 M8 21 L12 7 L18 21 M12 7 A2 2 0 1 1 12 3 A2 2 0 1 1 12 7 M7 17 H17 M6 21 H9",

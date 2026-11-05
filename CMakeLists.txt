@@ -28,15 +28,44 @@ if(SCALAR_BUILD_DESKTOP)
     else()
         set(_scalar_min_qt_version 6.4)
     endif()
-    find_package(Qt6 ${_scalar_min_qt_version} REQUIRED COMPONENTS Core Gui Quick QuickControls2 Sql Concurrent Pdf Svg)
+    find_package(Qt6 ${_scalar_min_qt_version} REQUIRED COMPONENTS Core Gui Quick QuickControls2 Sql Concurrent Pdf Svg Network)
     qt_standard_project_setup()
     add_library(scalar_desktop STATIC src/app/AppController.cpp src/app/AppController.h
         src/canvas/CanvasItem.cpp src/canvas/CanvasItem.h src/canvas/CanvasSelection.cpp src/rendering/CanvasScene.cpp src/input/InputManager.cpp src/input/InputManager.h
         src/persistence/ProjectStore.cpp src/persistence/ProjectStore.h
         src/persistence/Library.cpp src/persistence/Library.h src/persistence/Thumbnail.cpp src/persistence/TrashStore.cpp src/clipboard/ImageImporter.cpp src/documents/Backgrounds.cpp src/math/MathRenderer.cpp src/math/SvgValidation.cpp src/rendering/TextRenderer.cpp src/rendering/MathMesh.cpp src/pdf/PdfService.cpp src/pdf/PdfRenderCache.cpp src/app/AppPages.cpp)
     target_link_libraries(scalar_desktop PUBLIC scalar_core Qt6::Core Qt6::Gui Qt6::Quick Qt6::QuickControls2 Qt6::Sql Qt6::Concurrent)
+    target_sources(scalar_desktop PRIVATE src/browser/SystemBrowser.cpp src/browser/SystemBrowser.h)
+    target_link_libraries(scalar_desktop PUBLIC Qt6::Network)
     if(WIN32)
         target_link_libraries(scalar_desktop PRIVATE dwmapi)
+        # Only the small SDK loader is linked. The Evergreen browser runtime is
+        # supplied/updated by Windows, never downloaded or packaged by Scalar.
+        set(SCALAR_WEBVIEW2_SDK "" CACHE PATH "Existing Microsoft.Web.WebView2 SDK directory")
+        if(NOT SCALAR_WEBVIEW2_SDK)
+            include(FetchContent)
+            if(POLICY CMP0135)
+                cmake_policy(SET CMP0135 NEW)
+            endif()
+            FetchContent_Declare(scalar_webview2
+                URL https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/1.0.2903.40
+                URL_HASH SHA256=ef128016dd1e51c59178c827ed5b8aa3322c57afa8675d930f8109505542ad74)
+            FetchContent_MakeAvailable(scalar_webview2)
+            set(SCALAR_WEBVIEW2_SDK "${scalar_webview2_SOURCE_DIR}")
+        endif()
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64|aarch64)$" OR CMAKE_GENERATOR_PLATFORM STREQUAL "ARM64")
+            set(_scalar_webview2_arch arm64)
+        elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
+            set(_scalar_webview2_arch x64)
+        else()
+            set(_scalar_webview2_arch x86)
+        endif()
+        target_include_directories(scalar_desktop PRIVATE "${SCALAR_WEBVIEW2_SDK}/build/native/include")
+        target_link_libraries(scalar_desktop PRIVATE
+            "${SCALAR_WEBVIEW2_SDK}/build/native/${_scalar_webview2_arch}/WebView2LoaderStatic.lib"
+            ole32 oleaut32 shlwapi version)
+        install(FILES "${SCALAR_WEBVIEW2_SDK}/LICENSE.txt" "${SCALAR_WEBVIEW2_SDK}/NOTICE.txt"
+            DESTINATION share/scalar/licenses/webview2-loader)
     endif()
     target_compile_definitions(scalar_desktop PRIVATE SCALAR_MATH_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/third_party/mathjax")
     target_link_libraries(scalar_desktop PUBLIC Qt6::Pdf)
@@ -220,7 +249,7 @@ FunctionEnd
             set_target_properties(desktop_tests PROPERTIES QT_QML_MODULE_NO_IMPORT_SCAN TRUE)
         endif()
         target_link_libraries(desktop_tests PRIVATE scalar_desktop Qt6::Test)
-        qt_add_resources(desktop_tests ui PREFIX "/" BASE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${SCALAR_QML})
+        qt_add_resources(desktop_tests test_ui PREFIX "/" BASE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${SCALAR_QML})
         qt_add_executable(trash_tests tests/trash_tests.cpp src/persistence/TrashStore.cpp src/persistence/Library.cpp)
         target_include_directories(trash_tests PRIVATE src)
         target_link_libraries(trash_tests PRIVATE Qt6::Core Qt6::Sql Qt6::Test)
@@ -237,7 +266,7 @@ FunctionEnd
         set_tests_properties(pdf PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
         set_tests_properties(math PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 45)
         add_test(NAME desktop COMMAND desktop_tests)
-        set_tests_properties(desktop PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;XDG_DATA_HOME=${CMAKE_CURRENT_BINARY_DIR}/test-data" TIMEOUT 60)
+        set_tests_properties(desktop PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;XDG_DATA_HOME=${CMAKE_CURRENT_BINARY_DIR}/test-data" TIMEOUT 180)
         foreach(screen IN ITEMS home editor)
             if(screen STREQUAL "editor")
                 set(smoke_options --editor)

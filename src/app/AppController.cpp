@@ -68,7 +68,7 @@ AppController::AppController(QObject* parent,const QString& dataDirectory):QObje
     });
     connect(&exportWatcher_,&QFutureWatcher<QString>::finished,this,[this]{exportPending_=false;const auto error=exportWatcher_.result();status_=error.isEmpty()?"Arquivo exportado":error;emit changed();});
     thumbnailsTimer_.setSingleShot(true);thumbnailsTimer_.setInterval(700);
-    connect(&thumbnailsTimer_,&QTimer::timeout,this,&AppController::beginThumbnails);
+    connect(&thumbnailsTimer_,&QTimer::timeout,this,[this]{if(inkActive_)thumbnailsTimer_.start();else beginThumbnails();});
     connect(&thumbnailsWatcher_,&QFutureWatcher<QHash<QString,QString>>::finished,this,[this]{
         thumbnailsPending_=false;
         if(thumbnailsRevision_!=revision_){scheduleThumbnails();return;}
@@ -146,7 +146,7 @@ AppController::AppController(QObject* parent,const QString& dataDirectory):QObje
     library_->setSetting("cleanShutdown","false");
     status_=library_->error().isEmpty()?"Pronto para suas ideias":library_->error();
     autosave_.setSingleShot(true); autosave_.setInterval(1600);
-    connect(&autosave_,&QTimer::timeout,this,&AppController::beginSave);
+    connect(&autosave_,&QTimer::timeout,this,[this]{if(inkActive_)autosave_.start();else beginSave();});
     connect(&saveWatcher_,&QFutureWatcher<SaveResult>::finished,this,&AppController::finishSave);
     leaveTimer_.setInterval(16);
     connect(&leaveTimer_,&QTimer::timeout,this,&AppController::continueLeaving);
@@ -297,27 +297,31 @@ void AppController::importImage(const QUrl& url,QPointF center){
     importImages({url},center);
 }
 void AppController::importImages(const QVariantList& urls,QPointF center){
-    if(!active()||loading_||imageImportPending_||urls.isEmpty())return;QStringList paths;
+    if(!active()||loading_||imageImportPending_||urls.isEmpty())return;QList<QUrl> sources;
     for(auto value:urls){
         // QML URL lists can wrap each entry in an additional QVariant.
         while(value.metaType()==QMetaType::fromType<QVariant>())value=value.value<QVariant>();
         const auto url=value.toUrl();
-        if(url.isLocalFile())paths.append(url.toLocalFile());
-        else if(QFileInfo(value.toString()).isAbsolute())paths.append(value.toString());
+        if(url.isLocalFile()||url.scheme()=="http"||url.scheme()=="https"||url.scheme()=="data")sources.append(url);
+        else if(QFileInfo(value.toString()).isAbsolute())sources.append(QUrl::fromLocalFile(value.toString()));
     }
-    if(paths.isEmpty()){status_="Nenhum arquivo local de imagem foi encontrado.";emit changed();return;}if(paths.size()>32){status_="Importe até 32 imagens por vez.";emit changed();return;}
+    if(sources.isEmpty()){status_="Nenhuma imagem local ou da web foi encontrada.";emit changed();return;}if(sources.size()>32){status_="Importe até 32 imagens por vez.";emit changed();return;}
     importProjectId_=QString::fromStdString(project_.id);importPageId_=QString::fromStdString(page()->id);const auto size=page()->size;
-    imageImportPending_=true;imageWatcher_.setFuture(QtConcurrent::run([paths,center,size]{std::vector<ImportedImage> result;qint64 memory=0;int offset=0;
-        for(const auto& path:paths){auto image=importImageFile(path,{center.x()+offset,center.y()+offset},size);memory+=image.image.sizeInBytes();
+    imageImportPending_=true;imageWatcher_.setFuture(QtConcurrent::run([sources,center,size]{std::vector<ImportedImage> result;qint64 memory=0;int offset=0;
+        for(const auto& source:sources){auto image=importImageUrl(source,{center.x()+offset,center.y()+offset},size);memory+=image.image.sizeInBytes();
             if(memory>256*1024*1024){result.push_back({{},{},"O lote excede 256 MiB de imagens decodificadas."});break;}
             if(image.error.isEmpty())offset+=3;result.push_back(std::move(image));}return result;
     }));status_="Importando imagens…";emit changed();
 }
+void AppController::importImageData(QImage image,QPointF center){
+    if(!active()||loading_||imageImportPending_||image.isNull())return;
+    const auto size=page()->size;importProjectId_=QString::fromStdString(project_.id);importPageId_=QString::fromStdString(page()->id);
+    imageImportPending_=true;imageWatcher_.setFuture(QtConcurrent::run([image=std::move(image),center,size]{return std::vector<ImportedImage>{encodeImage(image,{center.x(),center.y()},size)};}));status_="Importando imagem…";emit changed();
+}
 void AppController::pasteImage(QPointF center){
     if(!active()||loading_||imageImportPending_)return;
     const auto* mime=QGuiApplication::clipboard()->mimeData();
-    if(mime->hasImage()){const auto image=QGuiApplication::clipboard()->image();const auto size=page()->size;importProjectId_=QString::fromStdString(project_.id);importPageId_=QString::fromStdString(page()->id);
-        imageImportPending_=true;imageWatcher_.setFuture(QtConcurrent::run([image,center,size]{return std::vector<ImportedImage>{encodeImage(image,{center.x(),center.y()},size)};}));status_="Colando imagem…";emit changed();}
+    if(mime->hasImage())importImageData(QGuiApplication::clipboard()->image(),center);
     else if(mime->hasUrls()&&!mime->urls().isEmpty()){const auto url=mime->urls().first();if(QFileInfo(url.toLocalFile()).suffix().compare("pdf",Qt::CaseInsensitive)==0)inspectPdfFile(url);else {QVariantList urls;for(const auto& u:mime->urls())urls.append(u);importImages(urls,center);}}
     else if(mime->hasText())upsertText({},center,{{"source",mime->text()},{"color",pageColor().lightness()<128?"#f4f4f5":"#263345"}});
     else {status_="A área de transferência não contém imagem ou texto.";emit changed();}

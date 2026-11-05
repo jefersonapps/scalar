@@ -44,6 +44,14 @@ struct SceneRoot : QSGTransformNode {
     };
     std::unordered_map<std::string,RasterShape> rasterShapes;
     QSGNode* live=nullptr;
+    struct LivePen {
+        std::string id;
+        std::size_t sealed=0;
+        QSGNode* tail=nullptr;
+    } livePen;
+    quint64 documentRevision=0,pdfSceneRevision=0;
+    QRectF documentViewport;
+    bool wasDrawing=false;
     struct LiveMarker {
         struct Tile {QImage image;std::unique_ptr<QSGTexture> texture;QSGSimpleTextureNode* node=nullptr;};
         std::map<std::pair<int,int>,Tile> tiles;
@@ -198,7 +206,7 @@ QSGNode* CanvasItem::updatePaintNode(QSGNode* old,UpdatePaintNodeData*){
     root->clip->setClipRect(paper);
     const QRectF visible=viewport.intersected(paper);
     const double scale=view_.pixelsPerMm*view_.zoom;
-    const bool navigating=viewRefinementTimer_.isActive()||affineSelectionPreview_;
+    const bool navigating=viewRefinementTimer_.isActive()||affineSelectionPreview_||drawing();
     // Resolution bands avoid rebuilding masks for every 5% wheel step. While
     // navigating, existing textures are transformed; refinement runs at rest.
     const double physicalScale=scale*(window()?window()->devicePixelRatio():1.);
@@ -219,6 +227,13 @@ QSGNode* CanvasItem::updatePaintNode(QSGNode* old,UpdatePaintNodeData*){
             if(root->pdf)root->clip->insertChildNodeAfter(root->grid,root->pdf);else root->clip->prependChildNode(root->grid);root->gridStyle=page->backgroundStyle;root->gridBounds=gridBounds;root->gridScale=gridScale;}
     }
 
+    // Pointer updates only change live ink. Do not traverse/sort the whole page
+    // or refine cached objects on every sample of an otherwise unchanged scene.
+    const bool reuseDocument=drawing()&&root->wasDrawing&&controller_
+        &&root->documentRevision==controller_->documentRevision()
+        &&root->pdfSceneRevision==controller_->pdfImageRevision()
+        &&root->documentViewport==viewport;
+    if(!reuseDocument){
     QSet<QString> present,rasterPresent;
     QElapsedTimer refinementBudget;refinementBudget.start();
     bool refined=false,refinementPending=false;
@@ -339,10 +354,39 @@ QSGNode* CanvasItem::updatePaintNode(QSGNode* old,UpdatePaintNodeData*){
     if(refinementPending)QMetaObject::invokeMethod(this,[this]{QTimer::singleShot(16,this,[this]{update();});},Qt::QueuedConnection);
     for(auto it=root->strokes.begin();it!=root->strokes.end();){if(!present.contains(QString::fromStdString(it->first))){auto* container=it->second.container();root->clip->removeChildNode(container);delete container;it=root->strokes.erase(it);}else ++it;}
     std::erase_if(root->rasterShapes,[&](const auto& entry){return !rasterPresent.contains(QString::fromStdString(entry.first));});
+    root->documentRevision=controller_?controller_->documentRevision():0;
+    root->pdfSceneRevision=controller_?controller_->pdfImageRevision():0;
+    root->documentViewport=viewport;
+    }
+    root->wasDrawing=drawing();
     const bool liveMarker=drawing()&&!previewShape_&&current_.marker&&window();
+    const bool livePen=drawing()&&!previewShape_&&!current_.marker
+        &&current_.style.pattern==LinePattern::Solid&&(current_.style.rgba&255)==255;
     if(liveMarker){
+        root->livePen={};
         appendLiveMarker(*root,current_,window(),std::clamp(physicalScale,1.,12.));
+    }else if(livePen){
+        auto& cache=root->livePen;
+        if(cache.id!=current_.id){
+            if(root->live){root->clip->removeChildNode(root->live);delete root->live;}
+            root->live=new QSGNode;root->clip->appendChildNode(root->live);
+            root->liveMarker={};cache={current_.id};
+        }
+        if(cache.tail){root->live->removeChildNode(cache.tail);delete cache.tail;cache.tail=nullptr;}
+        // Only seal samples whose smoothing window can no longer change.
+        // Overlap one sample at each seam; opaque round caps cover the join.
+        const auto stable=smoothFreehand_?liveCurveStableSamples_:current_.samples.size();
+        constexpr std::size_t chunkSize=128;
+        const auto appendChunk=[&](std::size_t first,std::size_t end){
+            StrokeObject chunk;chunk.style=current_.style;
+            chunk.samples.assign(current_.samples.begin()+first,current_.samples.begin()+end);
+            auto* node=new QSGNode;appendMeshNodes(*node,strokeDisplayMesh(chunk),fromRgba(chunk.style.rgba));
+            root->live->appendChildNode(node);return node;
+        };
+        while(cache.sealed+chunkSize<stable){appendChunk(cache.sealed,cache.sealed+chunkSize+1);cache.sealed+=chunkSize;}
+        if(cache.sealed<current_.samples.size())cache.tail=appendChunk(cache.sealed,current_.samples.size());
     }else{
+    root->livePen={};
     if(root->live){root->clip->removeChildNode(root->live);delete root->live;root->live=nullptr;}
     root->liveMarker={};
     if(drawing()){
