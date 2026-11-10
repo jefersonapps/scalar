@@ -1448,7 +1448,7 @@ private slots:
         folder=findVisualItem(window->contentItem(),"folderCard_"+folderId);QVERIFY(folder);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,folder->mapToScene({folder->width()/3,folder->height()/2}).toPoint());project=findVisualItem(window->contentItem(),"projectCard_"+projectId);QTRY_VERIFY(project);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,project->mapToScene({project->width()/2,project->height()/2}).toPoint());QTRY_VERIFY(controller.active());auto* editorBack=findVisualItem(window->contentItem(),"editorBackButton");QVERIFY(editorBack);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,editorBack->mapToScene({editorBack->width()/2,editorBack->height()/2}).toPoint());QTRY_VERIFY(!controller.active());QTRY_VERIFY((project=findVisualItem(window->contentItem(),"projectCard_"+projectId)));QVERIFY(findVisualItem(window->contentItem(),"newProjectInFolderButton")->isVisible());QDir().mkpath("screenshots");QVERIFY(window->grabWindow().save("screenshots/home-folders-dark.png"));controller.setTheme("Light");QTest::qWait(100);QVERIFY(window->grabWindow().save("screenshots/home-folders-light.png"));window->resize(520,640);QTest::qWait(100);QVERIFY(window->grabWindow().save("screenshots/home-folders-small.png"));
         project=findVisualItem(window->contentItem(),"projectCard_"+projectId);auto* unfiled=findVisualItem(window->contentItem(),"backToProjectsButton");QVERIFY(project&&unfiled);const auto moveFrom=project->mapToScene({project->width()/2,project->height()/3}).toPoint(),moveTo=unfiled->mapToScene({unfiled->width()/2,unfiled->height()/2}).toPoint();QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,moveFrom);for(int i=1;i<=12;++i)QTest::mouseMove(window,moveFrom+(moveTo-moveFrom)*i/12,20);QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,moveTo);QTRY_VERIFY(controller.recentProjects()[0].toMap()["folderId"].toString().isEmpty());QCOMPARE(controller.folders()[0].toMap()["count"].toInt(),0);QCOMPARE(warnings.size(),0);QVERIFY(controller.shutdown());
     }
-    void selectedCompassDrawsAndRulerReleasesSnap(){
+    void selectedCompassDrawsAndRulerKeepsSnap(){
         QTemporaryDir dir;AppController controller(nullptr,dir.path());controller.newDefault();controller.setRecognitionEnabled(false);
         QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());
         auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);QTRY_VERIFY(!controller.busy());
@@ -1458,7 +1458,64 @@ private slots:
         const auto strokesBeforeRuler=controller.page()->strokes.size();
         canvas->setCompassVisible(false);canvas->setTool("ruler");canvas->setRulerAngle(0);const auto r=canvas->rulerGeometry();const double scale=r["scale"].toDouble();
         const auto edgePoint=[&](double x,double y){return canvas->mapToScene({r["x"].toDouble()+x*scale,r["y"].toDouble()+y*scale}).toPoint();};
-        canvas->setTool("pen");QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,edgePoint(20,-1));QTest::mouseMove(window,edgePoint(40,-1));QTest::mouseMove(window,edgePoint(60,-15));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,edgePoint(70,-15));QCOMPARE(controller.page()->strokes.size(),strokesBeforeRuler+1);const auto& samples=controller.page()->strokes.back().samples;QVERIFY(samples.size()>=3);const double initialY=samples.front().position.y;QVERIFY(std::abs(samples[1].position.y-initialY)<1e-8);QVERIFY(samples.back().position.y<initialY-10);QCOMPARE(warnings.size(),0);QVERIFY(controller.shutdown());
+        canvas->setTool("pen");QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,edgePoint(20,-1));QTest::mouseMove(window,edgePoint(40,-1));QTest::mouseMove(window,edgePoint(60,-15));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,edgePoint(70,-15));QCOMPARE(controller.page()->strokes.size(),strokesBeforeRuler+1);const auto& samples=controller.page()->strokes.back().samples;QVERIFY(samples.size()>=3);const double initialY=samples.front().position.y;QVERIFY(std::abs(samples[1].position.y-initialY)<1e-8);QVERIFY(std::abs(samples.back().position.y-initialY)<1e-8);QCOMPARE(warnings.size(),0);QVERIFY(controller.shutdown());
+    }
+    void rulerLocksInitialEdgeUntilRelease(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();canvas.setRulerVisible(true);canvas.setTool("pen");
+        QPointingDevice pen("Test stylus",123,QInputDevice::DeviceType::Stylus,QPointingDevice::PointerType::Pen,QInputDevice::Capability::Position|QInputDevice::Capability::Pressure,1,3);
+        for(bool tablet:{false,true})for(double rotation:{0.,32.})for(int edge:{0,1})for(double side:{-1.,1.})for(bool reverse:{false,true}){
+            canvas.setRulerAngle(rotation);
+            const auto g=canvas.rulerGeometry();const double scale=g["scale"].toDouble(),angle=rotation*std::numbers::pi/180;
+            const auto point=[&](double x,double y){return QPointF(g["x"].toDouble()+scale*(x*std::cos(angle)-y*std::sin(angle)),g["y"].toDouble()+scale*(x*std::sin(angle)+y*std::cos(angle)));};
+            const auto send=[&](QEvent::Type type,QPointF local){
+                if(tablet){const bool release=type==QEvent::MouseButtonRelease,move=type==QEvent::MouseMove;QTabletEvent event(release?QEvent::TabletRelease:move?QEvent::TabletMove:QEvent::TabletPress,&pen,local,local,release?0.:.7,0,0,0,0,0,Qt::NoModifier,move?Qt::NoButton:Qt::LeftButton,release?Qt::NoButton:Qt::LeftButton);QCoreApplication::sendEvent(&canvas,&event);}
+                else {QMouseEvent event(type,local,local,type==QEvent::MouseMove?Qt::NoButton:Qt::LeftButton,type==QEvent::MouseButtonRelease?Qt::NoButton:Qt::LeftButton,Qt::NoModifier);if(type==QEvent::MouseButtonPress)canvas.mousePressEvent(&event);else if(type==QEvent::MouseButtonRelease)canvas.mouseReleaseEvent(&event);else canvas.mouseMoveEvent(&event);}
+            };
+            const double y=edge*RulerGeometry::widthMm;
+            send(QEvent::MouseButtonPress,point(reverse?90:20,y+side));QVERIFY(canvas.drawing());
+            send(QEvent::MouseMove,point(reverse?70:40,6));
+            send(QEvent::MouseMove,point(reverse?50:60,-40));
+            send(QEvent::MouseMove,point(reverse?-20:canvas.rulerLength()+20,50));
+            send(QEvent::MouseButtonRelease,point(reverse?-20:canvas.rulerLength()+20,50));
+            QCOMPARE(controller.page()->strokes.size(),std::size_t(1));
+            const auto& stroke=controller.page()->strokes.front();QVERIFY(stroke.samples.size()>=3);
+            for(const auto& sample:stroke.samples){const auto screen=canvas.screenPoint({sample.position.x,sample.position.y});const auto offset=screen-point(0,0);const double x=(offset.x()*std::cos(angle)+offset.y()*std::sin(angle))/scale;const double localY=(-offset.x()*std::sin(angle)+offset.y()*std::cos(angle))/scale;QVERIFY(std::abs(localY-y)<1e-8);QVERIFY(x>=-1e-8&&x<=canvas.rulerLength()+1e-8);}
+            const auto last=stroke.samples.back().position;QVERIFY(QLineF(canvas.screenPoint({last.x,last.y}),point(reverse?0:canvas.rulerLength(),y)).length()<1e-6);
+            controller.undo();QVERIFY(controller.page()->strokes.empty());
+        }
+        QVERIFY(controller.shutdown());
+    }
+    void rulerCapturesAnOngoingFreehandStroke(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();canvas.setRulerVisible(true);canvas.setTool("pen");
+        QPointingDevice pen("Test stylus",123,QInputDevice::DeviceType::Stylus,QPointingDevice::PointerType::Pen,QInputDevice::Capability::Position|QInputDevice::Capability::Pressure,1,3);
+        for(bool tablet:{false,true})for(double rotation:{0.,-25.2})for(int edge:{0,1})for(bool crossing:{false,true}){
+            canvas.setRulerAngle(rotation);const auto g=canvas.rulerGeometry();const double scale=g["scale"].toDouble(),angle=rotation*std::numbers::pi/180;
+            const auto point=[&](double x,double y){return QPointF(g["x"].toDouble()+scale*(x*std::cos(angle)-y*std::sin(angle)),g["y"].toDouble()+scale*(x*std::sin(angle)+y*std::cos(angle)));};
+            const auto local=[&](Point p){const auto offset=canvas.screenPoint({p.x,p.y})-point(0,0);return QPointF((offset.x()*std::cos(angle)+offset.y()*std::sin(angle))/scale,(-offset.x()*std::sin(angle)+offset.y()*std::cos(angle))/scale);};
+            const auto send=[&](QEvent::Type type,QPointF p){
+                const bool release=type==QEvent::MouseButtonRelease,move=type==QEvent::MouseMove;
+                if(tablet){QTabletEvent event(release?QEvent::TabletRelease:move?QEvent::TabletMove:QEvent::TabletPress,&pen,p,p,release?0.:.7,0,0,0,0,0,Qt::NoModifier,move?Qt::NoButton:Qt::LeftButton,release?Qt::NoButton:Qt::LeftButton);QCoreApplication::sendEvent(&canvas,&event);}
+                else {QMouseEvent event(type,p,p,move?Qt::NoButton:Qt::LeftButton,release?Qt::NoButton:Qt::LeftButton,Qt::NoModifier);if(type==QEvent::MouseButtonPress)canvas.mousePressEvent(&event);else if(release)canvas.mouseReleaseEvent(&event);else canvas.mouseMoveEvent(&event);}
+            };
+            const double y=edge*RulerGeometry::widthMm,outside=edge?1.:-1.;
+            send(QEvent::MouseButtonPress,point(20,y+outside*15));
+            send(QEvent::MouseMove,point(30,y+outside*10));
+            send(QEvent::MouseMove,point(50,y+outside*(crossing?-30:1)));
+            QVERIFY(canvas.drawing());
+            send(QEvent::MouseMove,point(70,y+outside*25));
+            send(QEvent::MouseMove,point(canvas.rulerLength()+20,y-outside*25));
+            send(QEvent::MouseButtonRelease,point(canvas.rulerLength()+20,y-outside*25));
+            QCOMPARE(controller.page()->strokes.size(),std::size_t(1));
+            const auto& samples=controller.page()->strokes.front().samples;QVERIFY(samples.size()>=5);
+            QVERIFY(std::abs(local(samples[0].position).y()-y-outside*15)<1e-8);
+            QVERIFY(std::abs(local(samples[1].position).y()-y-outside*10)<1e-8);
+            for(std::size_t i=2;i<samples.size();++i){const auto p=local(samples[i].position);QVERIFY(std::abs(p.y()-y)<1e-8);QVERIFY(p.x()>=-1e-8&&p.x()<=canvas.rulerLength()+1e-8);}
+            QVERIFY(std::abs(local(samples.back().position).x()-canvas.rulerLength())<1e-8);
+            controller.undo();QVERIFY(controller.page()->strokes.empty());
+        }
+        QVERIFY(controller.shutdown());
     }
     void rulerBlocksInkInsideBody(){
         QTemporaryDir dir;AppController controller(nullptr,dir.path());controller.newDefault();controller.setRecognitionEnabled(false);

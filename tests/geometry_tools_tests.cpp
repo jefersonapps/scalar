@@ -23,6 +23,7 @@ int main(){try{
         require(!ruler.entryPoint(ruler.world({20,0}),ruler.world({20,-5})),"allow moving away from boundary");
         require(bool(ruler.entryPoint(ruler.world({20,0}),ruler.world({20,6}))),"block entering from boundary");
     }
+    for(double angle:{0.,.7})for(int edge:{0,1}){ruler.angle=angle;require(length(ruler.local(ruler.project(ruler.world({-30,50}),edge))-Point{0,edge*RulerGeometry::widthMm})<1e-8,"ruler clamps before start");require(length(ruler.local(ruler.project(ruler.world({ruler.lengthMm+30,-50}),edge))-Point{ruler.lengthMm,edge*RulerGeometry::widthMm})<1e-8,"ruler clamps after end");}
     CompassGeometry compass;for(double radius:{1.,25.,60.,80.,500.}){compass.radiusMm=radius;compass.angle=.7;const auto hinge=compass.hinge();const double leg=std::max(40.,radius*.6);require(std::abs(length(hinge-compass.center)-leg)<1e-9,"dry leg length");require(std::abs(length(hinge-compass.pencil())-leg)<1e-9,"pencil leg length");require(length(compass.openingHandle()-(hinge*.2+compass.pencil()*.8))<1e-9,"opening grip follows pencil leg");}
     CompassSweep sweep;sweep.begin(2.9);for(int i=1;i<=360;++i)sweep.advance(std::remainder(2.9+i*std::numbers::pi/180,2*std::numbers::pi));require(sweep.complete(),"circle across angle seam");require(std::abs(sweep.sweep()-2*std::numbers::pi)<1e-8,"full turn");
     sweep.begin(0);sweep.advance(.5);sweep.advance(0);require(!sweep.complete(),"backtracking is not a full circle");

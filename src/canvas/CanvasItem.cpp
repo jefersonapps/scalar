@@ -216,11 +216,24 @@ void CanvasItem::append(PointerSample s){
     if(!drawing())return;
     lastPan_=s.position;
     if(state_==State::ShapePreview){updateRecognizedLine(s.position);return;}
-    if(rulerVisible_&&rulerSnap_&&(tool_=="pen"||tool_=="ruler"))guidedEdge_=ruler_.nearEdge(s.position,rulerSnapDistance_);
-    else guidedEdge_.reset();
+    const bool usesRuler=rulerVisible_&&(tool_=="pen"||tool_=="ruler");
+    if(usesRuler&&rulerSnap_&&!guidedEdge_){
+        // Catch the first crossed edge even when input events skip over the ruler.
+        const auto entry=current_.samples.empty()?std::optional<Point>{}:ruler_.entryPoint(current_.samples.back().position,s.position);
+        guidedEdge_=entry?ruler_.nearEdge(*entry,1e-6):ruler_.nearEdge(s.position,rulerSnapDistance_);
+        if(guidedEdge_){
+            holdTimer_.stop();++inputEpoch_;state_=State::Drawing;
+            if(entry){
+                auto contact=s;contact.position=ruler_.project(*entry,*guidedEdge_);
+                contact=input_.filter(contact,false);
+                if(length(contact.position-current_.samples.back().position)>.005)current_.samples.push_back(contact);
+            }
+        }
+    }
+    // Once an edge is reached, keep it until release regardless of cursor drift.
     if(guidedEdge_)s.position=ruler_.project(s.position,*guidedEdge_);
     // Stop at the physical edge, including fast moves that cross the entire ruler.
-    if(rulerVisible_&&(tool_=="pen"||tool_=="ruler")&&!current_.samples.empty()){
+    if(usesRuler&&!guidedEdge_&&!current_.samples.empty()){
         if(const auto entry=ruler_.entryPoint(current_.samples.back().position,s.position)){
             s.position=*entry;s=input_.filter(s);
             if(length(s.position-current_.samples.back().position)>0.005)current_.samples.push_back(s);

@@ -61,7 +61,9 @@ bool CanvasItem::beginGeometryPointer(PointerSample s){
         const auto q=ruler_.local(p);const Point center{ruler_.lengthMm/2,RulerGeometry::widthMm/2};
         const double left=length(q-Point{0,RulerGeometry::widthMm/2}),right=length(q-Point{ruler_.lengthMm,RulerGeometry::widthMm/2}),middle=length(q-center);
         const bool rotate=left<tolerance&&left<std::min(right,middle),resize=right<tolerance&&right<std::min(left,middle);
-        const bool body=q.x>=0&&q.x<=ruler_.lengthMm&&q.y>0&&q.y<RulerGeometry::widthMm;
+        // A pen starting near an edge draws along it; the controls still move the ruler.
+        const bool nearDrawingEdge=tool_=="pen"&&rulerSnap_&&ruler_.nearEdge(p,rulerSnapDistance_).has_value();
+        const bool body=!nearDrawingEdge&&q.x>=0&&q.x<=ruler_.lengthMm&&q.y>0&&q.y<RulerGeometry::widthMm;
         if(rotate||resize||body||middle<tolerance){if(tool_=="compass")setTool("ruler");selectedGuide_="ruler";selection_.clear();selectionUpdated();emit geometryToolsChanged();rulerBefore_=ruler_;dragStart_=lastPan_=p;state_=rotate?State::RotatingRuler:resize?State::ResizingRuler:State::MovingRuler;return true;}
         if(tool_=="ruler"&&!ruler_.nearEdge(p,rulerSnapDistance_)){if(s.device==DeviceType::Touch)return false;ruler_.origin=p-center;emit geometryToolsChanged();return true;}
     }

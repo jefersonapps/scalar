@@ -14,7 +14,7 @@ std::optional<int> RulerGeometry::nearEdge(Point p,double tolerance) const {
     if(std::abs(q.y-edge*widthMm)>tolerance)return {};
     return edge;
 }
-Point RulerGeometry::project(Point p,int edge) const {return projectPointOntoLine(p,world({0,edge*widthMm}),world({lengthMm,edge*widthMm}));}
+Point RulerGeometry::project(Point p,int edge) const {return world({std::clamp(local(p).x,0.,lengthMm),edge*widthMm});}
 std::optional<Point> RulerGeometry::entryPoint(Point start,Point end) const {
     const auto a=local(start),d=local(end)-a;
     double enter=0,exit=1;
