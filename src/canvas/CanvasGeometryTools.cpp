@@ -30,10 +30,14 @@ bool CanvasItem::beginGeometryPointer(PointerSample s){
     if(!std::isfinite(s.position.x)||!std::isfinite(s.position.y))return false;
     const double tolerance=12/(view_.pixelsPerMm*view_.zoom);const auto p=s.position;
     if(compassVisible_&&(tool_=="compass"||tool_=="select")){
-        compassBefore_=compass_;dragStart_=p;
+        compassBefore_=compass_;dragStart_=lastPan_=p;
         const double pencil=std::min(length(p-compass_.pencil()),length(p-compassDrawHandle())),center=length(p-compass_.center),opening=length(p-compass_.openingHandle()),hinge=length(p-compass_.hinge());
         const double nearest=std::min({pencil,center,opening,hinge});
-        if(pencil==nearest&&nearest<tolerance){
+        // Match the rotated, zoom-scaled 14 x 22 px grip above the joint.
+        const auto grip=rotatePoint(p-compass_.hinge(),{},-compass_.angle)*view_.pixelsPerMm;
+        const bool topGrip=std::abs(grip.x)<=7&&grip.y>=-32&&grip.y<=-10;
+        if(topGrip)state_=State::MovingCompass;
+        else if(pencil==nearest&&nearest<tolerance){
             if(s.device==DeviceType::Touch){compassBefore_.reset();return false;}
             else {
             selection_.clear();selectionUpdated();state_=State::DrawingCompass;input_.reset();current_={newId(),style_,{input_.filter(s)}};current_.samples[0].position=compass_.pencil();compassSweep_.begin(compass_.angle);compassPointerAngle_=std::atan2(p.y-compass_.center.y,p.x-compass_.center.x);compassComplete_=false;emit drawingChanged();update();
@@ -71,13 +75,16 @@ bool CanvasItem::moveGeometryPointer(PointerSample s){
     else if(state_==State::ResizingRuler&&rulerBefore_){const auto q=rulerBefore_->local(p);ruler_.lengthMm=std::clamp(q.x,20.,500.);}
     else if(state_==State::MovingCompass&&compassBefore_)compass_.center=compassBefore_->center+p-dragStart_;
     else if(state_==State::ResizingCompass&&compassBefore_){
+        lastPan_=p;
         // Preserve the initial grab offset: the pencil follows the drag without jumping.
         const auto tip=compassBefore_->pencil()+p-dragStart_,d=tip-compass_.center;
         compass_.radiusMm=std::clamp(length(d),1.,500.);
         if(length(d)>.1)compass_.angle=std::atan2(d.y,d.x);
+        if(angleSnap_)compass_.radiusMm=std::round(compass_.radiusMm);
     }
     else if(state_==State::DrawingCompass){
         if(!compassBefore_)return true;
+        lastPan_=p;
         // Angles are unreliable near the pivot. Reanchor on leaving this zone
         // instead of bridging across it with an unintended half-circle.
         const double deadZone=std::max(.1,std::min(compass_.radiusMm*.25,8./(view_.pixelsPerMm*view_.zoom)));
@@ -88,8 +95,10 @@ bool CanvasItem::moveGeometryPointer(PointerSample s){
         compassPointerAngle_=pointerAngle;
         // A single event spanning more than a quarter turn is ambiguous.
         if(std::abs(step)>std::numbers::pi/2+1e-9)return true;
-        const double previous=compassSweep_.angle(),delta=compassSweep_.advance(previous+step);
+        const double previous=compass_.angle;
+        compassSweep_.advance(compassSweep_.angle()+step);
         compass_.angle=compassSweep_.angle();
+        const double delta=compass_.angle-previous;
         if(!compassComplete_){const int steps=std::max(1,int(std::ceil(std::abs(delta)/(std::numbers::pi/90))));s=input_.filter(s);
             for(int i=1;i<=steps;++i){auto sample=s;const double a=previous+delta*i/steps;sample.position=compass_.center+Point{std::cos(a),std::sin(a)}*compass_.radiusMm;current_.samples.push_back(sample);}
             if(compassSweep_.complete()){compassComplete_=true;previewShape_=compassCircle();emit drawingChanged();}
