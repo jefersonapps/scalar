@@ -94,9 +94,21 @@ Item {
         color: Theme.compassControl; border.color: Theme.compassControlEdge; border.width: Theme.focusBorder
         Icon { anchors.centerIn: parent; width: 18; height: width; name: "rotate"; color: Theme.compassControlInk }
     }
-    Text {
-        x: root.geometry.hx+Theme.compassJointSize*root.visualScale; y: root.geometry.hy-height-Theme.sm
-        text: "r " + root.geometry.mm.toFixed(1) + " mm · Ø " + (root.geometry.mm*2).toFixed(1) + " mm"
-        color: Theme.guideInk; font.pixelSize: Theme.caption
+    Rectangle {
+        objectName: "compassMeasurementLabel"
+        x: Math.max(Theme.sm, Math.min(root.width-width-Theme.sm, root.geometry.hx+Theme.compassJointSize*root.visualScale))
+        y: Math.max(Theme.sm, Math.min(root.height-height-Theme.sm, root.geometry.hy-height-Theme.sm))
+        width: measurementText.implicitWidth+2*Theme.sm
+        height: measurementText.implicitHeight+2*Theme.xs
+        radius: Theme.radiusSmall
+        color: Theme.surface
+        border.width: Theme.hairline
+        border.color: Theme.dropdownBorder
+        Text {
+            id: measurementText
+            anchors.centerIn: parent
+            text: "r " + root.geometry.mm.toFixed(1) + " mm · Ø " + (root.geometry.mm*2).toFixed(1) + " mm"
+            color: Theme.text; font.pixelSize: Theme.caption
+        }
     }
 }
