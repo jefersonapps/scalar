@@ -5,6 +5,7 @@ Item {
     id: root
     property var canvas
     readonly property var geometry: canvas.compassGeometry
+    readonly property real visualScale: geometry.visualScale
     readonly property real heading: Math.atan2(geometry.py-geometry.cy,geometry.px-geometry.cx)*180/Math.PI
     objectName: "compassGuide"
     visible: canvas.compassVisible
@@ -15,9 +16,10 @@ Item {
         Item {
             id: leg
             required property var modelData
-            readonly property real legLength: Math.hypot(modelData.x-root.geometry.hx,modelData.y-root.geometry.hy)
+            readonly property real legLength: Math.hypot(modelData.x-root.geometry.hx,modelData.y-root.geometry.hy)/root.visualScale
             x: root.geometry.hx; y: root.geometry.hy
             width: legLength; height: Theme.compassLegWidth
+            scale: root.visualScale
             rotation: Math.atan2(modelData.y-root.geometry.hy,modelData.x-root.geometry.hx)*180/Math.PI
             transformOrigin: Item.TopLeft
             Rectangle {
@@ -50,6 +52,7 @@ Item {
     Item {
         x: root.geometry.hx; y: root.geometry.hy
         rotation: root.heading; transformOrigin: Item.TopLeft
+        scale: root.visualScale
         Rectangle {
             x: -width/2; y: -Theme.compassJointSize/2-Theme.compassGripLength+4
             width: 14; height: Theme.compassGripLength
@@ -92,7 +95,7 @@ Item {
         Icon { anchors.centerIn: parent; width: 18; height: width; name: "rotate"; color: Theme.compassControlInk }
     }
     Text {
-        x: root.geometry.hx+Theme.compassJointSize; y: root.geometry.hy-height-Theme.sm
+        x: root.geometry.hx+Theme.compassJointSize*root.visualScale; y: root.geometry.hy-height-Theme.sm
         text: "r " + root.geometry.mm.toFixed(1) + " mm · Ø " + (root.geometry.mm*2).toFixed(1) + " mm"
         color: Theme.guideInk; font.pixelSize: Theme.caption
     }

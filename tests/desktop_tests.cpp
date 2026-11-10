@@ -1553,6 +1553,57 @@ private slots:
         }
         QVERIFY(controller.shutdown());
     }
+    void compassInterruptedGesturesKeepLastTip(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();
+        for(int finish=0;finish<3;++finish){
+            canvas.setTool("compass");
+            const auto g=canvas.compassGeometry();
+            const QPointF center(g["cx"].toDouble(),g["cy"].toDouble()),handle(g["dx"].toDouble(),g["dy"].toDouble());
+            const auto offset=handle-center;
+            const auto send=[&](QEvent::Type type,QPointF point){QMouseEvent event(type,point,point,type==QEvent::MouseMove?Qt::NoButton:Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);if(type==QEvent::MouseButtonPress)canvas.mousePressEvent(&event);else canvas.mouseMoveEvent(&event);};
+            send(QEvent::MouseButtonPress,handle);
+            send(QEvent::MouseMove,center+QPointF(offset.x()*.866025403784-offset.y()*.5,offset.x()*.5+offset.y()*.866025403784));
+            const auto before=canvas.compassGeometry();
+            if(finish==0)canvas.mouseUngrabEvent();
+            else if(finish==1)canvas.setTool("pen");
+            else {
+                send(QEvent::MouseMove,center);
+                send(QEvent::MouseMove,center-offset);
+                QCOMPARE(canvas.compassGeometry()["px"],before["px"]);
+                QCOMPARE(canvas.compassGeometry()["py"],before["py"]);
+                canvas.mouseUngrabEvent();
+            }
+            QVERIFY(!canvas.drawing());
+            QCOMPARE(canvas.compassGeometry()["px"],before["px"]);
+            QCOMPARE(canvas.compassGeometry()["py"],before["py"]);
+            const auto& arc=controller.page()->strokes[controller.page()->strokes.size()-2];
+            const auto& last=arc.samples.back().position;
+            const auto lastScreen=canvas.screenPoint(QPointF(last.x,last.y));
+            QVERIFY(QLineF(lastScreen,QPointF(before["px"].toDouble(),before["py"].toDouble())).length()<1e-6);
+        }
+        QVERIFY(controller.shutdown());
+    }
+    void compassTabletReleaseIgnoresStalePosition(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();canvas.setTool("compass");
+        QPointingDevice pen("Test stylus",123,QInputDevice::DeviceType::Stylus,QPointingDevice::PointerType::Pen,QInputDevice::Capability::Position|QInputDevice::Capability::Pressure,1,3);
+        const auto send=[&](QEvent::Type type,QPointF position){QTabletEvent event(type,&pen,position,position,type==QEvent::TabletRelease?0.:.6,0,0,0,0,0,Qt::NoModifier,type==QEvent::TabletMove?Qt::NoButton:Qt::LeftButton,type==QEvent::TabletRelease?Qt::NoButton:Qt::LeftButton);QCoreApplication::sendEvent(&canvas,&event);};
+        const auto g=canvas.compassGeometry();
+        const QPointF center(g["cx"].toDouble(),g["cy"].toDouble()),tip(g["px"].toDouble(),g["py"].toDouble());
+        send(QEvent::TabletPress,tip);
+        const auto offset=tip-center;
+        send(QEvent::TabletMove,center+QPointF(offset.x()*.866025403784-offset.y()*.5,offset.x()*.5+offset.y()*.866025403784));
+        const auto before=canvas.compassGeometry();
+        send(QEvent::TabletRelease,center+QPointF(0,g["radius"].toDouble()));
+        QVERIFY(!canvas.drawing());
+        QCOMPARE(canvas.compassGeometry()["px"],before["px"]);
+        QCOMPARE(canvas.compassGeometry()["py"],before["py"]);
+        QCOMPARE(controller.page()->strokes.size(),std::size_t(2));
+        const auto last=controller.page()->strokes.front().samples.back().position;
+        QVERIFY(QLineF(canvas.screenPoint({last.x,last.y}),QPointF(before["px"].toDouble(),before["py"].toDouble())).length()<1e-6);
+        QVERIFY(controller.shutdown());
+    }
     void rulerSnapAndCompassGestures(){
         QTemporaryDir dir;AppController controller(nullptr,dir.path());controller.setTheme("Dark");controller.newDefault();controller.setRecognitionEnabled(false);
         QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());

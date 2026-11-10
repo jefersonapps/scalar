@@ -12,7 +12,7 @@ Point CanvasItem::compassDrawHandle() const {
 QVariantMap CanvasItem::compassGeometry() const {
     const auto center=view_.worldToScreen(compass_.center),pencil=view_.worldToScreen(compass_.pencil()),hinge=view_.worldToScreen(compass_.hinge()),opening=view_.worldToScreen(compass_.openingHandle());
     const auto draw=view_.worldToScreen(compassDrawHandle());
-    return {{"cx",center.x},{"cy",center.y},{"px",pencil.x},{"py",pencil.y},{"dx",draw.x},{"dy",draw.y},{"hx",hinge.x},{"hy",hinge.y},{"ox",opening.x},{"oy",opening.y},{"radius",compass_.radiusMm*view_.pixelsPerMm*view_.zoom},{"mm",compass_.radiusMm}};
+    return {{"cx",center.x},{"cy",center.y},{"px",pencil.x},{"py",pencil.y},{"dx",draw.x},{"dy",draw.y},{"hx",hinge.x},{"hy",hinge.y},{"ox",opening.x},{"oy",opening.y},{"radius",compass_.radiusMm*view_.pixelsPerMm*view_.zoom},{"mm",compass_.radiusMm},{"visualScale",view_.zoom}};
 }
 void CanvasItem::centerGeometryTools(){
     cancelStroke();const auto center=world({width()/2,height()/2});ruler_.origin=center-Point{ruler_.lengthMm/2,RulerGeometry::widthMm/2};ruler_.angle=0;compass_.center=center;emit geometryToolsChanged();
@@ -27,6 +27,7 @@ void CanvasItem::setCompassRadius(double value){if(!std::isfinite(value))return;
 void CanvasItem::resetGeometryTools(){cancelStroke();selectedGuide_.clear();rulerVisible_=compassVisible_=false;if(tool_=="ruler"||tool_=="compass"){tool_="pen";emit toolChanged();}emit geometryToolsChanged();}
 bool CanvasItem::geometryGesture() const {return state_==State::MovingRuler||state_==State::RotatingRuler||state_==State::ResizingRuler||state_==State::MovingCompass||state_==State::ResizingCompass||state_==State::DrawingCompass;}
 bool CanvasItem::beginGeometryPointer(PointerSample s){
+    if(!std::isfinite(s.position.x)||!std::isfinite(s.position.y))return false;
     const double tolerance=12/(view_.pixelsPerMm*view_.zoom);const auto p=s.position;
     if(compassVisible_&&(tool_=="compass"||tool_=="select")){
         compassBefore_=compass_;dragStart_=p;
@@ -35,7 +36,7 @@ bool CanvasItem::beginGeometryPointer(PointerSample s){
         if(pencil==nearest&&nearest<tolerance){
             if(s.device==DeviceType::Touch){compassBefore_.reset();return false;}
             else {
-            selection_.clear();selectionUpdated();state_=State::DrawingCompass;input_.reset();current_={newId(),style_,{input_.filter(s)}};current_.samples[0].position=compass_.pencil();compassSweep_.begin(compass_.angle);compassComplete_=false;emit drawingChanged();update();
+            selection_.clear();selectionUpdated();state_=State::DrawingCompass;input_.reset();current_={newId(),style_,{input_.filter(s)}};current_.samples[0].position=compass_.pencil();compassSweep_.begin(compass_.angle);compassPointerAngle_=std::atan2(p.y-compass_.center.y,p.x-compass_.center.x);compassComplete_=false;emit drawingChanged();update();
             }
         }else if((center==nearest||hinge==nearest)&&nearest<tolerance)state_=State::MovingCompass;
         else if(opening==nearest&&nearest<tolerance)state_=State::ResizingCompass;
@@ -57,6 +58,7 @@ bool CanvasItem::beginGeometryPointer(PointerSample s){
 bool CanvasItem::moveGeometryPointer(PointerSample s){
     if(!geometryGesture())return false;
     const auto p=s.position;
+    if(!std::isfinite(p.x)||!std::isfinite(p.y))return true;
     if(state_==State::MovingRuler&&rulerBefore_)ruler_.origin=rulerBefore_->origin+p-dragStart_;
     else if(state_==State::RotatingRuler&&rulerBefore_){
         lastPan_=p;
@@ -75,10 +77,18 @@ bool CanvasItem::moveGeometryPointer(PointerSample s){
         if(length(d)>.1)compass_.angle=std::atan2(d.y,d.x);
     }
     else if(state_==State::DrawingCompass){
-        if(length(p-compass_.center)<.1)return true;
-        // Keep the initial angular offset when grabbing the control beyond the tip.
-        const auto start=dragStart_-compass_.center;
-        const double angle=compassBefore_->angle+std::atan2(p.y-compass_.center.y,p.x-compass_.center.x)-std::atan2(start.y,start.x),previous=compassSweep_.angle(),delta=compassSweep_.advance(angle);
+        if(!compassBefore_)return true;
+        // Angles are unreliable near the pivot. Reanchor on leaving this zone
+        // instead of bridging across it with an unintended half-circle.
+        const double deadZone=std::max(.1,std::min(compass_.radiusMm*.25,8./(view_.pixelsPerMm*view_.zoom)));
+        if(length(p-compass_.center)<deadZone){compassPointerAngle_.reset();return true;}
+        const double pointerAngle=std::atan2(p.y-compass_.center.y,p.x-compass_.center.x);
+        if(!compassPointerAngle_){compassPointerAngle_=pointerAngle;return true;}
+        const double step=std::remainder(pointerAngle-*compassPointerAngle_,2*std::numbers::pi);
+        compassPointerAngle_=pointerAngle;
+        // A single event spanning more than a quarter turn is ambiguous.
+        if(std::abs(step)>std::numbers::pi/2+1e-9)return true;
+        const double previous=compassSweep_.angle(),delta=compassSweep_.advance(previous+step);
         compass_.angle=compassSweep_.angle();
         if(!compassComplete_){const int steps=std::max(1,int(std::ceil(std::abs(delta)/(std::numbers::pi/90))));s=input_.filter(s);
             for(int i=1;i<=steps;++i){auto sample=s;const double a=previous+delta*i/steps;sample.position=compass_.center+Point{std::cos(a),std::sin(a)}*compass_.radiusMm;current_.samples.push_back(sample);}
@@ -104,7 +114,7 @@ void CanvasItem::commitCompassObject(CanvasObject object){
 void CanvasItem::finishGeometryPointer(){
     const bool wasDrawing=state_==State::DrawingCompass;
     if(wasDrawing&&controller_){if(compassComplete_)commitCompassObject(compassCircle());else if(current_.samples.size()>1)commitCompassObject(current_);}
-    rulerBefore_.reset();compassBefore_.reset();state_=State::Idle;current_={};previewShape_.reset();if(wasDrawing)emit drawingChanged();emit geometryToolsChanged();update();
+    rulerBefore_.reset();compassBefore_.reset();compassPointerAngle_.reset();state_=State::Idle;current_={};previewShape_.reset();if(wasDrawing)emit drawingChanged();emit geometryToolsChanged();update();
 }
 void CanvasItem::drawCompassCircle(){if(!controller_||!controller_->active()||!compassVisible_)return;cancelStroke();commitCompassObject(compassCircle());}
 bool CanvasItem::constructFromSelection(const QString& kind){

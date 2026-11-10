@@ -317,6 +317,7 @@ private:
     RulerGeometry ruler_;
     CompassGeometry compass_;
     CompassSweep compassSweep_;
+    std::optional<double> compassPointerAngle_;
     std::optional<RulerGeometry> rulerBefore_;
     std::optional<CompassGeometry> compassBefore_;
     std::optional<int> guidedEdge_;

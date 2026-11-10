@@ -138,7 +138,8 @@ void CanvasItem::setTool(const QString& t){
     if(t==tool_)return;
     // Selecting the current tool leaves contact uninterrupted. Switching away
     // from ink finishes it with its original tool, pressure and smoothing.
-    if(drawing()){if(!current_.samples.empty())endPointer(current_.samples.back());else commit();}
+    if(state_==State::DrawingCompass)finishGeometryPointer();
+    else if(drawing()){if(!current_.samples.empty())endPointer(current_.samples.back());else commit();}
     else if(state_==State::Erasing)commitErase();
     else if(geometryGesture())finishGeometryPointer();
     handToolBefore_.clear();tabletToolBefore_.clear();cancelStroke();selectedGuide_.clear();tool_=t;updateCursor();if(t=="ruler"||t=="compass"){selection_.clear();selectionUpdated();}if(t=="ruler")setRulerVisible(true);if(t=="compass")setCompassVisible(true);emit geometryToolsChanged();emit toolChanged();
@@ -267,6 +268,7 @@ void CanvasItem::beginRecognition(){
     }));
 }
 void CanvasItem::commit(){
+    if(state_==State::DrawingCompass){finishGeometryPointer();return;}
     if(!drawing())return;holdTimer_.stop();++inputEpoch_;
     if(controller_){if(previewShape_&&state_==State::ShapePreview)controller_->addRecognizedStroke(current_,*previewShape_);else if(previewShape_&&state_==State::CreatingShape)controller_->addShape(*previewShape_);else controller_->addStroke(current_);}
     state_=State::Idle;current_={};previewShape_.reset();guidedEdge_.reset();emit drawingChanged();selectionUpdated();
@@ -274,7 +276,7 @@ void CanvasItem::commit(){
 void CanvasItem::cancelStroke(){
     eraserCursorVisible_=false;
     eraseIndex_.clear();restoreIndex_.clear();restoreIndexReady_=false;
-    if(rulerBefore_)ruler_=*rulerBefore_;if(compassBefore_)compass_=*compassBefore_;rulerBefore_.reset();compassBefore_.reset();guidedEdge_.reset();
+    if(rulerBefore_)ruler_=*rulerBefore_;if(compassBefore_)compass_=*compassBefore_;rulerBefore_.reset();compassBefore_.reset();compassPointerAngle_.reset();guidedEdge_.reset();
     const bool was=drawing();holdTimer_.stop();++inputEpoch_;state_=State::Idle;current_={};previewShape_.reset();editBefore_.clear();editPreview_.clear();eraseBefore_.clear();erasePreview_.clear();eraseShapesBefore_.clear();eraseShapesPreview_.clear();eraseFillsBefore_.clear();eraseFillsPreview_.clear();recoverableInk_.clear();tabletActive_=false;touchDistance_=0;
     updateCursor();
     affineSelectionPreview_=false;selectionPreviewTransform_.reset();textResizeVisual_.reset();if(was)emit drawingChanged();emit geometryToolsChanged();selectionUpdated();update();
@@ -510,7 +512,9 @@ bool CanvasItem::tablet(QTabletEvent* e,QPointF local){
         auto sample=InputManager::tablet(*e,world(local));
         // Pen-up coordinates can jump to the last mouse/toolbar position on some drivers.
         if(state_==State::Erasing)sample.position=lastPan_;
-        if(!current_.samples.empty())sample.pressure=current_.samples.back().pressure;endPointer(sample);
+        if(!current_.samples.empty())sample.pressure=current_.samples.back().pressure;
+        // Tip-up coordinates may belong to the mouse rather than the stylus.
+        if(geometryGesture()&&compassBefore_)finishGeometryPointer();else endPointer(sample);
         state_=State::Idle;tabletActive_=false;updateCursor();
     }
     e->accept();return true;
@@ -638,7 +642,8 @@ void CanvasItem::hoverLeaveEvent(QHoverEvent* e){if(tabletInProximity_){e->accep
 void CanvasItem::mouseUngrabEvent(){
     if(tabletActive_||tabletInProximity_)return;
     // A lost mouse grab must not discard ink already shown to the user.
-    if(drawing()&&!current_.samples.empty())endPointer(current_.samples.back());
+    if(state_==State::DrawingCompass)finishGeometryPointer();
+    else if(drawing()&&!current_.samples.empty())endPointer(current_.samples.back());
     else cancelStroke();
 }
 void CanvasItem::zoomWheelAt(QPointF point,const QWheelEvent& event){
