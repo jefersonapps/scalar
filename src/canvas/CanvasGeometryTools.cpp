@@ -29,32 +29,40 @@ bool CanvasItem::geometryGesture() const {return state_==State::MovingRuler||sta
 bool CanvasItem::beginGeometryPointer(PointerSample s){
     if(!std::isfinite(s.position.x)||!std::isfinite(s.position.y))return false;
     const double tolerance=12/(view_.pixelsPerMm*view_.zoom);const auto p=s.position;
-    if(compassVisible_&&(tool_=="compass"||tool_=="select")){
-        compassBefore_=compass_;dragStart_=lastPan_=p;
+    if(compassVisible_&&(tool_=="compass"||tool_=="ruler"||tool_=="select")){
         const double pencil=std::min(length(p-compass_.pencil()),length(p-compassDrawHandle())),center=length(p-compass_.center),opening=length(p-compass_.openingHandle()),hinge=length(p-compass_.hinge());
         const double nearest=std::min({pencil,center,opening,hinge});
         // Match the rotated, zoom-scaled 14 x 22 px grip above the joint.
         const auto grip=rotatePoint(p-compass_.hinge(),{},-compass_.angle)*view_.pixelsPerMm;
         const bool topGrip=std::abs(grip.x)<=7&&grip.y>=-32&&grip.y<=-10;
-        if(topGrip)state_=State::MovingCompass;
+        State next=State::Idle;
+        if(topGrip)next=State::MovingCompass;
         else if(pencil==nearest&&nearest<tolerance){
-            if(s.device==DeviceType::Touch){compassBefore_.reset();return false;}
-            else {
-            selection_.clear();selectionUpdated();state_=State::DrawingCompass;input_.reset();current_={newId(),style_,{input_.filter(s)}};current_.samples[0].position=compass_.pencil();compassSweep_.begin(compass_.angle);compassPointerAngle_=std::atan2(p.y-compass_.center.y,p.x-compass_.center.x);compassComplete_=false;emit drawingChanged();update();
+            if(s.device==DeviceType::Touch)return false;
+            next=State::DrawingCompass;
+        }else if((center==nearest||hinge==nearest)&&nearest<tolerance)next=State::MovingCompass;
+        else if(opening==nearest&&nearest<tolerance)next=State::ResizingCompass;
+        else if(distanceToSegment(p,compass_.hinge(),compass_.pencil())<tolerance)next=State::ResizingCompass;
+        else if(distanceToSegment(p,compass_.center,compass_.hinge())<tolerance)next=State::MovingCompass;
+        if(next!=State::Idle){
+            // Switch before capturing the gesture: setTool clears gesture state.
+            if(tool_=="ruler")setTool("compass");
+            compassBefore_=compass_;dragStart_=lastPan_=p;state_=next;
+            selectedGuide_="compass";selection_.clear();selectionUpdated();
+            if(state_==State::DrawingCompass){
+                input_.reset();current_={newId(),style_,{input_.filter(s)}};current_.samples[0].position=compass_.pencil();
+                compassSweep_.begin(compass_.angle);compassPointerAngle_=std::atan2(p.y-compass_.center.y,p.x-compass_.center.x);compassComplete_=false;
+                emit drawingChanged();update();
             }
-        }else if((center==nearest||hinge==nearest)&&nearest<tolerance)state_=State::MovingCompass;
-        else if(opening==nearest&&nearest<tolerance)state_=State::ResizingCompass;
-        else if(distanceToSegment(p,compass_.hinge(),compass_.pencil())<tolerance)state_=State::ResizingCompass;
-        else if(distanceToSegment(p,compass_.center,compass_.hinge())<tolerance)state_=State::MovingCompass;
-        else {compassBefore_.reset();}
-        if(compassBefore_){selectedGuide_="compass";selection_.clear();selectionUpdated();emit geometryToolsChanged();return true;}
+            emit geometryToolsChanged();return true;
+        }
     }
-    if(rulerVisible_&&(tool_=="ruler"||tool_=="pen"||tool_=="select")){
+    if(rulerVisible_&&(tool_=="ruler"||tool_=="compass"||tool_=="pen"||tool_=="select")){
         const auto q=ruler_.local(p);const Point center{ruler_.lengthMm/2,RulerGeometry::widthMm/2};
         const double left=length(q-Point{0,RulerGeometry::widthMm/2}),right=length(q-Point{ruler_.lengthMm,RulerGeometry::widthMm/2}),middle=length(q-center);
         const bool rotate=left<tolerance&&left<std::min(right,middle),resize=right<tolerance&&right<std::min(left,middle);
         const bool body=q.x>=0&&q.x<=ruler_.lengthMm&&q.y>0&&q.y<RulerGeometry::widthMm;
-        if(rotate||resize||body||middle<tolerance){selectedGuide_="ruler";selection_.clear();selectionUpdated();emit geometryToolsChanged();rulerBefore_=ruler_;dragStart_=lastPan_=p;state_=rotate?State::RotatingRuler:resize?State::ResizingRuler:State::MovingRuler;return true;}
+        if(rotate||resize||body||middle<tolerance){if(tool_=="compass")setTool("ruler");selectedGuide_="ruler";selection_.clear();selectionUpdated();emit geometryToolsChanged();rulerBefore_=ruler_;dragStart_=lastPan_=p;state_=rotate?State::RotatingRuler:resize?State::ResizingRuler:State::MovingRuler;return true;}
         if(tool_=="ruler"&&!ruler_.nearEdge(p,rulerSnapDistance_)){if(s.device==DeviceType::Touch)return false;ruler_.origin=p-center;emit geometryToolsChanged();return true;}
     }
     return false;

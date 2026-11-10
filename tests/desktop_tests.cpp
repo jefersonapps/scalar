@@ -1531,6 +1531,33 @@ private slots:
         }
         QVERIFY(controller.page()->strokes.empty());QVERIFY(controller.shutdown());
     }
+    void geometryToolsSwitchOnClickAndEscapeSelects(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();
+        canvas.setTool("compass");canvas.setTool("ruler");
+        const auto send=[&](QEvent::Type type,QPointF local){QMouseEvent event(type,local,local,type==QEvent::MouseMove?Qt::NoButton:Qt::LeftButton,type==QEvent::MouseButtonRelease?Qt::NoButton:Qt::LeftButton,Qt::NoModifier);if(type==QEvent::MouseButtonPress)canvas.mousePressEvent(&event);else if(type==QEvent::MouseButtonRelease)canvas.mouseReleaseEvent(&event);else canvas.mouseMoveEvent(&event);};
+        for(int i=0;i<2;++i){
+            const auto compass=canvas.compassGeometry();
+            const QPointF hinge(compass["hx"].toDouble(),compass["hy"].toDouble()),delta(25,-15);
+            send(QEvent::MouseButtonPress,hinge);QCOMPARE(canvas.tool(),QString("compass"));QCOMPARE(canvas.selectedGuide(),QString("compass"));
+            send(QEvent::MouseMove,hinge+delta);send(QEvent::MouseButtonRelease,hinge+delta);
+            QVERIFY(std::abs(canvas.compassGeometry()["cx"].toDouble()-compass["cx"].toDouble()-delta.x())<1e-8);
+            const auto ruler=canvas.rulerGeometry();
+            const QPointF body(ruler["x"].toDouble()+20*ruler["scale"].toDouble(),ruler["y"].toDouble()+6*ruler["scale"].toDouble());
+            send(QEvent::MouseButtonPress,body);QCOMPARE(canvas.tool(),QString("ruler"));QCOMPARE(canvas.selectedGuide(),QString("ruler"));
+            send(QEvent::MouseMove,body+delta);send(QEvent::MouseButtonRelease,body+delta);
+            QVERIFY(std::abs(canvas.rulerGeometry()["x"].toDouble()-ruler["x"].toDouble()-delta.x())<1e-8);
+        }
+        QKeyEvent escape(QEvent::KeyPress,Qt::Key_Escape,Qt::NoModifier);
+        canvas.keyPressEvent(&escape);QCOMPARE(canvas.tool(),QString("select"));
+        QVERIFY(canvas.rulerVisible());QVERIFY(canvas.compassVisible());
+        canvas.setTool("compass");const auto compass=canvas.compassGeometry();
+        const QPointF pencil(compass["px"].toDouble(),compass["py"].toDouble());
+        send(QEvent::MouseButtonPress,pencil);QVERIFY(canvas.drawing());
+        canvas.keyPressEvent(&escape);QCOMPARE(canvas.tool(),QString("select"));QVERIFY(!canvas.drawing());
+        send(QEvent::MouseButtonRelease,pencil);QVERIFY(controller.page()->strokes.empty());QVERIFY(controller.page()->shapes.empty());
+        QVERIFY(canvas.rulerVisible());QVERIFY(canvas.compassVisible());QVERIFY(controller.shutdown());
+    }
     void compassExclusiveToolTopGripAndRadiusSnap(){
         QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
         InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();canvas.setTool("compass");
