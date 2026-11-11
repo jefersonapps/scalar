@@ -675,6 +675,44 @@ private slots:
         QTest::keyClick(window,Qt::Key_Return,Qt::ControlModifier);QTRY_VERIFY(!inlineEditor->property("active").toBool());
         QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
     }
+    void inlineTextLayoutMatchesCommittedText(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        QQmlApplicationEngine engine;engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
+        auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);
+        const QString source=QString::fromUtf8("Deseja-se interpolar 5 meios aritméticos entre cada termo da PA (1, 3, 5).\n\na) Determine a razão da PA obtida.\n\nb) Qual é a quantidade de termos dessa nova PA?\n\nTexto longo sem espaços: abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz");
+        controller.upsertText({},QPointF(20,30),{{"source",source},{"fontFamily",latexTextFont()},{"fontSizePt",16},{"boxWidthMm",160},{"boxHeightMm",5},{"latexEnabled",false},{"color","#ffffff"}});
+        QTRY_VERIFY(!controller.textBusy());QCOMPARE(controller.page()->texts.size(),std::size_t(1));
+        const auto text=controller.page()->texts.front();canvas->selectText(QString::fromStdString(text.id));canvas->editSelectedText();
+        auto* inlineEditor=window->findChild<QObject*>("inlineTextEditor");QTRY_VERIFY(inlineEditor->property("active").toBool());
+        auto* editor=findVisualItem(window->contentItem(),"textSource");QVERIFY(editor);
+        auto* wrapper=qobject_cast<QQuickTextDocument*>(editor->property("textDocument").value<QObject*>());QVERIFY(wrapper);
+        for(const double zoom:{.65,1.037,1.75,2.5}){
+            canvas->setZoom(zoom);QCoreApplication::processEvents();
+            auto* doc=wrapper->textDocument();
+            const auto size=textNaturalSize(text)*(96./25.4);
+            QVERIFY2(std::abs(size.height()-editor->property("contentHeight").toDouble()-4)<1.,qPrintable(QString("final %1 editor %2").arg(size.height()).arg(editor->property("contentHeight").toDouble())));
+            QImage preview(int(std::ceil(size.width())),int(std::ceil(size.height())),QImage::Format_ARGB32_Premultiplied);preview.fill(Qt::transparent);
+            {QPainter painter(&preview);painter.translate(2,2);doc->drawContents(&painter);}
+            const auto final=textBitmap(text,96./25.4);QCOMPARE(final.size(),preview.size());
+            int different=0,ink=0;
+            for(int y=0;y<final.height();++y)for(int x=0;x<final.width();++x){const int a=qAlpha(final.pixel(x,y)),b=qAlpha(preview.pixel(x,y));if(a||b)++ink;if(std::abs(a-b)>20)++different;}
+            QVERIFY2(different<ink*.02,qPrintable(QString("%1 different of %2 ink pixels at zoom %3").arg(different).arg(ink).arg(zoom)));
+        }
+        QVERIFY(QMetaObject::invokeMethod(inlineEditor,"cancel"));QVERIFY(controller.shutdown());
+    }
+    void inlineMathUsesTextBaseline(){
+        TextObject text;text.source="N $\\mathbb{N}$?";text.fontFamily=latexTextFont().toStdString();text.fontSizePt=18;text.boxWidthMm=100;text.style.rgba=0xffffffff;
+        const auto prepared=prepareText(text);QVERIFY2(prepared.error.isEmpty(),qPrintable(prepared.error));QVERIFY(!prepared.geometry.empty());
+        const double scale=96./25.4;const auto font=documentFont(latexTextFont(),24);const QFontMetricsF metrics(font);
+        double bottom=0;for(const auto& point:prepared.geometry)bottom=std::max(bottom,point.y*scale);
+        QVERIFY2(std::abs(bottom-(2+metrics.ascent()))<1.5,qPrintable(QString("math bottom %1 text baseline %2").arg(bottom).arg(2+metrics.ascent())));
+        const auto bitmap=textBitmap(prepared.object,scale);QVERIFY(!bitmap.isNull());
+        // The SVG mesh and raster/export paths must share their baseline.
+        QImage vector(bitmap.size(),QImage::Format_ARGB32_Premultiplied);vector.fill(Qt::transparent);
+        {QPainter painter(&vector);painter.scale(scale,scale);QVERIFY(paintVectorText(painter,prepared.object).isEmpty());}
+        QVERIFY(!vector.isNull());
+    }
     void mathSourceUsesMonospaceOnlyWhileEditing(){
         QQmlEngine engine;QQmlComponent component(&engine);
         component.setData("import QtQuick\nTextEdit { property bool latexEnabled: true; font.family: \"Lobster Two\"; font.pixelSize: 24; textFormat: TextEdit.PlainText }",QUrl());

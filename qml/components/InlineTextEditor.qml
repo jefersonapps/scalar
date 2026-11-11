@@ -99,20 +99,23 @@ Item {
         objectName: "inlineTextBox"
         x: root.screenOrigin.x; y: root.screenOrigin.y
         width: Math.max(24,root.boxWidth*root.pixelsPerMm)
-        height: Math.max(root.boxHeight*root.pixelsPerMm,editor.contentHeight+editor.topPadding+editor.bottomPadding)
+        height: Math.max(root.boxHeight*root.pixelsPerMm,(editor.contentHeight+editor.topPadding+editor.bottomPadding)*canvas.zoom)
         rotation: root.angle; transformOrigin: Item.TopLeft
         color: "transparent"; border.color: Theme.accent; border.width: Theme.hairline
         TextArea {
             id: editor; objectName: "textSource"
-            anchors.fill: parent
+            width: parent.width/root.canvas.zoom
+            height: parent.height/root.canvas.zoom
+            scale: root.canvas.zoom
+            transformOrigin: Item.TopLeft
             enabled: !root.committing
-            padding: 2*root.pixelsPerMm/(96/25.4)
+            padding: 2
             color: root.draft.color || Theme.text
             property bool latexEnabled: root.draft.latexEnabled !== false
             property color syntaxBackground: App.pageColor
             placeholderText: "Escreva aqui…"
             placeholderTextColor: App.pageColor.hslLightness<0.5 ? "#a1a1aa" : "#66798b"
-            font: App.textFont(root.draft.fontFamily || App.defaultTextFont,Math.max(1,root.draft.fontSizePt*25.4/72*root.pixelsPerMm),root.draft.bold || false,root.draft.italic || false)
+            font: App.textFont(root.draft.fontFamily || App.defaultTextFont,Math.max(1,Math.round(root.draft.fontSizePt*96/72)),root.draft.bold || false,root.draft.italic || false)
             horizontalAlignment: root.draft.alignment===1 ? TextEdit.AlignHCenter : root.draft.alignment===2 ? TextEdit.AlignRight : TextEdit.AlignLeft
             wrapMode: TextEdit.Wrap; selectByMouse: true
             persistentSelection: true

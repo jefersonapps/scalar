@@ -1,6 +1,5 @@
 #include "TextRenderer.h"
 #include "geometry/Geometry.h"
-#include <map>
 #include <tuple>
 #include "math/MathRenderer.h"
 #include "MathMesh.h"
@@ -11,6 +10,9 @@
 #include <QRegularExpression>
 #include <QXmlStreamReader>
 #include <QTextBoundaryFinder>
+#include <QTextDocument>
+#include <QTextCursor>
+#include <memory>
 #include <QFontDatabase>
 static void initializeTextFontResources(){Q_INIT_RESOURCE(text_fonts);}
 namespace scalar {
@@ -42,6 +44,48 @@ namespace {
 constexpr double baseScale=96./25.4;
 QColor textColor(const TextObject& t){const auto c=t.style.rgba;return QColor((c>>24)&255,(c>>16)&255,(c>>8)&255,c&255);}
 QFont font(const TextObject& t,double scale){return documentFont(QString::fromStdString(t.fontFamily),int(std::round(t.fontSizePt*25.4/72*scale)),t.bold,t.italic);}
+// Use the same paragraph shaping and wrapping engine as the inline TextArea.
+std::unique_ptr<QTextDocument> plainDocument(const TextObject& t){
+    auto doc=std::make_unique<QTextDocument>();
+    doc->setDocumentMargin(2);
+    doc->setDefaultFont(font(t,baseScale));
+    auto option=doc->defaultTextOption();
+    option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+    option.setUseDesignMetrics(true);
+    option.setAlignment(t.alignment==1?Qt::AlignHCenter:t.alignment==2?Qt::AlignRight:Qt::AlignLeft);
+    doc->setDefaultTextOption(option);
+    doc->setPlainText(QString::fromStdString(t.source));
+    QTextCursor cursor(doc.get());cursor.select(QTextCursor::Document);
+    QTextCharFormat base;base.setForeground(textColor(t));cursor.mergeCharFormat(base);
+    const int limit=doc->characterCount()-1;
+    for(const auto& f:t.formats){
+        cursor.setPosition(int(std::min<std::size_t>(f.start,limit)));
+        cursor.setPosition(int(std::min<std::size_t>(f.start+f.length,limit)),QTextCursor::KeepAnchor);
+        QTextCharFormat format;format.setFontWeight(f.bold?QFont::Bold:QFont::Normal);format.setFontItalic(f.italic);
+        if(f.rgba){const auto c=*f.rgba;format.setForeground(QColor((c>>24)&255,(c>>16)&255,(c>>8)&255,c&255));}
+        cursor.mergeCharFormat(format);
+    }
+    doc->setTextWidth(t.boxWidthMm>0?std::max(5.,t.boxWidthMm*baseScale):80*baseScale);
+    if(t.boxWidthMm<=0)doc->setTextWidth(doc->idealWidth());
+    return doc;
+}
+QSizeF plainSize(QTextDocument& doc,const TextObject& t){
+    auto size=doc.size();
+    // QTextDocument quantizes layout coordinates to 1/64 px; retain the exact
+    // box width so repeated resizing/editing never accumulates that rounding.
+    if(t.boxWidthMm>0)size.setWidth(t.boxWidthMm*baseScale);
+    size.setHeight(std::max(size.height(),t.boxHeightMm*baseScale));return size;
+}
+// MathJax's viewBox origin encodes the distance from the top to the baseline.
+double mathAscent(const MathFragment& math,double em){
+    QXmlStreamReader xml(QString::fromStdString(math.svg));
+    while(!xml.atEnd()){xml.readNext();if(xml.isStartElement()){
+        const auto box=xml.attributes().value("viewBox").toString().split(QRegularExpression("[\\s,]+"),Qt::SkipEmptyParts);
+        if(box.size()==4)return -box[1].toDouble()*em/1000;
+        break;
+    }}
+    return math.heightEm*em;
+}
 QImage svgBitmap(const std::string& svg,QSize size,QColor color){
     const auto mesh=svgMathMesh(svg);if(!mesh.error.isEmpty())return {};
     QXmlStreamReader xml(QString::fromStdString(svg));double width=1,height=1;
@@ -55,12 +99,28 @@ QImage svgBitmap(const std::string& svg,QSize size,QColor color){
 struct Run {QString text;const MathFragment* math=nullptr;double x=0,y=0,width=0,height=0;bool bold=false,italic=false;std::uint32_t rgba=0;};
 struct Layout {std::vector<Run> runs;double width=0,height=0;};
 Layout layout(const TextObject& t){
-    const auto f=font(t,baseScale);const QFontMetricsF metrics(f);const double em=f.pixelSize(),lineHeight=metrics.height()*1.25,maxWidth=t.boxWidthMm>0?std::max(1.,t.boxWidthMm*baseScale-4):std::max(120.,80*baseScale);
+    const auto f=font(t,baseScale);const QFontMetricsF metrics(f);const double em=f.pixelSize(),lineHeight=metrics.height(),maxWidth=t.boxWidthMm>0?std::max(1.,t.boxWidthMm*baseScale-4):std::max(120.,80*baseScale);
     Layout out;double x=0,y=0,h=lineHeight;std::size_t start=0;
-    auto newline=[&]{out.width=std::max(out.width,x);x=0;y+=h;h=lineHeight;};
+    std::size_t lineStart=0;
+    std::vector<std::tuple<std::size_t,std::size_t,double>> lines;
+    auto finishLine=[&]{
+        double ascent=metrics.ascent(),descent=metrics.descent();
+        for(std::size_t i=lineStart;i<out.runs.size();++i){const auto& run=out.runs[i];
+            auto rf=f;rf.setBold(run.bold);rf.setItalic(run.italic);const QFontMetricsF rm(rf);
+            const auto a=run.math?mathAscent(*run.math,em):rm.ascent();
+            ascent=std::max(ascent,a);descent=std::max(descent,run.math?run.height-a:rm.descent());
+        }
+        for(std::size_t i=lineStart;i<out.runs.size();++i){auto& run=out.runs[i];
+            auto rf=f;rf.setBold(run.bold);rf.setItalic(run.italic);
+            run.y+=ascent-(run.math?mathAscent(*run.math,em):QFontMetricsF(rf).ascent());
+        }
+        lines.emplace_back(lineStart,out.runs.size(),x);
+        h=std::max(lineHeight,ascent+descent);lineStart=out.runs.size();
+    };
+    auto newline=[&]{finishLine();out.width=std::max(out.width,x);x=0;y+=h;h=lineHeight;};
     auto add=[&](QString word,const MathFragment* math,bool bold,bool italic,std::uint32_t rgba){
         auto runFont=f;runFont.setBold(bold);runFont.setItalic(italic);const QFontMetricsF runMetrics(runFont);
-        const double w=math?math->widthEm*em:runMetrics.horizontalAdvance(word),height=math?math->heightEm*em:runMetrics.height()*1.25;
+        const double w=math?math->widthEm*em:runMetrics.horizontalAdvance(word),height=math?math->heightEm*em:runMetrics.height();
         if(math&&math->display&&x>0)newline();
         if(x>0&&x+w>maxWidth)newline();
         out.runs.push_back({word,math,x,y,w,height,bold,italic,rgba});x+=w;h=std::max(h,height);
@@ -94,15 +154,19 @@ Layout layout(const TextObject& t){
         for(const auto& word:pieces){if(word.contains('\n')){auto parts=word.split('\n');for(int i=0;i<parts.size();++i){if(!parts[i].isEmpty())styledWord(parts[i],position);position+=parts[i].size();if(i+1<parts.size()){newline();++position;}}}else if(!word.isEmpty()){styledWord(word,position);position+=word.size();}}
     };
     for(const auto& m:t.math){plain(t.source.substr(start,m.start-start),start);const auto style=styleAt(QString::fromStdString(t.source.substr(0,m.start+(m.display?2:1))).size());add({},&m,t.bold,t.italic,std::get<2>(style));start=m.start+m.length;}plain(t.source.substr(start),start);
+    finishLine();
     out.width=std::max(1.,std::max(out.width,x));out.height=std::max(lineHeight,y+h);
     if(t.boxWidthMm>0)out.width=std::max(out.width,t.boxWidthMm*baseScale-4);
     if(t.boxHeightMm>0)out.height=std::max(out.height,t.boxHeightMm*baseScale-4);
-    if(t.alignment){std::map<double,double> right;for(const auto& run:out.runs)right[run.y]=std::max(right[run.y],run.x+run.width);for(auto& run:out.runs)run.x+=(out.width-right[run.y])*(t.alignment==1?.5:1.);}
+    if(t.alignment)for(const auto& [first,last,right]:lines)for(auto i=first;i<last;++i)out.runs[i].x+=(out.width-right)*(t.alignment==1?.5:1.);
     return out;
 }
 }
 bool svgRenderingAvailable(){return true;}
 QString paintVectorText(QPainter& painter,const TextObject& t){
+    if(t.math.empty()){
+        auto doc=plainDocument(t);painter.save();painter.scale(1/baseScale,1/baseScale);doc->drawContents(&painter);painter.restore();return {};
+    }
     const auto l=layout(t);const double em=font(t,baseScale).pixelSize();
     painter.save();painter.scale(1/baseScale,1/baseScale);painter.translate(2,2);painter.setFont(font(t,baseScale));painter.setPen(textColor(t));
     for(const auto& run:l.runs){
@@ -116,6 +180,12 @@ QString paintVectorText(QPainter& painter,const TextObject& t){
     painter.restore();return {};
 }
 static QImage renderBitmap(const TextObject& t,double scale,bool includeMath){
+    if(t.math.empty()){
+        auto doc=plainDocument(t);const auto size=plainSize(*doc,t);
+        const double ratio=std::min(scale/baseScale,4096./std::max(size.width(),size.height()));
+        QImage image(std::max(1,int(std::ceil(size.width()*ratio))),std::max(1,int(std::ceil(size.height()*ratio))),QImage::Format_ARGB32_Premultiplied);image.fill(Qt::transparent);
+        QPainter painter(&image);painter.setRenderHint(QPainter::TextAntialiasing);painter.scale(ratio,ratio);doc->drawContents(&painter);return image;
+    }
     const auto l=layout(t);const double ratio=std::min(scale/baseScale,4096./std::max(l.width+4,l.height+4));
     QImage image(std::max(1,int(std::ceil((l.width+4)*ratio))),std::max(1,int(std::ceil((l.height+4)*ratio))),QImage::Format_ARGB32_Premultiplied);image.fill(Qt::transparent);
     QPainter p(&image);p.setRenderHint(QPainter::Antialiasing);p.setRenderHint(QPainter::TextAntialiasing);p.setRenderHint(QPainter::SmoothPixmapTransform);p.scale(ratio,ratio);p.translate(2,2);p.setFont(font(t,baseScale));p.setPen(textColor(t));
@@ -123,9 +193,9 @@ static QImage renderBitmap(const TextObject& t,double scale,bool includeMath){
     return image;
 }
 QImage textBitmap(const TextObject& t,double scale){return renderBitmap(t,scale,true);}
-QSizeF textNaturalSize(const TextObject& t){const auto l=layout(t);return {(l.width+4)/baseScale,(l.height+4)/baseScale};}
+QSizeF textNaturalSize(const TextObject& t){if(t.math.empty()){auto doc=plainDocument(t);return plainSize(*doc,t)/baseScale;}const auto l=layout(t);return {(l.width+4)/baseScale,(l.height+4)/baseScale};}
 TextVisual textVisual(const TextObject& t,double scale){
-    TextVisual visual;visual.text=renderBitmap(t,scale,false);visual.naturalSize=textNaturalSize(t);const auto l=layout(t);const double em=font(t,baseScale).pixelSize();
+    TextVisual visual;visual.text=renderBitmap(t,scale,false);visual.naturalSize=textNaturalSize(t);if(t.math.empty())return visual;const auto l=layout(t);const double em=font(t,baseScale).pixelSize();
     for(const auto& run:l.runs)if(run.math){auto mesh=svgMathMesh(run.math->svg);if(!mesh.error.isEmpty()){visual.error=mesh.error;return visual;}
         visual.mathColors.push_back({visual.math.size(),mesh.vertices.size(),run.rgba});
         for(auto p:mesh.vertices)visual.math.push_back({(run.x+2+p.x*em)/baseScale,(run.y+2+p.y*em)/baseScale});
@@ -135,9 +205,9 @@ PreparedText prepareText(TextObject t){
     auto fragments=t.latexEnabled?mathFragments(t.source):std::vector<MathFragment>{};
     if(!fragments.empty()&&!svgRenderingAvailable())return {t,{},"O pacote Scalar precisa de um renderizador SVG para matemática."};
     const auto error=renderMath(fragments);if(!error.isEmpty())return {t,{},error};t.math=std::move(fragments);
-    const auto l=layout(t);const auto origin=t.corners.empty()?Point{20,20}:t.corners[0];
+    const auto size=textNaturalSize(t);const auto origin=t.corners.empty()?Point{20,20}:t.corners[0];
     const auto edge=t.corners.size()==4?t.corners[1]-origin:Point{1,0};const auto angle=std::atan2(edge.y,edge.x);
-    const double w=(l.width+4)/baseScale,h=(l.height+4)/baseScale;
+    const double w=size.width(),h=size.height();
     t.corners={origin,rotatePoint(origin+Point{w,0},origin,angle),rotatePoint(origin+Point{w,h},origin,angle),rotatePoint(origin+Point{0,h},origin,angle)};
     auto visual=textVisual(t,baseScale*2);return {t,visual.text,visual.error,std::move(visual.math),visual.naturalSize,std::move(visual.mathColors)};
 }
