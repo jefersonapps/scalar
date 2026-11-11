@@ -28,6 +28,26 @@ std::optional<Point> RulerGeometry::entryPoint(Point start,Point end) const {
     if(!clip(a.x,d.x,lengthMm)||!clip(a.y,d.y,widthMm))return {};
     return start+(end-start)*enter;
 }
+Point ProtractorGeometry::local(Point p) const {return rotatePoint(p-center,{},-angle);}
+Point ProtractorGeometry::world(Point p) const {return center+rotatePoint(p,{},angle);}
+Point ProtractorGeometry::at(double a) const {return world({radiusMm*std::cos(a),-radiusMm*std::sin(a)});}
+double ProtractorGeometry::arcAngle(Point p) const {
+    const auto q=local(p);
+    // Include the baseline: atan2(-0, negative x) is -pi, not +pi.
+    if(q.y>=0)return q.x>=0?0:std::numbers::pi;
+    return std::clamp(std::atan2(-q.y,q.x),0.,std::numbers::pi);
+}
+bool ProtractorGeometry::nearArc(Point p,double tolerance) const {
+    return length(p-at(arcAngle(p)))<=tolerance;
+}
+std::optional<Point> ProtractorGeometry::entryPoint(Point start,Point end) const {
+    const auto a=local(start),d=local(end)-a;
+    const double aa=d.x*d.x+d.y*d.y,b=2*(a.x*d.x+a.y*d.y),c=a.x*a.x+a.y*a.y-radiusMm*radiusMm;
+    const double disc=b*b-4*aa*c;if(aa<1e-12||disc<0)return {};
+    for(double t:{(-b-std::sqrt(disc))/(2*aa),(-b+std::sqrt(disc))/(2*aa)})
+        if(t>=0&&t<=1&&(a+d*t).y<=1e-9)return start+(end-start)*t;
+    return {};
+}
 Point CompassGeometry::pencil() const {return center+Point{std::cos(angle),std::sin(angle)}*radiusMm;}
 Point CompassGeometry::hinge() const {
     // Keep the legs fixed for normal openings; scale for very large constructions.

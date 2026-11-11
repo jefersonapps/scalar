@@ -124,7 +124,7 @@ void CanvasItem::setController(AppController* c){
     selectedObjectsCacheValid_=false;
     if(controller_==c)return;if(controller_)disconnect(controller_,nullptr,this,nullptr);controller_=c;viewPageId_.clear();magneticPage_=nullptr;magneticRevision_=~std::uint64_t(0);compassMagnet_.reset();rulerMagnet_.reset();
     if(c)connect(c,&AppController::documentChanged,this,[this]{
-        if(compassMagnet_||rulerMagnet_){compassMagnet_.reset();rulerMagnet_.reset();emit geometryToolsChanged();}
+        if(compassMagnet_||rulerMagnet_||protractorMagnet_){protractorMagnet_.reset();compassMagnet_.reset();rulerMagnet_.reset();emit geometryToolsChanged();}
         // An external edit/undo invalidates the gesture's spatial snapshot.
         // commitErase switches to Idle before publishing its own changes.
         if(state_==State::Erasing||affineSelectionPreview_)cancelStroke();
@@ -135,7 +135,7 @@ void CanvasItem::setController(AppController* c){
 }
 void CanvasItem::setTool(const QString& t){
     InputDiagnosticSpan diagnostic("tool-switch");
-    if(t!="ruler"&&t!="compass"&&t!="text"&&t!="eraser"&&t!="pen"&&t!="marker"&&t!="hand"&&t!="select"&&t!="line"&&t!="circle"&&t!="ellipse"&&t!="triangle"&&t!="rectangle")return;
+    if(t!="protractor"&&t!="ruler"&&t!="compass"&&t!="text"&&t!="eraser"&&t!="pen"&&t!="marker"&&t!="hand"&&t!="select"&&t!="line"&&t!="circle"&&t!="ellipse"&&t!="triangle"&&t!="rectangle")return;
     if(t==tool_)return;
     // Selecting the current tool leaves contact uninterrupted. Switching away
     // from ink finishes it with its original tool, pressure and smoothing.
@@ -143,7 +143,7 @@ void CanvasItem::setTool(const QString& t){
     else if(drawing()){if(!current_.samples.empty())endPointer(current_.samples.back());else commit();}
     else if(state_==State::Erasing)commitErase();
     else if(geometryGesture())finishGeometryPointer();
-    handToolBefore_.clear();tabletToolBefore_.clear();cancelStroke();selectedGuide_.clear();tool_=t;updateCursor();if(t=="ruler"||t=="compass"){selection_.clear();selectionUpdated();}if(t=="ruler")setRulerVisible(true);if(t=="compass")setCompassVisible(true);emit geometryToolsChanged();emit toolChanged();
+    handToolBefore_.clear();tabletToolBefore_.clear();cancelStroke();selectedGuide_.clear();tool_=t;updateCursor();if(t=="ruler"||t=="compass"||t=="protractor"){selection_.clear();selectionUpdated();}if(t=="protractor")setProtractorVisible(true);if(t=="ruler")setRulerVisible(true);if(t=="compass")setCompassVisible(true);emit geometryToolsChanged();emit toolChanged();
 }
 void CanvasItem::setPenColor(const QColor& c){if(!c.isValid())return;color_=c;style_.rgba=(std::uint32_t(c.red())<<24)|(std::uint32_t(c.green())<<16)|(std::uint32_t(c.blue())<<8)|255;emit penChanged();}
 void CanvasItem::setPenWidth(double w){style_.maxWidthMm=std::clamp(w,0.1,5.0);style_.minWidthMm=std::min(0.15,style_.maxWidthMm);emit penChanged();}
@@ -203,21 +203,51 @@ void CanvasItem::begin(PointerSample s){
     if(!controller_||!controller_->active())return;
     if(!controller_->pageInfinite()&&(s.position.x<0||s.position.y<0||s.position.x>controller_->pageWidth()||s.position.y>controller_->pageHeight()))return;
     selection_.clear();selectionUpdated();++inputEpoch_;holdTimer_.stop();previewShape_.reset();
-    guidedEdge_.reset();if(rulerVisible_&&rulerSnap_&&tool_=="pen"){guidedEdge_=ruler_.nearEdge(s.position,rulerSnapDistance_);if(guidedEdge_)s.position=ruler_.project(s.position,*guidedEdge_);}
+    guidedArcBoundary_.reset();
+    guidedArc_=protractorVisible_&&tool_=="pen"&&protractor_.nearArc(s.position,rulerSnapDistance_);
+    if(guidedArc_)s.position=protractor_.at(protractor_.arcAngle(s.position));
+    guidedEdge_.reset();if(!guidedArc_&&rulerVisible_&&rulerSnap_&&tool_=="pen"){guidedEdge_=ruler_.nearEdge(s.position,rulerSnapDistance_);if(guidedEdge_)s.position=ruler_.project(s.position,*guidedEdge_);}
     auto ink=style_;if(tool_=="marker"){ink.rgba=(std::uint32_t(markerColor_.red())<<24)|(std::uint32_t(markerColor_.green())<<16)|(std::uint32_t(markerColor_.blue())<<8)|std::uint32_t(std::lround(markerOpacity_*255));ink.minWidthMm=ink.maxWidthMm=markerWidth_;ink.pattern=LinePattern::Solid;}
-    smoothFreehand_=!rulerVisible_&&(tool_=="pen"||tool_=="marker");
+    smoothFreehand_=!rulerVisible_&&!protractorVisible_&&(tool_=="pen"||tool_=="marker");
     recognitionDashed_=false;input_.reset();current_={newId(),ink,{input_.filter(s,smoothFreehand_)}};holdAnchor_=lastPan_=s.position;
     freehandSamples_=current_.samples;
     liveCurveStableSamples_=current_.samples.size();
     liveCurveReleasePrefix_=1;liveCurveReleaseSegment_=0;
     current_.marker=tool_=="marker";
-    state_=State::Drawing;if(!guidedEdge_&&tool_=="pen"&&controller_->recognitionEnabled())holdTimer_.start(controller_->holdDelay());emit drawingChanged();update();
+    state_=State::Drawing;if(!guidedArc_&&!guidedEdge_&&tool_=="pen"&&controller_->recognitionEnabled())holdTimer_.start(controller_->holdDelay());emit drawingChanged();update();
 }
 void CanvasItem::append(PointerSample s){
     if(!drawing())return;
     lastPan_=s.position;
     if(state_==State::ShapePreview){updateRecognizedLine(s.position);return;}
     const bool usesRuler=rulerVisible_&&tool_=="pen";
+    if(protractorVisible_&&tool_=="pen"&&!guidedEdge_&&!guidedArc_){
+        const auto entry=current_.samples.empty()?std::optional<Point>{}:protractor_.entryPoint(current_.samples.back().position,s.position);
+        if(entry||protractor_.nearArc(s.position,rulerSnapDistance_)){
+            guidedArc_=true;holdTimer_.stop();++inputEpoch_;state_=State::Drawing;
+            auto contact=s;contact.position=protractor_.at(protractor_.arcAngle(entry.value_or(s.position)));
+            current_.samples.push_back(input_.filter(contact,false));
+        }
+    }
+    if(guidedArc_){
+        // Retain the same contour until release, including pointer drift and reversal.
+        const double a=protractor_.arcAngle(current_.samples.back().position);
+        const auto local=protractor_.local(s.position);
+        double b=protractor_.arcAngle(s.position);
+        // Below the baseline, nearest-point projection switches between the
+        // two ends at the center. Keep the end we actually reached instead of
+        // interpreting that switch as a sweep across the whole semicircle.
+        if(local.y>0&&!guidedArcBoundary_)guidedArcBoundary_=a<std::numbers::pi/2?0.:std::numbers::pi;
+        if(guidedArcBoundary_){
+            if(local.y<=0&&std::abs(b-*guidedArcBoundary_)<std::numbers::pi/2)guidedArcBoundary_.reset();
+            else b=*guidedArcBoundary_;
+        }
+        if(length(local)<1e-6)b=a;
+        if(std::abs(b-a)<1e-9){update();return;}
+        const int steps=std::max(1,int(std::ceil(std::abs(b-a)*protractor_.radiusMm/.3)));
+        for(int i=1;i<=steps;++i){auto point=s;point.position=protractor_.at(a+(b-a)*i/steps);current_.samples.push_back(input_.filter(point,false));}
+        update();return;
+    }
     if(usesRuler&&rulerSnap_&&!guidedEdge_){
         // Catch the first crossed edge even when input events skip over the ruler.
         const auto entry=current_.samples.empty()?std::optional<Point>{}:ruler_.entryPoint(current_.samples.back().position,s.position);
@@ -259,7 +289,7 @@ void CanvasItem::append(PointerSample s){
                 appendSmoothStrokeSegment(samples,segment,current_.samples);
         }else current_.samples.push_back(samples.back());
     }
-    if(!guidedEdge_&&tool_=="pen"&&controller_&&controller_->recognitionEnabled()&&!current_.samples.empty()){
+    if(!guidedArc_&&!guidedEdge_&&tool_=="pen"&&controller_&&controller_->recognitionEnabled()&&!current_.samples.empty()){
         if(length(rawPosition-holdAnchor_)>0.6){holdAnchor_=rawPosition;holdTimer_.start(controller_->holdDelay());state_=State::PossibleHold;++inputEpoch_;}
         else if(!holdTimer_.isActive()&&state_!=State::PossibleHold){holdTimer_.start(controller_->holdDelay());state_=State::PossibleHold;}
     }
@@ -285,12 +315,13 @@ void CanvasItem::commit(){
     if(state_==State::DrawingCompass){finishGeometryPointer();return;}
     if(!drawing())return;holdTimer_.stop();++inputEpoch_;
     if(controller_){if(previewShape_&&state_==State::ShapePreview)controller_->addRecognizedStroke(current_,*previewShape_);else if(previewShape_&&state_==State::CreatingShape)controller_->addShape(*previewShape_);else controller_->addStroke(current_);}
-    state_=State::Idle;current_={};previewShape_.reset();guidedEdge_.reset();emit drawingChanged();selectionUpdated();
+    state_=State::Idle;current_={};previewShape_.reset();guidedArc_=false;guidedArcBoundary_.reset();guidedEdge_.reset();emit drawingChanged();selectionUpdated();
 }
 void CanvasItem::cancelStroke(){
     compassMagnet_.reset();rulerRotationPivot_.reset();
     eraserCursorVisible_=false;
     eraseIndex_.clear();restoreIndex_.clear();restoreIndexReady_=false;
+    guidedArc_=false;guidedArcBoundary_.reset();if(protractorBefore_)protractor_=*protractorBefore_;protractorBefore_.reset();
     if(rulerBefore_)ruler_=*rulerBefore_;if(compassBefore_)compass_=*compassBefore_;rulerBefore_.reset();compassBefore_.reset();compassPointerAngle_.reset();guidedEdge_.reset();
     const bool was=drawing();holdTimer_.stop();++inputEpoch_;state_=State::Idle;current_={};previewShape_.reset();editBefore_.clear();editPreview_.clear();eraseBefore_.clear();erasePreview_.clear();eraseShapesBefore_.clear();eraseShapesPreview_.clear();eraseFillsBefore_.clear();eraseFillsPreview_.clear();recoverableInk_.clear();tabletActive_=false;touchDistance_=0;
     updateCursor();
@@ -311,7 +342,7 @@ void CanvasItem::startPointer(PointerSample s,Qt::KeyboardModifiers modifiers){
     shiftHeld_=modifiers.testFlag(Qt::ShiftModifier);
     if(tool_=="marker"&&modifiers.testFlag(Qt::ControlModifier)){if(controller_)controller_->fillRegion(s.position,markerColor_,markerOpacity_);return;}
     if(beginGeometryPointer(s))return;
-    if(tool_=="compass"||tool_=="ruler")return;
+    if(tool_=="compass"||tool_=="ruler"||tool_=="protractor")return;
     selectedGuide_.clear();emit geometryToolsChanged();
     if(tool_=="text"){
         if(!controller_||!controller_->page())return;
@@ -716,7 +747,7 @@ void CanvasItem::setTemporaryHand(bool enabled){
 }
 void CanvasItem::keyPressEvent(QKeyEvent* e){if(e->key()==Qt::Key_Shift){shiftHeld_=true;
     if(state_==State::ShapePreview&&previewShape_){previewShape_->style.pattern=LinePattern::Dashed;recognitionDashed_=true;emit drawingChanged();update();}e->accept();}
-    else if(e->key()==Qt::Key_H&&!textInputFocused()&&!(e->modifiers()&(Qt::ControlModifier|Qt::AltModifier|Qt::MetaModifier))){if(!e->isAutoRepeat())setTemporaryHand(true);e->accept();}else if(e->key()==Qt::Key_Control){eraserCtrl_=angleSnap_=true;if(state_==State::ResizingCompass){auto sample=current_.samples.empty()?PointerSample{}:current_.samples.back();sample.position=lastPan_;moveGeometryPointer(sample);}else if(state_==State::RotatingRuler)moveGeometryPointer({lastPan_});else if(state_==State::Rotating||state_==State::EditingHandle)updateSelection(lastPan_);else if(state_==State::CreatingShape){previewShape_=directShape(dragStart_,lastPan_);selectionUpdated();}else if(state_==State::ShapePreview)updateRecognizedLine(lastPan_);e->accept();}else if(e->key()==Qt::Key_Space){space_=true;updateCursor();e->accept();}else if(e->key()==Qt::Key_Escape){cancelStroke();if(tool_=="compass"||tool_=="ruler")setTool("select");e->accept();}else QQuickItem::keyPressEvent(e);}
+    else if(e->key()==Qt::Key_H&&!textInputFocused()&&!(e->modifiers()&(Qt::ControlModifier|Qt::AltModifier|Qt::MetaModifier))){if(!e->isAutoRepeat())setTemporaryHand(true);e->accept();}else if(e->key()==Qt::Key_Control){eraserCtrl_=angleSnap_=true;if(state_==State::ResizingCompass){auto sample=current_.samples.empty()?PointerSample{}:current_.samples.back();sample.position=lastPan_;moveGeometryPointer(sample);}else if(state_==State::RotatingRuler)moveGeometryPointer({lastPan_});else if(state_==State::Rotating||state_==State::EditingHandle)updateSelection(lastPan_);else if(state_==State::CreatingShape){previewShape_=directShape(dragStart_,lastPan_);selectionUpdated();}else if(state_==State::ShapePreview)updateRecognizedLine(lastPan_);e->accept();}else if(e->key()==Qt::Key_Space){space_=true;updateCursor();e->accept();}else if(e->key()==Qt::Key_Escape){cancelStroke();if(tool_=="compass"||tool_=="ruler"||tool_=="protractor")setTool("select");e->accept();}else QQuickItem::keyPressEvent(e);}
 void CanvasItem::keyReleaseEvent(QKeyEvent* e){if(e->key()==Qt::Key_Shift){shiftHeld_=false;e->accept();}else if(e->key()==Qt::Key_H&&!handToolBefore_.isEmpty()){if(!e->isAutoRepeat())setTemporaryHand(false);e->accept();}else if(e->key()==Qt::Key_Control){eraserCtrl_=angleSnap_=false;if(state_==State::ResizingCompass){auto sample=current_.samples.empty()?PointerSample{}:current_.samples.back();sample.position=lastPan_;moveGeometryPointer(sample);}else if(state_==State::RotatingRuler)moveGeometryPointer({lastPan_});else if(state_==State::Rotating||state_==State::EditingHandle)updateSelection(lastPan_);else if(state_==State::CreatingShape){previewShape_=directShape(dragStart_,lastPan_);selectionUpdated();}else if(state_==State::ShapePreview)updateRecognizedLine(lastPan_);e->accept();}else if(e->key()==Qt::Key_Space){space_=false;updateCursor();e->accept();}else QQuickItem::keyReleaseEvent(e);}
 void CanvasItem::geometryChange(const QRectF& current,const QRectF& previous){
     QQuickItem::geometryChange(current,previous);

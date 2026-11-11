@@ -80,8 +80,9 @@ C.GlassPanel {
         C.IconButton { iconName: "image"; label: "Importar imagem"; onClicked: root.imageRequested() }
         C.ToolButton { id: shapesButton;objectName: "shapesToolButton"; iconName: "shapes"; label: "Formas geométricas"; selected: ["line","circle","ellipse","triangle","rectangle"].indexOf(root.activeTool) >= 0; onClicked: root.shapeOptionsRequested() }
         C.ToolButton { id: rulerButton;objectName: "rulerToolButton"; iconName: "ruler"; label: "Régua · clique novamente para opções"; selected: root.activeTool === "ruler"; onClicked: { if(selected) root.geometryOptionsRequested(); else root.toolSelected("ruler") } }
+        C.ToolButton { objectName: "protractorToolButton"; iconName: "protractor"; label: "Transferidor"; selected: root.activeTool === "protractor"; onClicked: root.toolSelected("protractor") }
         C.ToolButton { id: compassButton;objectName: "compassToolButton"; iconName: "compass"; label: "Compasso · clique novamente para opções"; selected: root.activeTool === "compass"; onClicked: { if(selected) root.geometryOptionsRequested(); else root.toolSelected("compass") } }
-        C.ToolButton { objectName: "geometryMagnetButton"; iconName: "magnet"; label: "Ímã · encaixar compasso e régua em extremidades e interseções"; selected: root.geometryMagnet; onClicked: root.magnetToggled() }
+        C.ToolButton { objectName: "geometryMagnetButton"; iconName: "magnet"; label: "Ímã · encaixar instrumentos em extremidades e interseções"; selected: root.geometryMagnet; onClicked: root.magnetToggled() }
         C.IconButton { objectName: "recordConstructionButton"; implicitWidth: 36; implicitHeight: 36; iconName: root.recording ? "stop" : "video"; label: root.recording ? "Parar gravação dos passos" : root.hasRecording ? "Iniciar nova gravação e substituir os passos anteriores" : "Gravar os passos de uma construção"; selected: root.recording; enabled: root.recordingEnabled; onClicked: root.recordingRequested() }
         Rectangle { width: 1; height: Theme.xl; color: Theme.border }
         C.IconButton { iconName: "undo"; label: "Desfazer (Ctrl+Z)"; enabled: App.canUndo; onClicked: App.undo() }

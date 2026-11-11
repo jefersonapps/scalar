@@ -1840,6 +1840,73 @@ private slots:
         }
         QVERIFY(controller.page()->strokes.empty());QCOMPARE(warnings.size(),0);QVERIFY(controller.shutdown());
     }
+    void protractorGuideSnapsAndKeepsInkOnArc(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());
+        auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto* ui=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(ui);ui->setTool("protractor");QVERIFY(ui->protractorVisible());
+        QVERIFY(window->findChild<QQuickItem*>("protractorToolButton"));QVERIFY(window->findChild<QQuickItem*>("protractorScale"));QVERIFY(window->findChild<QQuickItem*>("protractorNumbers"));
+        ui->setProtractorNumbers(false);QTest::qWait(30);ui->setProtractorNumbers(true);QTest::qWait(30);
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();canvas.setTool("protractor");
+        QPointingDevice pen("Test stylus",123,QInputDevice::DeviceType::Stylus,QPointingDevice::PointerType::Pen,QInputDevice::Capability::Position|QInputDevice::Capability::Pressure,1,3);
+        bool tablet=false;
+        const auto send=[&](QEvent::Type type,QPointF p){
+            const bool release=type==QEvent::MouseButtonRelease,move=type==QEvent::MouseMove;
+            if(tablet){QTabletEvent event(release?QEvent::TabletRelease:move?QEvent::TabletMove:QEvent::TabletPress,&pen,p,p,release?0.:.7,0,0,0,0,0,Qt::NoModifier,move?Qt::NoButton:Qt::LeftButton,release?Qt::NoButton:Qt::LeftButton);QCoreApplication::sendEvent(&canvas,&event);}
+            else {QMouseEvent event(type,p,p,move?Qt::NoButton:Qt::LeftButton,release?Qt::NoButton:Qt::LeftButton,Qt::NoModifier);if(type==QEvent::MouseButtonPress)canvas.mousePressEvent(&event);else if(release)canvas.mouseReleaseEvent(&event);else canvas.mouseMoveEvent(&event);}
+        };
+        for(bool stylus:{false,true})for(double rotation:{0.,37.})for(double radius:{25.,50.})for(bool ongoing:{false,true}){
+            tablet=stylus;canvas.setProtractorRadius(radius);canvas.setProtractorAngle(rotation);canvas.setTool("pen");
+            const auto g=canvas.protractorGeometry();const QPointF center(g["x"].toDouble(),g["y"].toDouble());const double scale=g["radius"].toDouble()/radius;
+            const auto point=[&](double degrees,double distance){const double a=(degrees+rotation)*std::numbers::pi/180;return center+QPointF(std::cos(a),-std::sin(a))*distance*scale;};
+            send(QEvent::MouseButtonPress,point(80,radius+(ongoing?8:1)));QVERIFY(canvas.drawing());
+            if(ongoing)send(QEvent::MouseMove,point(80,radius-8));
+            send(QEvent::MouseMove,point(120,radius+15));send(QEvent::MouseMove,point(40,radius-10));send(QEvent::MouseButtonRelease,point(150,radius+20));
+            QCOMPARE(controller.page()->strokes.size(),std::size_t(1));const auto& samples=controller.page()->strokes.front().samples;QVERIFY(samples.size()>20);
+            for(std::size_t i=ongoing?1:0;i<samples.size();++i){auto q=canvas.screenPoint({samples[i].position.x,samples[i].position.y});QVERIFY(std::abs(QLineF(q,center).length()/scale-radius)<1e-6);}
+            controller.undo();
+        }
+        // Leaving either arc end must not draw the opposite half when the
+        // pointer crosses the baseline's midpoint. Reentry at that end resumes.
+        for(bool stylus:{false,true})for(double rotation:{0.,37.})for(bool left:{false,true}){
+            tablet=stylus;canvas.setTool("pen");canvas.setProtractorAngle(rotation);
+            const auto g=canvas.protractorGeometry();const QPointF center(g["x"].toDouble(),g["y"].toDouble());
+            const double scale=g["radius"].toDouble()/canvas.protractorRadius(),r=canvas.protractorRadius();
+            const auto point=[&](double x,double y){const auto q=rotatePoint({x,y},{},-rotation*std::numbers::pi/180);return center+QPointF(q.x,q.y)*scale;};
+            const double side=left?-1.:1.;
+            send(QEvent::MouseButtonPress,point(side*r*.995,-r*.1));QVERIFY(canvas.drawing());
+            send(QEvent::MouseMove,point(side*r,2));
+            send(QEvent::MouseMove,point(-side*r,2));
+            send(QEvent::MouseMove,point(-side*r,-2));
+            send(QEvent::MouseMove,point(side*r,2));
+            send(QEvent::MouseMove,point(side*r*.98,-r*.2));
+            send(QEvent::MouseButtonRelease,point(side*r*.98,-r*.2));
+            QCOMPARE(controller.page()->strokes.size(),std::size_t(1));
+            for(const auto& sample:controller.page()->strokes.front().samples){
+                const auto q=canvas.screenPoint({sample.position.x,sample.position.y})-center;
+                const auto local=rotatePoint({q.x()/scale,q.y()/scale},{},rotation*std::numbers::pi/180);
+                QVERIFY2(side*local.x>r*.95,qPrintable(QString("stylus=%1 rotation=%2 left=%3 x=%4 y=%5 radius=%6 samples=%7").arg(stylus).arg(rotation).arg(left).arg(local.x).arg(local.y).arg(r).arg(controller.page()->strokes.front().samples.size())));QVERIFY(std::abs(length(local)-r)<1e-6);
+            }
+            controller.undo();
+        }
+        tablet=false;canvas.setTool("protractor");canvas.setGeometryMagnet(true);
+        const auto g=canvas.protractorGeometry();QPointF center(g["x"].toDouble(),g["y"].toDouble());
+        // The center snaps only on release; rotation keeps that exact center.
+        const auto target=(center+QPointF(40,30)-canvas.screenPoint({0,0}))/(g["radius"].toDouble()/canvas.protractorRadius());
+        StrokeObject endpoint;endpoint.id=newId();endpoint.samples={{{target.x(),target.y()},1}};controller.addStroke(endpoint);
+        canvas.setTool("select");
+        send(QEvent::MouseButtonPress,center);QCOMPARE(canvas.tool(),QString("protractor"));
+        send(QEvent::MouseMove,center+QPointF(43,32));
+        QVERIFY(std::abs(canvas.protractorGeometry()["x"].toDouble()-center.x()-43)<1e-6);
+        send(QEvent::MouseButtonRelease,center+QPointF(43,32));
+        QCOMPARE(canvas.protractorGeometry()["x"].toDouble(),center.x()+40);QCOMPARE(canvas.protractorGeometry()["y"].toDouble(),center.y()+30);
+        canvas.setProtractorAngle(0);const auto snapped=canvas.protractorGeometry();center={snapped["x"].toDouble(),snapped["y"].toDouble()};const double r=snapped["radius"].toDouble();
+        canvas.setTool("select");
+        send(QEvent::MouseButtonPress,center+QPointF(.72*r,-.16*r));QCOMPARE(canvas.tool(),QString("protractor"));
+        send(QEvent::MouseMove,center+QPointF(.4*r,-.6*r));send(QEvent::MouseButtonRelease,center+QPointF(.4*r,-.6*r));
+        QCOMPARE(canvas.protractorGeometry()["x"].toDouble(),center.x());QCOMPARE(canvas.protractorGeometry()["y"].toDouble(),center.y());QVERIFY(std::abs(canvas.protractorAngle())>10);
+        QCOMPARE(warnings.size(),0);QVERIFY(controller.shutdown());
+    }
     void rulerLocksInitialEdgeUntilRelease(){
         QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
         InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();canvas.setRulerVisible(true);canvas.setTool("pen");

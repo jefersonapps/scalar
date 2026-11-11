@@ -13,6 +13,16 @@ struct RulerGeometry {
     Point project(Point point,int edge) const;
     std::optional<Point> entryPoint(Point start,Point end) const;
 };
+struct ProtractorGeometry {
+    Point center{100,100};
+    double radiusMm=50,angle=0;
+    Point local(Point p) const;
+    Point world(Point p) const;
+    Point at(double radians) const;
+    double arcAngle(Point p) const;
+    bool nearArc(Point p,double tolerance) const;
+    std::optional<Point> entryPoint(Point start,Point end) const;
+};
 struct CompassGeometry {
     Point center{100,100};
     double radiusMm=30,angle=0;

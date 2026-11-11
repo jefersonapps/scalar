@@ -44,7 +44,7 @@ Rectangle {
         RowLayout {
             id: row
             height: scroll.height; spacing: Theme.sm
-            Text { text: root.textContext ? "Fonte" : ({pen:"Caneta",marker:"Marcador",eraser:"Borracha",select:"Seleção",hand:"Mover",text:"Texto",ruler:"Régua",compass:"Compasso",line:"Linha",circle:"Círculo",ellipse:"Elipse",triangle:"Triângulo",rectangle:"Retângulo"})[root.tool] || "Ferramenta"; font.pixelSize: Theme.caption; font.weight: Font.DemiBold; color: Theme.secondary }
+            Text { text: root.textContext ? "Fonte" : ({pen:"Caneta",marker:"Marcador",eraser:"Borracha",select:"Seleção",hand:"Mover",text:"Texto",protractor:"Transferidor",ruler:"Régua",compass:"Compasso",line:"Linha",circle:"Círculo",ellipse:"Elipse",triangle:"Triângulo",rectangle:"Retângulo"})[root.tool] || "Ferramenta"; font.pixelSize: Theme.caption; font.weight: Font.DemiBold; color: Theme.secondary }
             C.SelectField { implicitHeight: 32; Layout.maximumHeight: 32; visible: root.shapes; Layout.preferredWidth: 132; model: ["Linha","Círculo","Elipse","Triângulo","Retângulo"]; currentIndex: ["line","circle","ellipse","triangle","rectangle"].indexOf(root.tool); onActivated: {root.canvas.tool=["line","circle","ellipse","triangle","rectangle"][index];root.canvas.forceActiveFocus()} }
             C.ThicknessPresets { objectName: "toolbarThicknessPresets"; visible: root.ink; values: root.marker ? [1, 5.75, 10.5, 15.25, 20] : [0.1, 0.4, 1.6, 2.3, 3]; value: root.inkWidth; onPicked: thickness => { if(root.marker)root.canvas.markerWidth=thickness;else root.canvas.penWidth=thickness;root.canvas.forceActiveFocus() } }
             RowLayout {
@@ -71,6 +71,11 @@ Rectangle {
             Text { visible: root.tool==="eraser"; text: "Raio · "+root.canvas.eraserRadius.toFixed(1)+" mm"; color: Theme.secondary; font.pixelSize: Theme.caption }
             C.ModernSlider { implicitHeight: 32; Layout.maximumHeight: 32; objectName: "toolbarEraserRadius"; visible: root.tool==="eraser"; Layout.preferredWidth: 180; from: .5; to: 12; value: root.canvas.eraserRadius; onMoved: root.canvas.eraserRadius=value }
             C.ModernCheckBox { implicitHeight: 32; Layout.maximumHeight: 32; visible: root.tool==="eraser"; text: "Apagar formas"; checked: root.canvas.eraserShapes; onToggled: root.canvas.eraserShapes=checked }
+            Text { visible: root.tool==="protractor"; text: "Escala"; color: Theme.secondary; font.pixelSize: Theme.caption }
+            C.ModernSlider { objectName: "protractorScale"; implicitHeight: 32; Layout.maximumHeight: 32; visible: root.tool==="protractor"; Layout.preferredWidth: 120; from: 20; to: 150; value: root.canvas.protractorRadius; onMoved: root.canvas.protractorRadius=value; Accessible.name: "Escala do transferidor" }
+            C.ModernCheckBox { objectName: "protractorNumbers"; implicitHeight: 32; Layout.maximumHeight: 32; visible: root.tool==="protractor"; text: "Números"; checked: root.canvas.protractorNumbers; onToggled: root.canvas.protractorNumbers=checked }
+            Text { visible: root.tool==="protractor"; text: "Ângulo (°)"; color: Theme.secondary; font.pixelSize: Theme.caption }
+            C.Field { implicitHeight: 32; Layout.maximumHeight: 32; visible: root.tool==="protractor"; Layout.preferredWidth: 64; text: root.canvas.protractorAngle.toFixed(1); validator: DoubleValidator { bottom: -360; top: 360; locale: "C" } onEditingFinished: if(acceptableInput)root.canvas.protractorAngle=Number(text) }
             Text { visible: root.geometry; text: root.tool==="compass" ? "Raio (mm)" : "Comprimento (mm)"; color: Theme.secondary; font.pixelSize: Theme.caption }
             C.Field { implicitHeight: 32; Layout.maximumHeight: 32; objectName: "toolbarGeometryMeasure"; visible: root.geometry; Layout.preferredWidth: 72; text: root.tool==="compass" ? root.canvas.compassRadius.toFixed(1) : root.canvas.rulerLength.toFixed(1); validator: DoubleValidator { bottom: root.tool==="compass" ? 1 : 20; top: 500; locale: "C" } onEditingFinished: if(acceptableInput){if(root.tool==="compass")root.canvas.compassRadius=Number(text);else root.canvas.rulerLength=Number(text)} }
             Text { visible: root.tool==="ruler"; text: "Ângulo (°)"; color: Theme.secondary; font.pixelSize: Theme.caption }
@@ -79,8 +84,8 @@ Rectangle {
             C.ModernSlider { implicitHeight: 32; Layout.maximumHeight: 32; visible: root.tool==="ruler"; Layout.preferredWidth: 110; from: .5; to: 10; value: root.canvas.rulerSnapDistance; onMoved: root.canvas.rulerSnapDistance=value; Accessible.name: "Distância para ajuste à régua (mm)" }
             C.ModernCheckBox { implicitHeight: 32; Layout.maximumHeight: 32; visible: root.tool==="compass"; text: "Marcar centro"; checked: App.sessionCompassMarkCenter; onToggled: App.sessionCompassMarkCenter=checked }
             C.ActionButton { implicitHeight: 32; Layout.maximumHeight: 32; visible: root.tool==="compass"; text: "Traçar círculo"; onClicked: root.canvas.drawCompassCircle() }
-            C.ActionButton { implicitHeight: 32; Layout.maximumHeight: 32; visible: root.geometry; text: "Centralizar"; onClicked: root.canvas.centerGeometryTools() }
-            C.ActionButton { implicitHeight: 32; Layout.maximumHeight: 32; visible: root.geometry; text: "Ocultar"; onClicked: {if(root.tool==="compass")root.canvas.compassVisible=false;else root.canvas.rulerVisible=false;root.canvas.tool="pen"} }
+            C.ActionButton { implicitHeight: 32; Layout.maximumHeight: 32; visible: root.geometry || root.tool==="protractor"; text: "Centralizar"; onClicked: root.canvas.centerGeometryTools() }
+            C.ActionButton { implicitHeight: 32; Layout.maximumHeight: 32; visible: root.geometry || root.tool==="protractor"; text: "Ocultar"; onClicked: {if(root.tool==="protractor")root.canvas.protractorVisible=false;else if(root.tool==="compass")root.canvas.compassVisible=false;else root.canvas.rulerVisible=false;root.canvas.tool="pen"} }
             Text { visible: root.tool==="select" && !root.textContext; text: "Arraste para selecionar · Shift para adicionar · da direita para a esquerda inclui contato parcial"; color: Theme.secondary; font.pixelSize: Theme.caption }
             Text { visible: root.tool==="hand"; text: "Arraste para mover o quadro"; color: Theme.secondary; font.pixelSize: Theme.caption }
             C.TextFormatControls {

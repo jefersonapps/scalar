@@ -57,6 +57,11 @@ class CanvasItem : public QQuickItem {
     Q_PROPERTY(QString interactionHint READ interactionHint NOTIFY drawingChanged)
     Q_PROPERTY(QRectF toolbarExclusion MEMBER toolbarExclusion_)
     Q_PROPERTY(QRectF optionsExclusion MEMBER optionsExclusion_)
+    Q_PROPERTY(QVariantMap protractorGeometry READ protractorGeometry NOTIFY geometryToolsChanged)
+    Q_PROPERTY(bool protractorVisible READ protractorVisible WRITE setProtractorVisible NOTIFY geometryToolsChanged)
+    Q_PROPERTY(bool protractorNumbers READ protractorNumbers WRITE setProtractorNumbers NOTIFY geometryToolsChanged)
+    Q_PROPERTY(double protractorRadius READ protractorRadius WRITE setProtractorRadius NOTIFY geometryToolsChanged)
+    Q_PROPERTY(double protractorAngle READ protractorAngle WRITE setProtractorAngle NOTIFY geometryToolsChanged)
     Q_PROPERTY(QVariantMap rulerGeometry READ rulerGeometry NOTIFY geometryToolsChanged)
     Q_PROPERTY(QVariantMap compassGeometry READ compassGeometry NOTIFY geometryToolsChanged)
     Q_PROPERTY(bool rulerVisible READ rulerVisible WRITE setRulerVisible NOTIFY geometryToolsChanged)
@@ -165,6 +170,15 @@ public:
     Q_INVOKABLE void restorePageView();
     Q_INVOKABLE bool setZoom(double value);
     Q_INVOKABLE void cancelStroke();
+    QVariantMap protractorGeometry() const;
+    bool protractorVisible() const {return protractorVisible_;}
+    bool protractorNumbers() const {return protractorNumbers_;}
+    double protractorRadius() const {return protractor_.radiusMm;}
+    double protractorAngle() const {return -protractor_.angle*180/std::numbers::pi;}
+    void setProtractorVisible(bool value);
+    void setProtractorNumbers(bool value);
+    void setProtractorRadius(double value);
+    void setProtractorAngle(double value);
     QVariantMap rulerGeometry() const;
     QVariantMap compassGeometry() const;
     bool rulerVisible() const {return rulerVisible_;}
@@ -226,7 +240,7 @@ private:
     void panWheel(const QWheelEvent& event);
     double markerWidth_=4;
     double markerOpacity_=.10;
-    enum class State { Idle,Erasing,Drawing,PossibleHold,ShapePreview,CreatingShape,CreatingText,Panning,TouchGesture,Marquee,Moving,Resizing,Rotating,EditingHandle,FlippingRuler,MovingRuler,RotatingRuler,ResizingRuler,MovingCompass,ResizingCompass,DrawingCompass };
+    enum class State { Idle,Erasing,Drawing,PossibleHold,ShapePreview,CreatingShape,CreatingText,Panning,TouchGesture,Marquee,Moving,Resizing,Rotating,EditingHandle,MovingProtractor,RotatingProtractor,FlippingRuler,MovingRuler,RotatingRuler,ResizingRuler,MovingCompass,ResizingCompass,DrawingCompass };
     bool beginGeometryPointer(PointerSample sample);
     bool moveGeometryPointer(PointerSample sample);
     bool geometryGesture() const;
@@ -328,6 +342,11 @@ private:
     const Page* magneticPage_=nullptr;
     std::optional<Point> compassMagnet_;
     std::optional<MagneticGeometry::RulerSnap> rulerMagnet_;
+    ProtractorGeometry protractor_;
+    std::optional<ProtractorGeometry> protractorBefore_;
+    std::optional<Point> protractorMagnet_;
+    bool protractorVisible_=false,protractorNumbers_=true,guidedArc_=false;
+    std::optional<double> guidedArcBoundary_;
     RulerGeometry ruler_;
     CompassGeometry compass_;
     CompassSweep compassSweep_;

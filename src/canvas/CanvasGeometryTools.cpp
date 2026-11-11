@@ -1,9 +1,17 @@
 #include "CanvasItem.h"
 #include <cmath>
 namespace scalar {
+QVariantMap CanvasItem::protractorGeometry() const {
+    const auto c=view_.worldToScreen(protractor_.center);
+    return {{"x",c.x},{"y",c.y},{"radius",protractor_.radiusMm*view_.pixelsPerMm*view_.zoom},{"angle",-protractorAngle()},{"numbers",protractorNumbers_}};
+}
+void CanvasItem::setProtractorVisible(bool value){if(value==protractorVisible_)return;cancelStroke();protractorVisible_=value;protractorMagnet_.reset();if(value)protractor_.center=world({width()/2,height()/2});emit geometryToolsChanged();}
+void CanvasItem::setProtractorNumbers(bool value){protractorNumbers_=value;emit geometryToolsChanged();}
+void CanvasItem::setProtractorRadius(double value){if(!std::isfinite(value))return;cancelStroke();protractor_.radiusMm=std::clamp(value,20.,150.);emit geometryToolsChanged();}
+void CanvasItem::setProtractorAngle(double value){if(!std::isfinite(value))return;cancelStroke();protractor_.angle=-std::remainder(value,360.)*std::numbers::pi/180;emit geometryToolsChanged();}
 void CanvasItem::setGeometryMagnet(bool value){
     if(value==geometryMagnet_)return;
-    cancelStroke();geometryMagnet_=value;compassMagnet_.reset();rulerMagnet_.reset();emit geometryToolsChanged();
+    cancelStroke();protractorMagnet_.reset();geometryMagnet_=value;compassMagnet_.reset();rulerMagnet_.reset();emit geometryToolsChanged();
 }
 void CanvasItem::prepareGeometryMagnet(){
     if(!controller_||!controller_->page())return;
@@ -14,6 +22,7 @@ void CanvasItem::prepareGeometryMagnet(){
 QVariantList CanvasItem::magneticAnchors() const {
     QVariantList out;if(!geometryMagnet_||!controller_||magneticRevision_!=controller_->documentRevision()||magneticPage_!=controller_->page())return out;
     const auto append=[&](Point p){const auto q=view_.worldToScreen(p);out.push_back(QVariantMap{{"x",q.x},{"y",q.y}});};
+    if(protractorVisible_&&protractorMagnet_)append(*protractorMagnet_);
     if(state_==State::MovingCompass&&compassMagnet_)append(*compassMagnet_);
     if(state_==State::Idle&&rulerVisible_&&selectedGuide_=="ruler"&&rulerMagnet_){append(rulerMagnet_->first);if(!rulerMagnet_->single)append(rulerMagnet_->second);}
     if(state_==State::RotatingRuler&&rulerRotationPivot_)append(*rulerRotationPivot_);
@@ -39,7 +48,7 @@ QVariantMap CanvasItem::compassGeometry() const {
 }
 void CanvasItem::flipRuler(){cancelStroke();rulerMagnet_.reset();rulerFlipped_=!rulerFlipped_;selectedGuide_="ruler";selection_.clear();selectionUpdated();emit geometryToolsChanged();update();}
 void CanvasItem::centerGeometryTools(){
-    cancelStroke();rulerMagnet_.reset();const auto center=world({width()/2,height()/2});ruler_.origin=center-Point{ruler_.lengthMm/2,RulerGeometry::widthMm/2};ruler_.angle=0;compass_.center=center;emit geometryToolsChanged();
+    cancelStroke();rulerMagnet_.reset();const auto center=world({width()/2,height()/2});ruler_.origin=center-Point{ruler_.lengthMm/2,RulerGeometry::widthMm/2};ruler_.angle=0;compass_.center=center;protractor_.center=center;protractor_.angle=0;protractorMagnet_.reset();emit geometryToolsChanged();
 }
 void CanvasItem::setRulerVisible(bool value){if(value==rulerVisible_)return;cancelStroke();rulerMagnet_.reset();rulerVisible_=value;if(value){const auto center=world({width()/2,height()/2});ruler_.origin=center-Point{ruler_.lengthMm/2,RulerGeometry::widthMm/2};}emit geometryToolsChanged();}
 void CanvasItem::setCompassVisible(bool value){if(value==compassVisible_)return;cancelStroke();compassVisible_=value;if(value)compass_.center=world({width()/2,height()/2});emit geometryToolsChanged();}
@@ -48,11 +57,25 @@ void CanvasItem::setRulerSnapDistance(double value){if(!std::isfinite(value))ret
 void CanvasItem::setRulerLength(double value){if(!std::isfinite(value))return;cancelStroke();rulerMagnet_.reset();ruler_.lengthMm=std::clamp(value,20.,500.);emit geometryToolsChanged();}
 void CanvasItem::setRulerAngle(double value){if(!std::isfinite(value))return;cancelStroke();rulerMagnet_.reset();const auto center=ruler_.world({ruler_.lengthMm/2,RulerGeometry::widthMm/2});ruler_.angle=std::remainder(value*std::numbers::pi/180,2*std::numbers::pi);ruler_.origin=center-rotatePoint({ruler_.lengthMm/2,RulerGeometry::widthMm/2},{},ruler_.angle);emit geometryToolsChanged();}
 void CanvasItem::setCompassRadius(double value){if(!std::isfinite(value))return;cancelStroke();compass_.radiusMm=std::clamp(value,1.,500.);emit geometryToolsChanged();}
-void CanvasItem::resetGeometryTools(){cancelStroke();rulerMagnet_.reset();selectedGuide_.clear();rulerFlipped_=false;rulerVisible_=compassVisible_=false;if(tool_=="ruler"||tool_=="compass"){tool_="pen";emit toolChanged();}emit geometryToolsChanged();}
-bool CanvasItem::geometryGesture() const {return state_==State::FlippingRuler||state_==State::MovingRuler||state_==State::RotatingRuler||state_==State::ResizingRuler||state_==State::MovingCompass||state_==State::ResizingCompass||state_==State::DrawingCompass;}
+void CanvasItem::resetGeometryTools(){cancelStroke();rulerMagnet_.reset();selectedGuide_.clear();rulerFlipped_=false;rulerVisible_=compassVisible_=protractorVisible_=false;protractorMagnet_.reset();if(tool_=="ruler"||tool_=="compass"||tool_=="protractor"){tool_="pen";emit toolChanged();}emit geometryToolsChanged();}
+bool CanvasItem::geometryGesture() const {return state_==State::MovingProtractor||state_==State::RotatingProtractor||state_==State::FlippingRuler||state_==State::MovingRuler||state_==State::RotatingRuler||state_==State::ResizingRuler||state_==State::MovingCompass||state_==State::ResizingCompass||state_==State::DrawingCompass;}
 bool CanvasItem::beginGeometryPointer(PointerSample s){
     if(!std::isfinite(s.position.x)||!std::isfinite(s.position.y))return false;
     const double tolerance=12/(view_.pixelsPerMm*view_.zoom);const auto p=s.position;
+    if(protractorVisible_&&(tool_=="protractor"||tool_=="select"||tool_=="pen")){
+        const auto q=protractor_.local(p);
+        const bool rotate=length(q-Point{protractor_.radiusMm*.72,-protractor_.radiusMm*.16})<tolerance;
+        const bool nearArc=tool_=="pen"&&protractor_.nearArc(p,rulerSnapDistance_);
+        const bool body=q.y<=0&&length(q)<=protractor_.radiusMm;
+        if(rotate||(!nearArc&&(body||length(q)<tolerance))){
+            // Switch before capturing the gesture: setTool cancels pending input.
+            if(tool_=="select")setTool("protractor");
+            selectedGuide_="protractor";selection_.clear();selectionUpdated();
+            protractorBefore_=protractor_;protractorMagnet_.reset();dragStart_=lastPan_=p;
+            state_=rotate?State::RotatingProtractor:State::MovingProtractor;
+            emit geometryToolsChanged();return true;
+        }
+    }
     if(compassVisible_&&(tool_=="compass"||tool_=="ruler"||tool_=="select")){
         const double pencil=std::min(length(p-compass_.pencil()),length(p-compassDrawHandle())),center=length(p-compass_.center),opening=length(p-compass_.openingHandle()),hinge=length(p-compass_.hinge());
         const double nearest=std::min({pencil,center,opening,hinge});
@@ -113,7 +136,13 @@ bool CanvasItem::moveGeometryPointer(PointerSample s){
     if(!geometryGesture())return false;
     const auto p=s.position;
     if(!std::isfinite(p.x)||!std::isfinite(p.y))return true;
-    if(state_==State::MovingRuler&&rulerBefore_){ruler_=*rulerBefore_;ruler_.origin=rulerBefore_->origin+p-dragStart_;}
+    if(state_==State::MovingProtractor&&protractorBefore_)protractor_.center=protractorBefore_->center+p-dragStart_;
+    else if(state_==State::RotatingProtractor&&protractorBefore_){
+        const auto d=p-protractor_.center,a=dragStart_-protractor_.center;
+        protractor_.angle=protractorBefore_->angle+std::atan2(d.y,d.x)-std::atan2(a.y,a.x);
+        if(angleSnap_){const double step=std::numbers::pi/12;protractor_.angle=std::round(protractor_.angle/step)*step;}
+    }
+    else if(state_==State::MovingRuler&&rulerBefore_){ruler_=*rulerBefore_;ruler_.origin=rulerBefore_->origin+p-dragStart_;}
     else if(state_==State::RotatingRuler&&rulerBefore_){
         lastPan_=p;
         const auto center=rulerRotationPivot_.value_or(rulerBefore_->world({rulerBefore_->lengthMm/2,RulerGeometry::widthMm/2}));
@@ -184,6 +213,11 @@ void CanvasItem::finishGeometryPointer(){
         prepareGeometryMagnet();rulerMagnet_.reset();
         magneticGeometry_.alignRuler(ruler_,14./(view_.pixelsPerMm*view_.zoom),rulerMagnet_,rulerFlipped_?1:0,state_==State::RotatingRuler?rulerRotationPivot_:std::optional<Point>{});
     }
+    if(state_==State::MovingProtractor&&geometryMagnet_&&controller_&&controller_->page()){
+        prepareGeometryMagnet();protractorMagnet_=magneticGeometry_.nearest(protractor_.center,14./(view_.pixelsPerMm*view_.zoom));
+        if(protractorMagnet_)protractor_.center=*protractorMagnet_;
+    }
+    protractorBefore_.reset();
     const bool wasDrawing=state_==State::DrawingCompass;
     if(wasDrawing&&controller_){if(compassComplete_)commitCompassObject(compassCircle());else if(current_.samples.size()>1)commitCompassObject(current_);}
     rulerBefore_.reset();rulerRotationPivot_.reset();compassBefore_.reset();compassPointerAngle_.reset();state_=State::Idle;current_={};previewShape_.reset();if(wasDrawing)emit drawingChanged();emit geometryToolsChanged();update();

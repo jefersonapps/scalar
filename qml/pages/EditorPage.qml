@@ -129,6 +129,7 @@ Item {
         anchors.fill: board
         clip: true
         C.RulerGuide { canvas: board }
+        C.ProtractorGuide { canvas: board }
         C.CompassGuide { canvas: board }
         Repeater {
             model: board.magneticAnchors
