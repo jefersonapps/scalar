@@ -75,9 +75,8 @@ Item {
         if(inlineText.active){afterTextEdit=function(){App.requestImportProject(url)};inlineText.finishForImport()}
         else App.requestImportProject(url)
     }
-    readonly property bool inlineNavigation: width >= Theme.navigationInlineBreakpoint
-    readonly property real headerRowHeight: fullScreen ? Theme.touch+Theme.sm*2 : Theme.topbarHeight
-    readonly property real headerHeight: inlineNavigation ? headerRowHeight : headerRowHeight + navigator.implicitHeight + Theme.lg
+    readonly property real headerRowHeight: Theme.toolbarHeight
+    readonly property real headerHeight: headerRowHeight
     signal saveAsRequested()
     signal importBoardRequested()
     signal imageRequested()
@@ -85,7 +84,6 @@ Item {
     signal exportPdfRequested()
     function insertImage(url) { board.importImage(url) }
     function insertImages(urls) { board.importImages(urls) }
-    signal settingsRequested()
     signal backRequested()
     signal fullScreenRequested()
     readonly property bool fullScreen: root.Window.window && root.Window.window.visibility === Window.FullScreen
@@ -238,10 +236,10 @@ Item {
         anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
         anchors.leftMargin: Theme.lg;anchors.rightMargin: Theme.lg
         height: root.headerRowHeight
-        spacing: Theme.sm
-        C.IconButton { objectName: "editorBackButton"; iconName: "back"; label: "Voltar aos projetos"; enabled: !App.documentBusy; onClicked: root.finishTextThen(function(){ board.cancelStroke();root.backRequested() }) }
+        spacing: Theme.xs
+        C.IconButton { implicitWidth: 32; implicitHeight: 32; Layout.minimumWidth: implicitWidth; objectName: "editorBackButton"; iconName: "back"; label: "Voltar aos projetos"; enabled: !App.documentBusy; onClicked: root.finishTextThen(function(){ board.cancelStroke();root.backRequested() }) }
         ColumnLayout {
-            Layout.fillWidth: true; spacing: Theme.xs
+            Layout.preferredWidth: root.width>=1000 ? 120 : 64; Layout.minimumWidth: 48; Layout.maximumWidth: 140; spacing: Theme.xs
             Item {
                 id: projectTitle
                 Layout.fillWidth: true; implicitHeight: Theme.controlHeight-Theme.md
@@ -256,16 +254,26 @@ Item {
                     Keys.onEscapePressed: { projectTitle.editing=false; board.forceActiveFocus() }
                 }
             }
-            Text { text: App.pageInfinite ? "Quadro infinito" : App.pageWidth.toFixed(1) + " × " + App.pageHeight.toFixed(1) + " mm"; color: Theme.secondary; font.pixelSize: Theme.caption }
+            Text { text: App.pageInfinite ? "Quadro infinito" : App.pageWidth.toFixed(1) + " × " + App.pageHeight.toFixed(1) + " mm"; color: Theme.secondary; font.pixelSize: Theme.caption; elide: Text.ElideRight; Layout.fillWidth: true }
         }
-        Item { id: navigationSpace; visible: root.inlineNavigation; Layout.preferredWidth: navigator.implicitWidth; Layout.preferredHeight: navigator.implicitHeight }
-        C.ActionButton { id: fileButton;objectName: "fileMenuButton";text: "Arquivo";iconName: "folder";enabled: !App.documentBusy;onClicked: root.finishTextThen(function(){board.cancelStroke();root.togglePanel(fileOptions)}) }
-        C.ActionButton { id: pagesButton;objectName: "openPagesButton"; visible: root.width > Theme.zoomBreakpoint; iconName: "pages"; text: "Páginas"; onClicked: root.finishTextThen(function(){board.cancelStroke();root.togglePanel(pagesPanel)}) }
-        C.IconButton { iconName: "minus"; label: "Diminuir zoom"; visible: root.width > Theme.zoomBreakpoint; onClicked: board.zoomBy(1/1.2) }
+        ToolOptionsBar {
+            id: toolOptions
+            Layout.fillWidth: true; Layout.minimumWidth: 40; Layout.preferredWidth: implicitWidth
+            canvas: board; palette: penOptions
+            onCustomColorRequested: penOptions.chooseCustomColor()
+        }
+        RowLayout {
+            id: headerActions
+            objectName: "headerActions"
+            Layout.minimumWidth: implicitWidth; Layout.maximumWidth: implicitWidth
+            spacing: Theme.xs
+        C.ActionButton { implicitHeight: 32; Layout.minimumWidth: implicitWidth; id: fileButton;objectName: "fileMenuButton";text: root.width>=1100 ? "Arquivo" : "";iconName: "folder";enabled: !App.documentBusy;onClicked: root.finishTextThen(function(){board.cancelStroke();root.togglePanel(fileOptions)}) }
+        C.ActionButton { implicitHeight: 32; Layout.minimumWidth: implicitWidth; id: pagesButton;objectName: "openPagesButton"; visible: root.width > Theme.zoomBreakpoint; iconName: "pages"; text: root.width>=1400 ? "Páginas" : ""; onClicked: root.finishTextThen(function(){board.cancelStroke();root.togglePanel(pagesPanel)}) }
+        C.IconButton { implicitWidth: 32; implicitHeight: 32; Layout.minimumWidth: implicitWidth; iconName: "minus"; label: "Diminuir zoom"; visible: root.width > Theme.zoomBreakpoint; onClicked: board.zoomBy(1/1.2) }
         Item {
             id: zoomControl;objectName: "zoomControl"
-            visible: root.width>Theme.minimumWidth
-            Layout.preferredWidth: Theme.section+Theme.lg;Layout.preferredHeight: Theme.controlHeight
+            visible: root.width>900
+            Layout.minimumWidth: 64; Layout.preferredWidth: 64;Layout.preferredHeight: Theme.controlHeight
             property bool editing: false
             function finish() {
                 if(!editing)return
@@ -286,12 +294,12 @@ Item {
                 Keys.onEscapePressed: { zoomControl.editing=false;board.forceActiveFocus() }
             }
         }
-        C.IconButton { iconName: "plus"; label: "Aumentar zoom"; visible: root.width > Theme.zoomBreakpoint; onClicked: board.zoomBy(1.2) }
-        C.IconButton { iconName: "fit"; label: "Ajustar página"; onClicked: board.fitPage() }
-        C.IconButton { objectName: "fullScreenButton";iconName: root.fullScreen ? "restoreScreen" : "fullScreen";label: root.fullScreen ? "Sair da tela cheia (F11)" : "Tela cheia (F11)";selected: root.fullScreen;onClicked: root.fullScreenRequested() }
-        C.IconButton { id: backgroundButton;objectName: "backgroundOptionsButton";iconName: "background"; label: "Personalizar fundo e grade da página"; onClicked: root.finishTextThen(function(){board.cancelStroke();root.togglePanel(backgroundOptions)}) }
-        C.IconButton { objectName: "openBrowserButton"; iconName: "planet"; label: root.browserOpen ? "Fechar navegador lateral" : "Abrir navegador lateral"; selected: root.browserOpen; onClicked: root.finishTextThen(function(){board.cancelStroke();root.browserCreated=true;root.browserOpen=!root.browserOpen;if(!root.browserOpen)board.forceActiveFocus()}) }
-        C.IconButton { iconName: "settings"; label: "Configurações"; onClicked: root.finishTextThen(function(){board.cancelStroke();root.settingsRequested()}) }
+        C.IconButton { implicitWidth: 32; implicitHeight: 32; Layout.minimumWidth: implicitWidth; iconName: "plus"; label: "Aumentar zoom"; visible: root.width > Theme.zoomBreakpoint; onClicked: board.zoomBy(1.2) }
+        C.IconButton { implicitWidth: 32; implicitHeight: 32; Layout.minimumWidth: implicitWidth; iconName: "fit"; label: "Ajustar página"; onClicked: board.fitPage() }
+        C.IconButton { implicitWidth: 32; implicitHeight: 32; Layout.minimumWidth: implicitWidth; objectName: "fullScreenButton";iconName: root.fullScreen ? "restoreScreen" : "fullScreen";label: root.fullScreen ? "Sair da tela cheia (F11)" : "Tela cheia (F11)";selected: root.fullScreen;onClicked: root.fullScreenRequested() }
+        C.IconButton { implicitWidth: 32; implicitHeight: 32; Layout.minimumWidth: implicitWidth; id: backgroundButton; visible: root.width>=700;objectName: "backgroundOptionsButton";iconName: "background"; label: "Personalizar fundo e grade da página"; onClicked: root.finishTextThen(function(){board.cancelStroke();root.togglePanel(backgroundOptions)}) }
+        C.IconButton { implicitWidth: 32; implicitHeight: 32; Layout.minimumWidth: implicitWidth; objectName: "openBrowserButton"; visible: root.width>=800; iconName: "planet"; label: root.browserOpen ? "Fechar navegador lateral" : "Abrir navegador lateral"; selected: root.browserOpen; onClicked: root.finishTextThen(function(){board.cancelStroke();root.browserCreated=true;root.browserOpen=!root.browserOpen;if(!root.browserOpen)board.forceActiveFocus()}) }
+        }
     }
     C.GlassPopover {
         id: fileOptions;objectName: "fileOptions"
@@ -301,10 +309,13 @@ Item {
         contentItem: ColumnLayout {
             spacing: Theme.sm
             Text { text: "Arquivo";color: Theme.text;font.pixelSize: Theme.body;font.weight: Font.DemiBold }
+            C.ActionButton { objectName: "newBoardInFolderButton"; text: "Novo quadro"; iconName: "plus"; Layout.fillWidth: true; enabled: !App.documentBusy; onClicked: { fileOptions.close();root.finishNameEdit();root.finishTextThen(function(){board.cancelStroke();App.requestNewInCurrentFolder()}) } }
             C.ActionButton { objectName: "saveBoardAsButton";text: "Salvar como…";iconName: "save";Layout.fillWidth: true;enabled: !App.documentBusy;onClicked: { fileOptions.close();root.saveAsRequested() } }
             C.ActionButton { objectName: "importBoardButton";text: "Importar quadro…";iconName: "folder";Layout.fillWidth: true;enabled: !App.documentBusy;onClicked: { fileOptions.close();root.importBoardRequested() } }
             C.ActionButton { objectName: "importPdfButton";text: "Importar PDF…";iconName: "pdfImport";Layout.fillWidth: true;enabled: !App.documentBusy;onClicked: { fileOptions.close();root.importPdfRequested() } }
             C.ActionButton { objectName: "exportPdfButton";text: "Exportar PDF…";iconName: "pdfExport";Layout.fillWidth: true;enabled: !App.documentBusy && !App.exporting;onClicked: { fileOptions.close();root.exportPdfRequested() } }
+            C.ActionButton { visible: root.width<700; text: "Fundo da página"; Layout.fillWidth: true; onClicked: {fileOptions.close();backgroundOptions.open()} }
+            C.ActionButton { visible: root.width<800; text: "Navegador lateral"; Layout.fillWidth: true; onClicked: {fileOptions.close();root.browserCreated=true;root.browserOpen=!root.browserOpen} }
             Text { text: "O arquivo .scalar guarda todas as páginas e objetos para abrir em outro computador.";Layout.fillWidth: true;wrapMode: Text.WordWrap;color: Theme.secondary;font.pixelSize: Theme.caption }
         }
     }
@@ -313,7 +324,7 @@ Item {
         width: Math.min(implicitWidth,Math.max(0,board.width-Theme.xxl))
         backdropSource: board
         anchors.horizontalCenter: board.horizontalCenter
-        anchors.bottom: parent.bottom; anchors.bottomMargin: Theme.xxl
+        anchors.bottom: parent.bottom; anchors.bottomMargin: board.width < toolbar.width+2*navigator.width+Theme.lg*3 ? navigator.height+Theme.lg+Theme.md : Theme.xxl
         activeTool: board.tool
         penColor: board.penColor
         markerColor: board.markerColor
@@ -326,8 +337,9 @@ Item {
     }
     C.PageNavigator {
         id: navigator
-        x: root.inlineNavigation ? topbar.x + navigationSpace.x : (board.width-width)/2
-        y: root.inlineNavigation ? topbar.y+(topbar.height-height)/2 : root.headerRowHeight + Theme.sm
+        objectName: "pageNavigator"
+        x: Math.max(Theme.lg,board.width-width-Theme.lg)
+        y: root.height-height-Theme.lg
         onPreviousRequested: root.finishTextThen(function(){board.cancelStroke();App.selectPage(App.currentPage-1);board.forceActiveFocus()})
         onNextRequested: root.finishTextThen(function(){board.cancelStroke();App.selectPage(App.currentPage+1);board.forceActiveFocus()})
         onAddRequested: root.finishTextThen(function(){board.cancelStroke();App.addPage();board.forceActiveFocus()})
@@ -394,7 +406,6 @@ Item {
         text: board.drawing ? board.interactionHint : App.status
         color: Theme.secondary; font.pixelSize: Theme.caption; elide: Text.ElideRight
     }
-    Text { anchors.right: board.right; anchors.bottom: parent.bottom; anchors.margins: Theme.lg; visible: board.width > Theme.hintBreakpoint; text: "Rolagem para mover · Alt + rolagem na horizontal · Ctrl + rolagem para zoom"; color: Theme.secondary; font.pixelSize: Theme.caption }
     Shortcut { sequence: "E"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.tool = "eraser" }
     readonly property bool penColorShortcutsEnabled: {
         const focus=root.Window.window ? root.Window.window.activeFocusItem : null

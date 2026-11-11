@@ -18,9 +18,12 @@ C.GlassPopover {
     readonly property color savedCustomColor: marker ? App.customMarkerColor : App.customPenColor
     readonly property var paletteColors: inkColors.concat([savedCustomColor])
     function setColor(value) { if(canvas) { if(marker)canvas.markerColor=value;else canvas.penColor=value } }
+    function chooseCustomColor() { customColor.choose(currentColor) }
     function pickColor(index) { if(index>=0 && index<paletteColors.length)setColor(paletteColors[index]) }
     C.CustomColorDialog {
         id: customColor; objectName: "penColorDialog"
+        // The toolbar can open this dialog before this popover has a window.
+        parent: root.canvas ? root.canvas.Overlay.overlay : null
         onPreviewed: value => root.setColor(value)
         onChosen: value => {
             if(committed) {
@@ -46,7 +49,7 @@ C.GlassPopover {
             Text { text: "Espessura máxima"; color: Theme.secondary; font.pixelSize: Theme.caption; Layout.fillWidth: true }
             Text { text: root.canvas ? (root.marker ? root.canvas.markerWidth : root.canvas.penWidth).toFixed(2) + " mm" : ""; color: Theme.text; font.pixelSize: Theme.caption }
         }
-        C.ModernSlider { implicitHeight: Theme.xxl; Layout.fillWidth: true; from: root.marker ? 1 : 0.2; to: root.marker ? 20 : 3; value: root.canvas ? (root.marker ? root.canvas.markerWidth : root.canvas.penWidth) : 0.40; onMoved: { if(root.canvas) { if(root.marker) root.canvas.markerWidth = value; else root.canvas.penWidth = value } } }
+        C.ThicknessPresets { objectName: "penThicknessPresets"; values: root.marker ? [1, 5.75, 10.5, 15.25, 20] : [0.1, 0.4, 1.6, 2.3, 3]; value: root.canvas ? (root.marker ? root.canvas.markerWidth : root.canvas.penWidth) : .4; onPicked: thickness => { if(root.canvas){if(root.marker)root.canvas.markerWidth=thickness;else root.canvas.penWidth=thickness} } }
         RowLayout {
             visible: root.marker
             Text { text: "Opacidade"; color: Theme.secondary; font.pixelSize: Theme.caption; Layout.fillWidth: true }

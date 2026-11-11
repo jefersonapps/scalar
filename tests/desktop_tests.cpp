@@ -675,6 +675,55 @@ private slots:
         QTest::keyClick(window,Qt::Key_Return,Qt::ControlModifier);QTRY_VERIFY(!inlineEditor->property("active").toBool());
         QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
     }
+    void newBoardKeepsCurrentFolderAndSavesBeforeSwitching(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.filePath("library"));const auto folder=controller.saveFolder({},"Aulas","#268fb5");
+        controller.newDefaultInFolder(folder);QTRY_VERIFY(!controller.busy());
+        for(bool external:{false,true}){
+            if(external){QVERIFY(QDir().mkpath(directory.filePath("external")));controller.saveAs(QUrl::fromLocalFile(directory.filePath("external/current.board")));QTRY_VERIFY(!controller.busy());}
+            const auto before=controller.recentProjects().front().toMap();const auto oldId=controller.page()->id;
+            StrokeObject stroke{newId(),{},{{{20,20},1},{{50,50},1}}};controller.addStroke(stroke);
+            controller.requestNewInCurrentFolder();QTRY_VERIFY(!controller.leaving());QVERIFY(controller.page()->id!=oldId);QTRY_VERIFY(!controller.busy());
+            const auto after=controller.recentProjects().front().toMap();QCOMPARE(after["folderId"].toString(),folder);QCOMPARE(QFileInfo(after["path"].toString()).absolutePath(),QFileInfo(before["path"].toString()).absolutePath());
+            const auto saved=ProjectStore::load(before["path"].toString());QVERIFY(saved);QCOMPARE(saved.project.pages[0].strokes.size(),std::size_t(1));QVERIFY(controller.page()->strokes.empty());
+        }
+        const auto path=controller.recentProjects().front().toMap()["path"].toString();const auto id=controller.page()->id;QVERIFY(QFile::remove(path));QVERIFY(QDir().mkdir(path));
+        StrokeObject stroke{newId(),{},{{{20,20},1},{{50,50},1}}};controller.addStroke(stroke);controller.requestNewInCurrentFolder();QTRY_VERIFY(!controller.leaveError().isEmpty());QCOMPARE(controller.page()->id,id);QVERIFY(controller.dirty());
+        QVERIFY(QDir().rmdir(path));controller.retryLeaving();QTRY_VERIFY(!controller.leaving());QVERIFY(controller.page()->id!=id);QTRY_VERIFY(!controller.busy());QVERIFY(controller.shutdown());
+    }
+    void toolbarCustomColorOpensBeforeLegacyPanel(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);
+        auto* panel=window->findChild<QObject*>("penOptions");auto* dialog=window->findChild<QObject*>("penColorDialog");QVERIFY(panel);QVERIFY(dialog);
+        auto* trigger=findVisualItem(window->contentItem(),"toolbarCustomColor");QVERIFY(trigger);
+        const QColor custom("#db7b28");
+        for(const auto& tool:{"pen","marker","pen"}){
+            canvas->setTool(tool);QCoreApplication::processEvents();const bool marker=canvas->tool()=="marker";const auto before=marker?canvas->markerColor():canvas->penColor();
+            QVERIFY(!panel->property("visible").toBool());QVERIFY(QMetaObject::invokeMethod(trigger,"clicked"));QTRY_VERIFY(dialog->property("opened").toBool());QVERIFY(!canvas->isEnabled());
+            QVERIFY(QMetaObject::invokeMethod(dialog,"load",Q_ARG(QVariant,custom.name())));QCOMPARE((marker?canvas->markerColor():canvas->penColor()).name(),custom.name());
+            QVERIFY(QMetaObject::invokeMethod(dialog,"close"));QTRY_VERIFY(!dialog->property("visible").toBool());QCOMPARE((marker?canvas->markerColor():canvas->penColor()).name(),before.name());QVERIFY(canvas->isEnabled());
+        }
+        QVERIFY(QMetaObject::invokeMethod(trigger,"clicked"));QTRY_VERIFY(dialog->property("opened").toBool());QVERIFY(QMetaObject::invokeMethod(dialog,"load",Q_ARG(QVariant,custom.name())));
+        auto* confirm=findVisualItem(window->contentItem(),"confirmCustomColor");QVERIFY(confirm);QVERIFY(QMetaObject::invokeMethod(confirm,"clicked"));QTRY_VERIFY(!dialog->property("visible").toBool());QCOMPARE(controller.customPenColor().name(),custom.name());QCOMPARE(canvas->penColor().name(),custom.name());
+        QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
+    }
+    void contextualToolbarExposesInkControls(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));window->resize(1280,800);
+        auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);
+        auto* bar=findVisualItem(window->contentItem(),"toolOptionsBar");QVERIFY(bar);QVERIFY(bar->mapToScene({0,0}).y()<canvas->mapToScene({0,0}).y());
+        const auto click=[&](const QString& name){auto* button=findVisualItem(bar,name);if(!button)return false;QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,button->mapToScene({button->width()/2,button->height()/2}).toPoint());return true;};
+        canvas->setTool("pen");QCoreApplication::processEvents();QCOMPARE(canvas->penWidth(),.4);QVERIFY(findVisualItem(bar,"thicknessPreset_1")->property("selected").toBool());QVERIFY(click("thicknessPreset_0"));QCOMPARE(canvas->penWidth(),.1);QVERIFY(click("thicknessPreset_1"));QCOMPARE(canvas->penWidth(),.4);QVERIFY(click("thicknessPreset_4"));QCOMPARE(canvas->penWidth(),3.);
+        auto* color=findVisualItem(bar,"toolbarInkColor_2");QVERIFY(color);const auto swatch=color->property("swatch").value<QColor>();QVERIFY(click("toolbarInkColor_2"));QCOMPARE(canvas->penColor(),swatch);
+        canvas->setTool("marker");QCoreApplication::processEvents();QVERIFY(click("thicknessPreset_2"));QCOMPARE(canvas->markerWidth(),10.5);QCOMPARE(canvas->penWidth(),3.);
+        canvas->setTool("eraser");QCoreApplication::processEvents();QVERIFY(findVisualItem(bar,"toolbarEraserRadius")->isVisible());QVERIFY(!findVisualItem(bar,"toolbarThicknessPresets")->isVisible());
+        for(const auto& tool:{"ruler","compass","rectangle","select","hand","text","pen"}){canvas->setTool(tool);QCoreApplication::processEvents();}
+        QTest::qWait(80);QVERIFY(window->grabWindow().save("/tmp/scalar-contextual-toolbar.png"));
+        window->resize(520,720);QCoreApplication::processEvents();QVERIFY(bar->width()<=window->width());
+        QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
+    }
     void rapidUndoRedoOnDensePage(){
         QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
         InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(800);canvas.setController(&controller);
@@ -1977,8 +2026,8 @@ private slots:
         QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());
         auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));QTRY_VERIFY(!controller.busy());
         auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);
-        auto* next=findVisualItem(window->contentItem(),"nextPageButton");QVERIFY(next);QVERIFY(next->mapToScene(QPointF(0,next->height())).y()<=canvas->y());
-        QDir().mkpath("screenshots");QVERIFY(window->grabWindow().save("screenshots/quick-pages-dark-top.png"));
+        auto* next=findVisualItem(window->contentItem(),"nextPageButton");QVERIFY(next);QVERIFY(next->mapToScene(QPointF(0,0)).y()>window->height()-100);QVERIFY(next->mapToScene(QPointF(next->width(),0)).x()>window->width()-100);
+        QDir().mkpath("screenshots");QVERIFY(window->grabWindow().save("screenshots/quick-pages-dark-bottom.png"));
         auto click=[&](const QString& name){auto* button=findVisualItem(window->contentItem(),name);if(!button)return false;QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,button->mapToScene(QPointF(button->width()/2,button->height()/2)).toPoint());return true;};
         QVERIFY(click("nextPageButton"));QCOMPARE(controller.currentPage(),1);QVERIFY(controller.page()->strokes.empty());QVERIFY(click("previousPageButton"));QCOMPARE(controller.currentPage(),0);
         QVERIFY(!findVisualItem(window->contentItem(),"previousPageButton")->isEnabled());QVERIFY(click("pageCounterButton"));auto* panel=window->findChild<QObject*>("pagesPanel");QVERIFY(panel);QTRY_VERIFY(panel->property("opened").toBool());QVERIFY(QMetaObject::invokeMethod(panel,"close"));QTRY_VERIFY(!panel->property("visible").toBool());
@@ -1992,7 +2041,7 @@ private slots:
         auto* exportButton=findVisualItem(window->contentItem(),"exportPdfButton");QVERIFY(exportButton);QVERIFY(exportButton->isVisible());QVERIFY(exportButton->mapToScene(QPointF(exportButton->width(),0)).x()<=window->width());
         QVERIFY(window->grabWindow().save("screenshots/editor-file-actions-small.png"));
         QVERIFY(QMetaObject::invokeMethod(fileOptions,"close"));QTRY_VERIFY(!fileOptions->property("visible").toBool());
-        QVERIFY(next->mapToScene(QPointF(0,next->height())).y()<=canvas->y());
+        QVERIFY(next->mapToScene(QPointF(0,0)).y()>window->height()-100);QVERIFY(next->mapToScene(QPointF(next->width(),0)).x()>window->width()-100);
         QDir().mkpath("screenshots");QVERIFY(window->grabWindow().save("screenshots/quick-pages-dark-small.png"));QCOMPARE(warnings.size(),0);QVERIFY(controller.shutdown());
     }
     void infiniteCanvasDrawsOutsidePhysicalPage(){

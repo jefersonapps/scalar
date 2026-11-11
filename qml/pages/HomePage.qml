@@ -84,7 +84,7 @@ Item {
                 }
                 C.IconButton { objectName: "openTrashButton"; iconName: "trash"; label: "Lixeira (" + App.trashedProjects.length + ")"; onClicked: trash.open() }
                 C.IconButton { objectName: "homeFullScreenButton";iconName: root.fullScreen ? "restoreScreen" : "fullScreen";label: root.fullScreen ? "Sair da tela cheia (F11)" : "Tela cheia (F11)";selected: root.fullScreen;onClicked: root.fullScreenRequested() }
-                C.IconButton { iconName: "settings"; label: "Configurações"; onClicked: root.settingsRequested() }
+                C.IconButton { objectName: "homeSettingsButton"; iconName: "settings"; label: "Configurações"; onClicked: root.settingsRequested() }
             }
         }
         Rectangle {

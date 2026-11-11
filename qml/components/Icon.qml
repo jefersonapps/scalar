@@ -7,6 +7,9 @@ Item {
     property color color: Theme.text
     implicitWidth: Theme.icon
     implicitHeight: Theme.icon
+    // The software Shape renderer needs an item-sized surface to respect
+    // clipping when icons are inside a horizontally scrolling toolbar.
+    layer.enabled: GraphicsInfo.api === GraphicsInfo.Software
     readonly property var paths: ({
         home: "M3 10 L12 3 L21 10 M5 9 V21 H10 V15 H14 V21 H19 V9",
         planet: "M20 12 A8 8 0 1 1 4 12 A8 8 0 1 1 20 12 M4 12 H20 M12 4 C7 8 7 16 12 20 C17 16 17 8 12 4 M2 18 Q10 15 22 6",
@@ -59,7 +62,12 @@ Item {
         triangle: "M11 4 Q12 2 13 4 L22 19 Q23 21 21 21 H3 Q1 21 2 19 Z",
         moon: "M20 15 A9 9 0 1 1 9 3 A8 8 0 0 0 20 15"
     })
-    Shape {
+    // Hidden controls do not need a shape node. Recreate it on reveal to avoid
+    // stale software Shape renderer paths when contextual controls change.
+    Loader {
+        anchors.centerIn: parent
+        active: root.visible
+        sourceComponent: Shape {
         width: 24; height: 24
         anchors.centerIn: parent
         scale: Math.min(root.width, root.height) / 24
@@ -71,5 +79,6 @@ Item {
             joinStyle: ShapePath.RoundJoin
             PathSvg { path: root.paths[root.name] || root.paths.page }
         }
+    }
     }
 }

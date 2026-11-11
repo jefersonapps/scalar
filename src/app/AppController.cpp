@@ -239,7 +239,8 @@ void AppController::newProject(const QString& name,const QString& preset,double 
     const auto rgba=(std::uint32_t(chosen.red())<<24)|(std::uint32_t(chosen.green())<<16)|(std::uint32_t(chosen.blue())<<8)|255;
     p.pages.push_back({newId(),size,rgba,{}});
     for(const auto& preset:backgroundPresets())if(preset.toMap().value("name").toString()==background){std::uint32_t ignored;parseBackground(preset.toMap(),ignored,p.pages[0].backgroundStyle);}
-    const QString path=dataDir_+"/projects/"+QString::fromStdString(p.id)+".board";
+    const QString directory=newProjectDirectory_.isEmpty()?dataDir_+"/projects":newProjectDirectory_;
+    const QString path=directory+"/"+QString::fromStdString(p.id)+".board";
     install(std::move(p),path); mutate(); beginSave();
 }
 void AppController::newDefault(){newProject("Novo quadro",defaultSize(),210,297,defaultLandscape(),defaultBackground());}
@@ -432,6 +433,7 @@ void AppController::openPath(const QString& path){
     loadWatcher_.setFuture(QtConcurrent::run([path]{return ProjectStore::load(path,ImageLoading::FirstPage);}));emit changed();
 }
 void AppController::home(){if(loading_||!flush())return;project_={};status_.clear();currentPage_=0;images_.clear();textRasterInputs_.clear();textMeshes_.clear();textMathColors_.clear();textSizes_.clear();histories_.clear();thumbnails_.clear();pdfCache_.clear();thumbnailsTimer_.stop();++revision_;emit pagesChanged();emit pageChanged();emit documentChanged();emit changed();}
+void AppController::requestNewInCurrentFolder(){if(active()&&!loading_&&!leaving())beginLeaving(LeaveAction::NewProject);}
 void AppController::requestHome(){beginLeaving(LeaveAction::Home);}
 void AppController::requestShutdown(){beginLeaving(LeaveAction::Shutdown);}
 void AppController::beginLeaving(LeaveAction action){
@@ -455,6 +457,16 @@ void AppController::continueLeaving(){
     const auto action=leaveAction_;leaveTimer_.stop();leaveAction_=LeaveAction::None;
     if(action==LeaveAction::Home)home();
     else if(action==LeaveAction::ImportProject)beginProjectImport();
+    else if(action==LeaveAction::NewProject){
+        // The previous project is saved before choosing the destination for
+        // its successor, including both library folders and external paths.
+        QString folder;
+        for(const auto& value:library_->recent()){const auto record=value.toMap();if(record.value("id").toString()==QString::fromStdString(project_.id)){folder=record.value("folderId").toString();break;}}
+        newProjectDirectory_=QFileInfo(path_).absolutePath();
+        pendingFolderId_=folder;
+        newDefault();
+        newProjectDirectory_.clear();
+    }
     else if(shutdown()){emit changed();emit shutdownReady();}
 }
 void AppController::recover(){if(!recovery_)return;recovery_=false;openPath(dataDir_+"/session.board");}

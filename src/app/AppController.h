@@ -220,6 +220,7 @@ public:
     Q_INVOKABLE void discardRecovery();
     Q_INVOKABLE bool shutdown();
     Q_INVOKABLE void requestHome();
+    Q_INVOKABLE void requestNewInCurrentFolder();
     Q_INVOKABLE void requestPageThumbnails(int first,int count);
     Q_INVOKABLE void requestShutdown();
     Q_INVOKABLE void retryLeaving();
@@ -256,7 +257,7 @@ private:
     void beginSave();
     bool flush();
     void finishSave();
-    enum class LeaveAction { None, Home, Shutdown, ImportProject };
+    enum class LeaveAction { None, Home, Shutdown, ImportProject, NewProject };
     LeaveAction leaveAction_=LeaveAction::None;
     QString leaveError_;
     QTimer leaveTimer_;
@@ -291,7 +292,7 @@ private:
     QFutureWatcher<QString> exportWatcher_;
     bool exportPending_=false;
     std::unique_ptr<Library> library_;
-    QString dataDir_,path_,status_,pendingOpenPath_,pendingFolderId_;
+    QString dataDir_,path_,status_,pendingOpenPath_,pendingFolderId_,newProjectDirectory_;
     bool trashPending_=false;
     QTimer autosave_,trashExpiry_;
     QFutureWatcher<TrashResult> trashWatcher_;

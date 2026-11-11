@@ -145,7 +145,7 @@ void CanvasItem::setTool(const QString& t){
     handToolBefore_.clear();tabletToolBefore_.clear();cancelStroke();selectedGuide_.clear();tool_=t;updateCursor();if(t=="ruler"||t=="compass"){selection_.clear();selectionUpdated();}if(t=="ruler")setRulerVisible(true);if(t=="compass")setCompassVisible(true);emit geometryToolsChanged();emit toolChanged();
 }
 void CanvasItem::setPenColor(const QColor& c){if(!c.isValid())return;color_=c;style_.rgba=(std::uint32_t(c.red())<<24)|(std::uint32_t(c.green())<<16)|(std::uint32_t(c.blue())<<8)|255;emit penChanged();}
-void CanvasItem::setPenWidth(double w){style_.maxWidthMm=std::clamp(w,0.2,5.0);style_.minWidthMm=std::min(0.15,style_.maxWidthMm);emit penChanged();}
+void CanvasItem::setPenWidth(double w){style_.maxWidthMm=std::clamp(w,0.1,5.0);style_.minWidthMm=std::min(0.15,style_.maxWidthMm);emit penChanged();}
 void CanvasItem::setPressureGamma(double g){style_.gamma=std::clamp(g,0.3,3.0);emit penChanged();}
 QString CanvasItem::shapeLineStyle() const {return manualShapePattern_==LinePattern::Dashed?"dashed":manualShapePattern_==LinePattern::Dotted?"dotted":"solid";}
 void CanvasItem::setShapeLineStyle(const QString& value){

@@ -91,7 +91,7 @@ ApplicationWindow {
     }
     Component {
         id: editor
-        EditorPage { overlaysOpen: App.leaving || settings.visible || saveFile.visible || openFile.visible || imageFile.visible || pdfFile.visible || exportFile.visible || pdfImport.visible || newProject.visible || recovery.visible; onBackRequested: App.requestHome(); onSaveAsRequested: saveFile.open(); onImportBoardRequested: openFile.open(); onImageRequested: imageFile.open(); onImportPdfRequested: pdfFile.open(); onExportPdfRequested: exportFile.openForProject(); onSettingsRequested: settings.open();onFullScreenRequested: window.toggleFullScreen() }
+        EditorPage { overlaysOpen: App.leaving || settings.visible || saveFile.visible || openFile.visible || imageFile.visible || pdfFile.visible || exportFile.visible || pdfImport.visible || newProject.visible || recovery.visible; onBackRequested: App.requestHome(); onSaveAsRequested: saveFile.open(); onImportBoardRequested: openFile.open(); onImageRequested: imageFile.open(); onImportPdfRequested: pdfFile.open(); onExportPdfRequested: exportFile.openForProject(); onFullScreenRequested: window.toggleFullScreen() }
     }
     NewProjectDialog { id: newProject }
     SettingsDialog { id: settings }
