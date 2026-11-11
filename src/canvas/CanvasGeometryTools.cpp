@@ -56,8 +56,9 @@ void CanvasItem::setRulerSnap(bool value){cancelStroke();rulerSnap_=value;emit g
 void CanvasItem::setRulerSnapDistance(double value){if(!std::isfinite(value))return;cancelStroke();rulerSnapDistance_=std::clamp(value,.5,10.);emit geometryToolsChanged();}
 void CanvasItem::setRulerLength(double value){if(!std::isfinite(value))return;cancelStroke();rulerMagnet_.reset();ruler_.lengthMm=std::clamp(value,20.,500.);emit geometryToolsChanged();}
 void CanvasItem::setRulerAngle(double value){if(!std::isfinite(value))return;cancelStroke();rulerMagnet_.reset();const auto center=ruler_.world({ruler_.lengthMm/2,RulerGeometry::widthMm/2});ruler_.angle=std::remainder(value*std::numbers::pi/180,2*std::numbers::pi);ruler_.origin=center-rotatePoint({ruler_.lengthMm/2,RulerGeometry::widthMm/2},{},ruler_.angle);emit geometryToolsChanged();}
-void CanvasItem::setCompassRadius(double value){if(!std::isfinite(value))return;cancelStroke();compass_.radiusMm=std::clamp(value,1.,500.);emit geometryToolsChanged();}
-void CanvasItem::resetGeometryTools(){cancelStroke();rulerMagnet_.reset();selectedGuide_.clear();rulerFlipped_=false;rulerVisible_=compassVisible_=protractorVisible_=false;protractorMagnet_.reset();if(tool_=="ruler"||tool_=="compass"||tool_=="protractor"){tool_="pen";emit toolChanged();}emit geometryToolsChanged();}
+void CanvasItem::setCompassRadius(double value){if(compassLocked_||!std::isfinite(value))return;cancelStroke();compass_.radiusMm=std::clamp(value,1.,500.);emit geometryToolsChanged();}
+void CanvasItem::setCompassLocked(bool value){if(value==compassLocked_)return;cancelStroke();compassLocked_=value;emit geometryToolsChanged();}
+void CanvasItem::resetGeometryTools(){cancelStroke();rulerMagnet_.reset();selectedGuide_.clear();rulerFlipped_=false;compassLocked_=false;rulerVisible_=compassVisible_=protractorVisible_=false;protractorMagnet_.reset();if(tool_=="ruler"||tool_=="compass"||tool_=="protractor"){tool_="pen";emit toolChanged();}emit geometryToolsChanged();}
 bool CanvasItem::geometryGesture() const {return state_==State::MovingProtractor||state_==State::RotatingProtractor||state_==State::FlippingRuler||state_==State::MovingRuler||state_==State::RotatingRuler||state_==State::ResizingRuler||state_==State::MovingCompass||state_==State::ResizingCompass||state_==State::DrawingCompass;}
 bool CanvasItem::beginGeometryPointer(PointerSample s){
     if(!std::isfinite(s.position.x)||!std::isfinite(s.position.y))return false;
@@ -157,9 +158,9 @@ bool CanvasItem::moveGeometryPointer(PointerSample s){
         lastPan_=p;
         // Preserve the initial grab offset: the pencil follows the drag without jumping.
         const auto tip=compassBefore_->pencil()+p-dragStart_,d=tip-compass_.center;
-        compass_.radiusMm=std::clamp(length(d),1.,500.);
+        if(!compassLocked_)compass_.radiusMm=std::clamp(length(d),1.,500.);
         if(length(d)>.1)compass_.angle=std::atan2(d.y,d.x);
-        if(angleSnap_)compass_.radiusMm=std::round(compass_.radiusMm);
+        if(angleSnap_&&!compassLocked_)compass_.radiusMm=std::round(compass_.radiusMm);
     }
     else if(state_==State::DrawingCompass){
         if(!compassBefore_)return true;

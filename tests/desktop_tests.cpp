@@ -842,7 +842,7 @@ private slots:
         for(double zoom:{.5,1.,2.}){
             canvas.setZoom(zoom);point=canvas.screenPoint({target.x,target.y});send(QEvent::MouseButtonPress,center());send(QEvent::MouseMove,point+QPointF(4,3));QVERIFY(QLineF(center(),point).length()<1e-7);QCOMPARE(canvas.magneticAnchors().size(),1);
             send(QEvent::MouseMove,point+QPointF(6,3));QVERIFY(QLineF(center(),point).length()<1e-7);
-            const auto far=point+QPointF(80,80);send(QEvent::MouseMove,far);QVERIFY(QLineF(center(),far).length()<1e-7);QVERIFY(canvas.magneticAnchors().empty());send(QEvent::MouseButtonRelease,far);
+            const auto distantPoint=point+QPointF(80,80);send(QEvent::MouseMove,distantPoint);QVERIFY(QLineF(center(),distantPoint).length()<1e-7);QVERIFY(canvas.magneticAnchors().empty());send(QEvent::MouseButtonRelease,distantPoint);
         }
         controller.undo();point=canvas.screenPoint({target.x,target.y});send(QEvent::MouseButtonPress,center());send(QEvent::MouseMove,point+QPointF(4,3));QVERIFY(QLineF(center(),point+QPointF(4,3)).length()<1e-7);send(QEvent::MouseButtonRelease,center());
         QCOMPARE(controller.page()->strokes.size(),std::size_t(1));QVERIFY(controller.shutdown());
@@ -2191,6 +2191,23 @@ private slots:
         QVERIFY(QLineF(canvas.screenPoint({last.x,last.y}),QPointF(before["px"].toDouble(),before["py"].toDouble())).length()<1e-6);
         QVERIFY(controller.shutdown());
     }
+    void compassOpeningLock(){
+        QTemporaryDir dir;AppController controller(nullptr,dir.path());controller.newDefault();
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();canvas.setTool("compass");
+        canvas.setCompassRadius(25);canvas.setCompassLocked(true);
+        canvas.setCompassRadius(40);QCOMPARE(canvas.compassRadius(),25.);
+        const auto before=canvas.compassGeometry();
+        const QPointF opening(before["ox"].toDouble(),before["oy"].toDouble());
+        const auto send=[&](QEvent::Type type,QPointF pos){QMouseEvent event(type,pos,pos,Qt::LeftButton,type==QEvent::MouseButtonRelease?Qt::NoButton:Qt::LeftButton,Qt::NoModifier);QCoreApplication::sendEvent(&canvas,&event);};
+        send(QEvent::MouseButtonPress,opening);send(QEvent::MouseMove,opening+QPointF(20,10));send(QEvent::MouseButtonRelease,opening+QPointF(20,10));
+        QCOMPARE(canvas.compassRadius(),25.);
+        QCOMPARE(canvas.compassGeometry()["cx"],before["cx"]);
+        QCOMPARE(canvas.compassGeometry()["cy"],before["cy"]);
+        QVERIFY(std::abs(canvas.compassGeometry()["py"].toDouble()-before["py"].toDouble())>1);
+        QVERIFY(controller.page()->strokes.empty());
+        canvas.setCompassLocked(false);canvas.setCompassRadius(40);QCOMPARE(canvas.compassRadius(),40.);
+        QVERIFY(controller.shutdown());
+    }
     void rulerSnapAndCompassGestures(){
         QTemporaryDir dir;AppController controller(nullptr,dir.path());controller.setTheme("Dark");controller.newDefault();controller.setRecognitionEnabled(false);
         QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());
@@ -2213,11 +2230,15 @@ private slots:
         const auto compassCenter=canvas->mapToScene({compass["cx"].toDouble(),compass["cy"].toDouble()}).toPoint();QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,compassCenter);QTest::mouseMove(window,compassCenter+QPoint(15,8));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,compassCenter+QPoint(15,8));QVERIFY(std::abs(canvas->compassGeometry()["cx"].toDouble()-compass["cx"].toDouble()-15)<1);
         compass=canvas->compassGeometry();const auto opening=canvas->mapToScene({compass["ox"].toDouble(),compass["oy"].toDouble()}).toPoint();const auto openingEnd=opening+QPoint(qRound(compass["radius"].toDouble()*.4),0);QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,opening);QTest::mouseMove(window,opening);QVERIFY(std::abs(canvas->compassRadius()-25)<.1);QTest::mouseMove(window,openingEnd);QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,openingEnd);QVERIFY(std::abs(canvas->compassRadius()-35)<1);QCOMPARE(canvas->compassGeometry()["cx"],compass["cx"]);canvas->setCompassRadius(25);
         compass=canvas->compassGeometry();const auto grip=canvas->mapToScene({compass["ox"].toDouble(),compass["oy"].toDouble()}).toPoint()+QPoint(3,-2);QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,grip);QTest::mouseMove(window,grip+QPoint(14,21));const auto opened=canvas->compassGeometry();QVERIFY(std::abs(opened["px"].toDouble()-compass["px"].toDouble()-14)<1);QVERIFY(std::abs(opened["py"].toDouble()-compass["py"].toDouble()-21)<1);QCOMPARE(opened["cx"],compass["cx"]);QTest::keyClick(window,Qt::Key_Escape);QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,grip+QPoint(14,21));QCOMPARE(canvas->compassGeometry()["px"],compass["px"]);
-        const auto hinge=canvas->mapToScene({compass["hx"].toDouble(),compass["hy"].toDouble()}).toPoint();QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,hinge);QTest::mouseMove(window,hinge+QPoint(-12,8));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,hinge+QPoint(-12,8));QVERIFY(std::abs(canvas->compassGeometry()["cx"].toDouble()-compass["cx"].toDouble()+12)<1);QCOMPARE(canvas->compassRadius(),25.);
+        const auto hinge=canvas->mapToScene({compass["hx"].toDouble(),compass["hy"].toDouble()-24*compass["visualScale"].toDouble()}).toPoint();QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,hinge);QTest::mouseMove(window,hinge+QPoint(-12,8));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,hinge+QPoint(-12,8));QVERIFY(std::abs(canvas->compassGeometry()["cx"].toDouble()-compass["cx"].toDouble()+12)<1);QCOMPARE(canvas->compassRadius(),25.);
         compass=canvas->compassGeometry();auto* touch=QTest::createTouchDevice(QInputDevice::DeviceType::TouchScreen);const auto touchStart=canvas->mapToScene({compass["cx"].toDouble(),compass["cy"].toDouble()}).toPoint();QTest::touchEvent(window,touch).press(0,touchStart,window);QTest::touchEvent(window,touch).move(0,touchStart+QPoint(12,6),window);QTest::touchEvent(window,touch).release(0,touchStart+QPoint(12,6),window);QVERIFY(std::abs(canvas->compassGeometry()["cx"].toDouble()-compass["cx"].toDouble()-12)<1);QCOMPARE(controller.page()->strokes.size(),std::size_t(2));
+        auto* lockButton=window->findChild<QQuickItem*>("compassLockButton");QVERIFY(lockButton);
+        const auto clickLock=[&](){QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,lockButton->mapToScene(QPointF(lockButton->width()/2,lockButton->height()/2)).toPoint());};
+        clickLock();QVERIFY(canvas->compassLocked());
         const auto compassPoint=[&](double angle){const auto m=canvas->compassGeometry();return canvas->mapToScene({m["cx"].toDouble()+m["radius"].toDouble()*std::cos(angle),m["cy"].toDouble()+m["radius"].toDouble()*std::sin(angle)}).toPoint();};
         send(QEvent::TabletPress,compassPoint(0),.6);for(int i=1;i<=180;++i)send(QEvent::TabletMove,compassPoint(i*2*std::numbers::pi/180),.6);send(QEvent::TabletRelease,compassPoint(2*std::numbers::pi),0);
         QCOMPARE(controller.page()->shapes.size(),std::size_t(1));QCOMPARE(controller.page()->shapes[0].kind,ShapeKind::Circle);QCOMPARE(controller.page()->shapes[0].radiusX,25.);QCOMPARE(controller.page()->shapes[0].radiusY,25.);QVERIFY(!canvas->drawing());
+        clickLock();QVERIFY(!canvas->compassLocked());
         QCOMPARE(controller.page()->strokes.size(),std::size_t(3));QCOMPARE(controller.page()->strokes.back().samples.size(),std::size_t(1));QVERIFY(controller.page()->strokes.back().samples.front().position==controller.page()->shapes.front().center);
         controller.undo();QVERIFY(controller.page()->shapes.empty());QCOMPARE(controller.page()->strokes.size(),std::size_t(2));controller.redo();
         QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,compassPoint(0));for(int i=1;i<=45;++i)QTest::mouseMove(window,compassPoint(i*std::numbers::pi/90));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,compassPoint(std::numbers::pi/2));QCOMPARE(controller.page()->strokes.size(),std::size_t(5));

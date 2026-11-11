@@ -73,6 +73,7 @@ class CanvasItem : public QQuickItem {
     Q_PROPERTY(double rulerLength READ rulerLength WRITE setRulerLength NOTIFY geometryToolsChanged)
     Q_PROPERTY(double rulerAngle READ rulerAngle WRITE setRulerAngle NOTIFY geometryToolsChanged)
     Q_PROPERTY(double compassRadius READ compassRadius WRITE setCompassRadius NOTIFY geometryToolsChanged)
+    Q_PROPERTY(bool compassLocked READ compassLocked WRITE setCompassLocked NOTIFY geometryToolsChanged)
 public:
     explicit CanvasItem(QQuickItem* parent=nullptr);
     ~CanvasItem() override;
@@ -192,6 +193,8 @@ public:
     double rulerLength() const {return ruler_.lengthMm;}
     double rulerAngle() const;
     double compassRadius() const {return compass_.radiusMm;}
+    bool compassLocked() const {return compassLocked_;}
+    void setCompassLocked(bool value);
     void setRulerVisible(bool value);
     void setCompassVisible(bool value);
     void setRulerSnap(bool value);
@@ -358,6 +361,7 @@ private:
     QString selectedGuide_;
     bool rulerFlipped_=false;
     bool rulerVisible_=false,compassVisible_=false,rulerSnap_=true,compassComplete_=false;
+    bool compassLocked_=false;
     double rulerSnapDistance_=3;
 };
 }

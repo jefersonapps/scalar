@@ -63,20 +63,28 @@ Item {
             }
         }
         Rectangle {
-            x: -width/2; y: -height/2; width: Theme.compassJointSize; height: width; radius: width/2
+            x: -width/2; y: -height/2; width: 22; height: width; radius: width/2
             gradient: Gradient {
-                GradientStop { position: 0; color: Theme.compassHighlight }
-                GradientStop { position: 1; color: Theme.compassMetal }
+                GradientStop { position: 0; color: root.canvas.compassLocked ? Theme.compassControl : Theme.compassHighlight }
+                GradientStop { position: 1; color: root.canvas.compassLocked ? Theme.compassGrip : Theme.compassMetal }
             }
             border.color: root.canvas.selectedGuide === "compass" ? Theme.compassControlEdge : Theme.compassMetalEdge
             border.width: Theme.hairline
-            Rectangle {
-                anchors.centerIn: parent; width: 18; height: width; radius: width/2
-                color: Theme.compassGrip; border.color: Theme.compassMetalEdge
-                Rectangle {
-                    anchors.centerIn: parent; width: 8; height: width; radius: width/2
-                    color: Theme.compassMetal; border.color: Theme.compassHighlight
-                }
+            Icon {
+                anchors.centerIn: parent; width: 14; height: width
+                rotation: -root.heading
+                name: root.canvas.compassLocked ? "lock" : "unlock"
+                color: root.canvas.compassLocked ? Theme.compassControlInk : Theme.compassGrip
+            }
+            Item {
+                objectName: "compassLockButton"
+                anchors.fill: parent
+                HoverHandler { cursorShape: Qt.PointingHandCursor }
+                TapHandler { onTapped: root.canvas.compassLocked = !root.canvas.compassLocked }
+                Accessible.role: Accessible.Button
+                Accessible.name: root.canvas.compassLocked ? "Destravar abertura do compasso" : "Travar abertura do compasso"
+                Accessible.checkable: true
+                Accessible.checked: root.canvas.compassLocked
             }
         }
     }
@@ -85,7 +93,7 @@ Item {
         objectName: "compassOpeningHandle"
         width: 28; height: 24; radius: 7
         rotation: root.heading; color: Theme.compassControl; border.color: Theme.compassControlEdge; border.width: Theme.focusBorder
-        Icon { anchors.centerIn: parent; width: 20; height: width; name: "resize"; color: Theme.compassControlInk }
+        Icon { anchors.centerIn: parent; width: 20; height: width; name: root.canvas.compassLocked ? "rotate" : "resize"; color: Theme.compassControlInk }
     }
     Rectangle {
         objectName: "compassDrawHandle"
