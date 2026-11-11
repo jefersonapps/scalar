@@ -675,6 +675,20 @@ private slots:
         QTest::keyClick(window,Qt::Key_Return,Qt::ControlModifier);QTRY_VERIFY(!inlineEditor->property("active").toBool());
         QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
     }
+    void rapidUndoRedoOnDensePage(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(800);canvas.setController(&controller);
+        for(int n=0;n<3000;++n){StrokeObject stroke;stroke.id=newId();for(int j=0;j<200;++j)stroke.samples.push_back({{double(j),double(n%100)},1});controller.addStroke(std::move(stroke));}
+        const auto last=controller.page()->strokes.back().id;
+        QElapsedTimer timer;timer.start();for(int n=0;n<1000;++n)controller.undo();
+        qInfo()<<"1000 undo operations on 3000 strokes:"<<timer.elapsed()<<"ms";
+        QCOMPARE(controller.page()->strokes.size(),std::size_t(2000));QVERIFY(controller.canRedo());
+        timer.restart();for(int n=0;n<1000;++n)controller.redo();qInfo()<<"1000 redo operations:"<<timer.elapsed()<<"ms";
+        QCOMPARE(controller.page()->strokes.size(),std::size_t(3000));QCOMPARE(controller.page()->strokes.back().id,last);QVERIFY(!controller.canRedo());
+        controller.undo();StrokeObject replacement;replacement.id=newId();replacement.samples={{{1,2},1},{{3,4},1}};const auto id=replacement.id;controller.addStroke(replacement);
+        QVERIFY(!controller.canRedo());controller.undo();QCOMPARE(controller.page()->strokes.size(),std::size_t(2999));controller.redo();QCOMPARE(controller.page()->strokes.back().id,id);
+        QVERIFY(controller.shutdown());
+    }
     void inlineTextLayoutMatchesCommittedText(){
         QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
         QQmlApplicationEngine engine;engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
