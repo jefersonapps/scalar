@@ -122,8 +122,9 @@ CanvasItem::~CanvasItem(){
 }
 void CanvasItem::setController(AppController* c){
     selectedObjectsCacheValid_=false;
-    if(controller_==c)return;if(controller_)disconnect(controller_,nullptr,this,nullptr);controller_=c;viewPageId_.clear();
+    if(controller_==c)return;if(controller_)disconnect(controller_,nullptr,this,nullptr);controller_=c;viewPageId_.clear();magneticPage_=nullptr;magneticRevision_=~std::uint64_t(0);compassMagnet_.reset();rulerMagnet_.reset();
     if(c)connect(c,&AppController::documentChanged,this,[this]{
+        if(compassMagnet_||rulerMagnet_){compassMagnet_.reset();rulerMagnet_.reset();emit geometryToolsChanged();}
         // An external edit/undo invalidates the gesture's spatial snapshot.
         // commitErase switches to Idle before publishing its own changes.
         if(state_==State::Erasing||affineSelectionPreview_)cancelStroke();
@@ -287,6 +288,7 @@ void CanvasItem::commit(){
     state_=State::Idle;current_={};previewShape_.reset();guidedEdge_.reset();emit drawingChanged();selectionUpdated();
 }
 void CanvasItem::cancelStroke(){
+    compassMagnet_.reset();rulerRotationPivot_.reset();
     eraserCursorVisible_=false;
     eraseIndex_.clear();restoreIndex_.clear();restoreIndexReady_=false;
     if(rulerBefore_)ruler_=*rulerBefore_;if(compassBefore_)compass_=*compassBefore_;rulerBefore_.reset();compassBefore_.reset();compassPointerAngle_.reset();guidedEdge_.reset();

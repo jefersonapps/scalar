@@ -37,6 +37,8 @@ C.GlassPanel {
     property alias shapesButton: shapesButton
     property alias rulerButton: rulerButton
     property alias compassButton: compassButton
+    property bool geometryMagnet: false
+    signal magnetToggled()
     property string activeTool: "pen"
     property color penColor: "#263345"
     property color markerColor: "#b98624"
@@ -75,6 +77,7 @@ C.GlassPanel {
         C.ToolButton { id: shapesButton;objectName: "shapesToolButton"; iconName: "shapes"; label: "Formas geométricas"; selected: ["line","circle","ellipse","triangle","rectangle"].indexOf(root.activeTool) >= 0; onClicked: root.shapeOptionsRequested() }
         C.ToolButton { id: rulerButton;objectName: "rulerToolButton"; iconName: "ruler"; label: "Régua · clique novamente para opções"; selected: root.activeTool === "ruler"; onClicked: { if(selected) root.geometryOptionsRequested(); else root.toolSelected("ruler") } }
         C.ToolButton { id: compassButton;objectName: "compassToolButton"; iconName: "compass"; label: "Compasso · clique novamente para opções"; selected: root.activeTool === "compass"; onClicked: { if(selected) root.geometryOptionsRequested(); else root.toolSelected("compass") } }
+        C.ToolButton { objectName: "geometryMagnetButton"; iconName: "magnet"; label: "Ímã · encaixar compasso e régua em extremidades e interseções"; selected: root.geometryMagnet; onClicked: root.magnetToggled() }
         Rectangle { width: 1; height: Theme.xl; color: Theme.border }
         C.IconButton { iconName: "undo"; label: "Desfazer (Ctrl+Z)"; enabled: App.canUndo; onClicked: App.undo() }
         C.IconButton { iconName: "redo"; label: "Refazer (Ctrl+Shift+Z)"; enabled: App.canRedo; onClicked: App.redo() }

@@ -11,6 +11,7 @@ Item {
     // clipping when icons are inside a horizontally scrolling toolbar.
     layer.enabled: GraphicsInfo.api === GraphicsInfo.Software
     readonly property var paths: ({
+        magnet: "M4 4 H9 V13 A3 3 0 0 0 15 13 V4 H20 V13 A8 8 0 0 1 4 13 Z M4 8 H9 M15 8 H20",
         home: "M3 10 L12 3 L21 10 M5 9 V21 H10 V15 H14 V21 H19 V9",
         planet: "M20 12 A8 8 0 1 1 4 12 A8 8 0 1 1 20 12 M4 12 H20 M12 4 C7 8 7 16 12 20 C17 16 17 8 12 4 M2 18 Q10 15 22 6",
         search: "M18 18 L22 22 M19 11 A8 8 0 1 1 3 11 A8 8 0 1 1 19 11",

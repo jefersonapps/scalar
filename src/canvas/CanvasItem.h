@@ -4,6 +4,7 @@
 #include "selection/SelectionModel.h"
 #include "recognition/ShapeRecognizer.h"
 #include "tools/GeometryTools.h"
+#include "tools/MagneticGeometry.h"
 #include "tools/EraserIndex.h"
 #include <QQuickItem>
 #include <QQuickWindow>
@@ -60,6 +61,8 @@ class CanvasItem : public QQuickItem {
     Q_PROPERTY(QVariantMap compassGeometry READ compassGeometry NOTIFY geometryToolsChanged)
     Q_PROPERTY(bool rulerVisible READ rulerVisible WRITE setRulerVisible NOTIFY geometryToolsChanged)
     Q_PROPERTY(bool compassVisible READ compassVisible WRITE setCompassVisible NOTIFY geometryToolsChanged)
+    Q_PROPERTY(QVariantList magneticAnchors READ magneticAnchors NOTIFY geometryToolsChanged)
+    Q_PROPERTY(bool geometryMagnet READ geometryMagnet WRITE setGeometryMagnet NOTIFY geometryToolsChanged)
     Q_PROPERTY(bool rulerSnap READ rulerSnap WRITE setRulerSnap NOTIFY geometryToolsChanged)
     Q_PROPERTY(double rulerSnapDistance READ rulerSnapDistance WRITE setRulerSnapDistance NOTIFY geometryToolsChanged)
     Q_PROPERTY(double rulerLength READ rulerLength WRITE setRulerLength NOTIFY geometryToolsChanged)
@@ -168,6 +171,10 @@ public:
     bool compassVisible() const {return compassVisible_;}
     bool rulerSnap() const {return rulerSnap_;}
     double rulerSnapDistance() const {return rulerSnapDistance_;}
+    QVariantList magneticAnchors() const;
+    bool geometryMagnet() const {return geometryMagnet_;}
+    void setGeometryMagnet(bool value);
+    void prepareGeometryMagnet();
     double rulerLength() const {return ruler_.lengthMm;}
     double rulerAngle() const;
     double compassRadius() const {return compass_.radiusMm;}
@@ -315,10 +322,17 @@ private:
     Qt::MouseButtons tabletButtons_=Qt::NoButton;
     QString handToolBefore_;
     QRectF toolbarExclusion_,optionsExclusion_;
+    bool geometryMagnet_=false;
+    MagneticGeometry magneticGeometry_;
+    std::uint64_t magneticRevision_=~std::uint64_t(0);
+    const Page* magneticPage_=nullptr;
+    std::optional<Point> compassMagnet_;
+    std::optional<MagneticGeometry::RulerSnap> rulerMagnet_;
     RulerGeometry ruler_;
     CompassGeometry compass_;
     CompassSweep compassSweep_;
     std::optional<double> compassPointerAngle_;
+    std::optional<Point> rulerRotationPivot_;
     std::optional<RulerGeometry> rulerBefore_;
     std::optional<CompassGeometry> compassBefore_;
     std::optional<int> guidedEdge_;

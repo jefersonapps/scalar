@@ -21,10 +21,23 @@ Rectangle {
     clip: true
     Flickable {
         id: scroll
-        anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8; anchors.topMargin: 4; anchors.bottomMargin: 4
+        anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 0; anchors.topMargin: 4; anchors.bottomMargin: 4
         contentWidth: row.implicitWidth; contentHeight: height
         boundsBehavior: Flickable.StopAtBounds; clip: true
-        ScrollBar.horizontal: ScrollBar { policy: scroll.contentWidth>scroll.width ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff }
+        ScrollBar.horizontal: ScrollBar { policy: ScrollBar.AlwaysOff }
+        MouseArea {
+            z: 1
+            anchors.fill: parent
+            acceptedButtons: Qt.NoButton
+            onWheel: wheel => {
+                const maximum = Math.max(0, scroll.contentWidth-scroll.width)
+                const pixels = wheel.pixelDelta
+                const angles = wheel.angleDelta
+                const delta = pixels.x || pixels.y || (angles.x || angles.y)/120*48
+                scroll.contentX = Math.max(0, Math.min(maximum, scroll.contentX-delta))
+                wheel.accepted = true
+            }
+        }
         RowLayout {
             id: row
             height: scroll.height; spacing: Theme.sm

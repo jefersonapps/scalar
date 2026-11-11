@@ -690,6 +690,62 @@ private slots:
         StrokeObject stroke{newId(),{},{{{20,20},1},{{50,50},1}}};controller.addStroke(stroke);controller.requestNewInCurrentFolder();QTRY_VERIFY(!controller.leaveError().isEmpty());QCOMPARE(controller.page()->id,id);QVERIFY(controller.dirty());
         QVERIFY(QDir().rmdir(path));controller.retryLeaving();QTRY_VERIFY(!controller.leaving());QVERIFY(controller.page()->id!=id);QTRY_VERIFY(!controller.busy());QVERIFY(controller.shutdown());
     }
+    void rulerRotatesAroundSingleGraduatedSideAnchor(){
+        for(bool flipped:{false,true}){
+            QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(800);canvas.setController(&controller);canvas.restorePageView();canvas.setTool("ruler");canvas.setGeometryMagnet(true);if(flipped)canvas.flipRuler();
+            auto g=canvas.rulerGeometry();const auto zero=canvas.screenPoint({0,0});const double scale=g["scale"].toDouble(),edge=flipped?12:0;const Point anchor{(g["x"].toDouble()-zero.x())/scale+25,(g["y"].toDouble()-zero.y())/scale+edge+(flipped?-1:1)};
+            StrokeObject dot;dot.id=newId();dot.samples={{anchor,1}};controller.addStroke(dot);
+            const auto send=[&](QEvent::Type type,QPointF p){QMouseEvent event(type,p,p,type==QEvent::MouseMove?Qt::NoButton:Qt::LeftButton,type==QEvent::MouseButtonRelease?Qt::NoButton:Qt::LeftButton,Qt::NoModifier);if(type==QEvent::MouseButtonPress)canvas.mousePressEvent(&event);else if(type==QEvent::MouseMove)canvas.mouseMoveEvent(&event);else canvas.mouseReleaseEvent(&event);};
+            const QPointF grab(g["x"].toDouble()+35*scale,g["y"].toDouble()+6*scale);send(QEvent::MouseButtonPress,grab);send(QEvent::MouseButtonRelease,grab);QCOMPARE(canvas.magneticAnchors().size(),1);canvas.setTool("pen");canvas.setTool("ruler");
+            g=canvas.rulerGeometry();const QPointF handle(g["x"].toDouble()+10*scale,g["y"].toDouble()+6*scale),pivot=canvas.screenPoint({anchor.x,anchor.y});const auto d=handle-pivot;const double angle=.5;const auto target=pivot+QPointF(d.x()*std::cos(angle)-d.y()*std::sin(angle),d.x()*std::sin(angle)+d.y()*std::cos(angle));
+            send(QEvent::MouseButtonPress,handle);send(QEvent::MouseMove,target);QVERIFY(std::abs(canvas.rulerAngle()-angle*180/std::numbers::pi)<1e-7);
+            const auto check=[&]{const auto current=canvas.rulerGeometry();const auto v=pivot-QPointF(current["x"].toDouble(),current["y"].toDouble());const double a=current["angle"].toDouble()*std::numbers::pi/180;return QLineF(QPointF(v.x()*std::cos(a)+v.y()*std::sin(a),-v.x()*std::sin(a)+v.y()*std::cos(a)),QPointF(25*scale,edge*scale)).length()<1e-7;};
+            QVERIFY(check());send(QEvent::MouseButtonRelease,target);QVERIFY(check());QCOMPARE(canvas.magneticAnchors().size(),1);canvas.flipRuler();
+            g=canvas.rulerGeometry();const double a=g["angle"].toDouble()*std::numbers::pi/180;const auto body=QPointF(g["x"].toDouble(),g["y"].toDouble())+QPointF(35*std::cos(a)-6*std::sin(a),35*std::sin(a)+6*std::cos(a))*scale;
+            send(QEvent::MouseButtonPress,body);send(QEvent::MouseButtonRelease,body);QVERIFY(canvas.magneticAnchors().empty());QVERIFY(controller.shutdown());
+        }
+    }
+    void rulerMagnetAlignsTwoEndpointsAndReleases(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(800);canvas.setController(&controller);canvas.restorePageView();canvas.setTool("ruler");canvas.setGeometryMagnet(true);
+        const auto g=canvas.rulerGeometry();const auto zero=canvas.screenPoint({0,0});const auto scale=g["scale"].toDouble();
+        const Point first{(g["x"].toDouble()-zero.x())/scale+25,(g["y"].toDouble()-zero.y())/scale+1},second{first.x+70,first.y-.5};
+        StrokeObject stroke;stroke.id=newId();stroke.samples={{first,1},{second,1}};controller.addStroke(stroke);
+        const auto send=[&](QEvent::Type type,QPointF p){QMouseEvent event(type,p,p,type==QEvent::MouseMove?Qt::NoButton:Qt::LeftButton,type==QEvent::MouseButtonRelease?Qt::NoButton:Qt::LeftButton,Qt::NoModifier);if(type==QEvent::MouseButtonPress)canvas.mousePressEvent(&event);else if(type==QEvent::MouseMove)canvas.mouseMoveEvent(&event);else canvas.mouseReleaseEvent(&event);};
+        const QPointF start(g["x"].toDouble()+35*scale,g["y"].toDouble()+6*scale);
+        send(QEvent::MouseButtonPress,start);send(QEvent::MouseMove,start+QPointF(0,1));QVERIFY(canvas.magneticAnchors().empty());QVERIFY(std::abs(canvas.rulerAngle())<1e-8);QVERIFY(std::abs(canvas.rulerGeometry()["y"].toDouble()-g["y"].toDouble()-1)<1e-7);send(QEvent::MouseButtonRelease,start+QPointF(0,1));QCOMPARE(canvas.magneticAnchors().size(),2);
+        auto aligned=canvas.rulerGeometry();const double angle=aligned["angle"].toDouble()*std::numbers::pi/180;
+        for(auto p:{first,second}){const auto q=canvas.screenPoint({p.x,p.y})-QPointF(aligned["x"].toDouble(),aligned["y"].toDouble());QVERIFY(std::abs(-q.x()*std::sin(angle)+q.y()*std::cos(angle))<1e-7);}
+        const QPointF handleCenter(aligned["x"].toDouble()+scale*(60*std::cos(angle)-6*std::sin(angle)),aligned["y"].toDouble()+scale*(60*std::sin(angle)+6*std::cos(angle)));
+        const auto handle=handleCenter-QPointF(std::cos(angle),std::sin(angle))*50*scale;const double rawAngle=angle+2*std::numbers::pi/180;
+        const auto pivot=canvas.screenPoint({second.x,second.y});const auto v=handle-pivot;const auto rotated=pivot+QPointF(v.x()*std::cos(rawAngle-angle)-v.y()*std::sin(rawAngle-angle),v.x()*std::sin(rawAngle-angle)+v.y()*std::cos(rawAngle-angle));
+        send(QEvent::MouseButtonPress,handle);send(QEvent::MouseMove,rotated);QVERIFY(std::abs(canvas.rulerAngle()-rawAngle*180/std::numbers::pi)<1e-7);QCOMPARE(canvas.magneticAnchors().size(),1);const auto shownPivot=canvas.magneticAnchors().front().toMap();QVERIFY(QLineF(pivot,QPointF(shownPivot["x"].toDouble(),shownPivot["y"].toDouble())).length()<1e-7);
+        const auto moving=canvas.rulerGeometry();const auto offset=pivot-QPointF(moving["x"].toDouble(),moving["y"].toDouble());QVERIFY(std::abs(-offset.x()*std::sin(rawAngle)+offset.y()*std::cos(rawAngle))<1e-7);
+        send(QEvent::MouseButtonRelease,rotated);QCOMPARE(canvas.magneticAnchors().size(),2);QVERIFY(std::abs(canvas.rulerAngle()-angle*180/std::numbers::pi)<1e-7);aligned=canvas.rulerGeometry();
+        const QPointF grab(aligned["x"].toDouble()+scale*(35*std::cos(angle)-6*std::sin(angle)),aligned["y"].toDouble()+scale*(35*std::sin(angle)+6*std::cos(angle)));
+        send(QEvent::MouseButtonPress,grab);send(QEvent::MouseMove,grab+QPointF(0,60));QVERIFY(canvas.magneticAnchors().empty());QVERIFY(std::abs(canvas.rulerAngle()-aligned["angle"].toDouble())<1e-8);
+        send(QEvent::MouseButtonRelease,grab+QPointF(0,60));QVERIFY(std::abs(canvas.rulerGeometry()["y"].toDouble()-aligned["y"].toDouble()-60)<1e-7);
+        QCOMPARE(controller.page()->strokes.size(),std::size_t(1));QVERIFY(canvas.magneticAnchors().empty());QVERIFY(controller.shutdown());
+    }
+    void geometryMagnetCapturesAndReleasesWithoutChangingInk(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(800);canvas.setController(&controller);canvas.restorePageView();canvas.setTool("compass");
+        const auto origin=canvas.screenPoint({0,0});const double scale=canvas.screenPoint({1,0}).x()-origin.x();const auto initial=canvas.compassGeometry();
+        const Point target{(initial["cx"].toDouble()-origin.x())/scale+15,(initial["cy"].toDouble()-origin.y())/scale+20};
+        StrokeObject a;a.id=newId();a.samples={{{target.x-10,target.y},1},{{target.x+10,target.y},1}};controller.addStroke(a);a.id=newId();a.samples={{{target.x,target.y-10},1},{{target.x,target.y+10},1}};controller.addStroke(a);
+        const auto send=[&](QEvent::Type type,QPointF p){QMouseEvent event(type,p,p,type==QEvent::MouseMove?Qt::NoButton:Qt::LeftButton,type==QEvent::MouseButtonRelease?Qt::NoButton:Qt::LeftButton,Qt::NoModifier);if(type==QEvent::MouseButtonPress)canvas.mousePressEvent(&event);else if(type==QEvent::MouseMove)canvas.mouseMoveEvent(&event);else canvas.mouseReleaseEvent(&event);};
+        const auto center=[&]{const auto g=canvas.compassGeometry();return QPointF(g["cx"].toDouble(),g["cy"].toDouble());};
+        auto point=canvas.screenPoint({target.x,target.y});const auto raw=point+QPointF(4,3);
+        send(QEvent::MouseButtonPress,center());send(QEvent::MouseMove,raw);QVERIFY(QLineF(center(),raw).length()<1e-7);send(QEvent::MouseButtonRelease,raw);
+        canvas.setGeometryMagnet(true);
+        for(double zoom:{.5,1.,2.}){
+            canvas.setZoom(zoom);point=canvas.screenPoint({target.x,target.y});send(QEvent::MouseButtonPress,center());send(QEvent::MouseMove,point+QPointF(4,3));QVERIFY(QLineF(center(),point).length()<1e-7);QCOMPARE(canvas.magneticAnchors().size(),1);
+            send(QEvent::MouseMove,point+QPointF(6,3));QVERIFY(QLineF(center(),point).length()<1e-7);
+            const auto far=point+QPointF(80,80);send(QEvent::MouseMove,far);QVERIFY(QLineF(center(),far).length()<1e-7);QVERIFY(canvas.magneticAnchors().empty());send(QEvent::MouseButtonRelease,far);
+        }
+        controller.undo();point=canvas.screenPoint({target.x,target.y});send(QEvent::MouseButtonPress,center());send(QEvent::MouseMove,point+QPointF(4,3));QVERIFY(QLineF(center(),point+QPointF(4,3)).length()<1e-7);send(QEvent::MouseButtonRelease,center());
+        QCOMPARE(controller.page()->strokes.size(),std::size_t(1));QVERIFY(controller.shutdown());
+    }
     void toolbarCustomColorOpensBeforeLegacyPanel(){
         QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
         QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
@@ -713,6 +769,7 @@ private slots:
         QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
         QVERIFY(!engine.rootObjects().isEmpty());auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));window->resize(1280,800);
         auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);
+        auto* magnet=findVisualItem(window->contentItem(),"geometryMagnetButton");QVERIFY(magnet);QVERIFY(QMetaObject::invokeMethod(magnet,"clicked"));QVERIFY(canvas->geometryMagnet());QVERIFY(QMetaObject::invokeMethod(magnet,"clicked"));QVERIFY(!canvas->geometryMagnet());
         auto* bar=findVisualItem(window->contentItem(),"toolOptionsBar");QVERIFY(bar);QVERIFY(bar->mapToScene({0,0}).y()<canvas->mapToScene({0,0}).y());
         const auto click=[&](const QString& name){auto* button=findVisualItem(bar,name);if(!button)return false;QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,button->mapToScene({button->width()/2,button->height()/2}).toPoint());return true;};
         canvas->setTool("pen");QCoreApplication::processEvents();QCOMPARE(canvas->penWidth(),.4);QVERIFY(findVisualItem(bar,"thicknessPreset_1")->property("selected").toBool());QVERIFY(click("thicknessPreset_0"));QCOMPARE(canvas->penWidth(),.1);QVERIFY(click("thicknessPreset_1"));QCOMPARE(canvas->penWidth(),.4);QVERIFY(click("thicknessPreset_4"));QCOMPARE(canvas->penWidth(),3.);

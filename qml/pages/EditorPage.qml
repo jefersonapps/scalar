@@ -129,6 +129,15 @@ Item {
         clip: true
         C.RulerGuide { canvas: board }
         C.CompassGuide { canvas: board }
+        Repeater {
+            model: board.magneticAnchors
+            Rectangle {
+                required property var modelData
+                x: modelData.x-width/2; y: modelData.y-height/2
+                width: 16; height: 16; radius: 8
+                color: "transparent"; border.width: 2; border.color: Theme.accent
+            }
+        }
         C.SegmentAngleGuide { canvas: board; anchors.fill: parent }
         Repeater {
             id: sectorLabels
@@ -236,7 +245,7 @@ Item {
         anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
         anchors.leftMargin: Theme.lg;anchors.rightMargin: Theme.lg
         height: root.headerRowHeight
-        spacing: Theme.xs
+        spacing: Theme.sm
         C.IconButton { implicitWidth: 32; implicitHeight: 32; Layout.minimumWidth: implicitWidth; objectName: "editorBackButton"; iconName: "back"; label: "Voltar aos projetos"; enabled: !App.documentBusy; onClicked: root.finishTextThen(function(){ board.cancelStroke();root.backRequested() }) }
         ColumnLayout {
             Layout.preferredWidth: root.width>=1000 ? 120 : 64; Layout.minimumWidth: 48; Layout.maximumWidth: 140; spacing: Theme.xs
@@ -266,7 +275,7 @@ Item {
             id: headerActions
             objectName: "headerActions"
             Layout.minimumWidth: implicitWidth; Layout.maximumWidth: implicitWidth
-            spacing: Theme.xs
+            spacing: Theme.sm
         C.ActionButton { implicitHeight: 32; Layout.minimumWidth: implicitWidth; id: fileButton;objectName: "fileMenuButton";text: root.width>=1100 ? "Arquivo" : "";iconName: "folder";enabled: !App.documentBusy;onClicked: root.finishTextThen(function(){board.cancelStroke();root.togglePanel(fileOptions)}) }
         C.ActionButton { implicitHeight: 32; Layout.minimumWidth: implicitWidth; id: pagesButton;objectName: "openPagesButton"; visible: root.width > Theme.zoomBreakpoint; iconName: "pages"; text: root.width>=1400 ? "Páginas" : ""; onClicked: root.finishTextThen(function(){board.cancelStroke();root.togglePanel(pagesPanel)}) }
         C.IconButton { implicitWidth: 32; implicitHeight: 32; Layout.minimumWidth: implicitWidth; iconName: "minus"; label: "Diminuir zoom"; visible: root.width > Theme.zoomBreakpoint; onClicked: board.zoomBy(1/1.2) }
@@ -307,15 +316,17 @@ Item {
         onAboutToShow: { const point=fileButton.mapToItem(root,0,fileButton.height+Theme.sm);x=Math.max(Theme.lg,Math.min(point.x,root.width-width-Theme.lg));y=point.y }
         onClosed: board.forceActiveFocus()
         contentItem: ColumnLayout {
-            spacing: Theme.sm
-            Text { text: "Arquivo";color: Theme.text;font.pixelSize: Theme.body;font.weight: Font.DemiBold }
-            C.ActionButton { objectName: "newBoardInFolderButton"; text: "Novo quadro"; iconName: "plus"; Layout.fillWidth: true; enabled: !App.documentBusy; onClicked: { fileOptions.close();root.finishNameEdit();root.finishTextThen(function(){board.cancelStroke();App.requestNewInCurrentFolder()}) } }
-            C.ActionButton { objectName: "saveBoardAsButton";text: "Salvar como…";iconName: "save";Layout.fillWidth: true;enabled: !App.documentBusy;onClicked: { fileOptions.close();root.saveAsRequested() } }
-            C.ActionButton { objectName: "importBoardButton";text: "Importar quadro…";iconName: "folder";Layout.fillWidth: true;enabled: !App.documentBusy;onClicked: { fileOptions.close();root.importBoardRequested() } }
-            C.ActionButton { objectName: "importPdfButton";text: "Importar PDF…";iconName: "pdfImport";Layout.fillWidth: true;enabled: !App.documentBusy;onClicked: { fileOptions.close();root.importPdfRequested() } }
-            C.ActionButton { objectName: "exportPdfButton";text: "Exportar PDF…";iconName: "pdfExport";Layout.fillWidth: true;enabled: !App.documentBusy && !App.exporting;onClicked: { fileOptions.close();root.exportPdfRequested() } }
-            C.ActionButton { visible: root.width<700; text: "Fundo da página"; Layout.fillWidth: true; onClicked: {fileOptions.close();backgroundOptions.open()} }
-            C.ActionButton { visible: root.width<800; text: "Navegador lateral"; Layout.fillWidth: true; onClicked: {fileOptions.close();root.browserCreated=true;root.browserOpen=!root.browserOpen} }
+            spacing: Theme.xs
+            Text { text: "Arquivo";color: Theme.text;font.pixelSize: Theme.body;font.weight: Font.DemiBold; Layout.leftMargin: Theme.sm; Layout.bottomMargin: Theme.sm }
+            C.MenuAction { objectName: "newBoardInFolderButton"; text: "Novo quadro"; iconName: "plus"; Layout.fillWidth: true; enabled: !App.documentBusy; onClicked: { fileOptions.close();root.finishNameEdit();root.finishTextThen(function(){board.cancelStroke();App.requestNewInCurrentFolder()}) } }
+            C.MenuAction { objectName: "saveBoardAsButton";text: "Salvar como…";iconName: "save";Layout.fillWidth: true;enabled: !App.documentBusy;onClicked: { fileOptions.close();root.saveAsRequested() } }
+            Rectangle { Layout.fillWidth: true; implicitHeight: 1; Layout.topMargin: Theme.xs; Layout.bottomMargin: Theme.xs; color: Theme.border }
+            C.MenuAction { objectName: "importBoardButton";text: "Importar quadro…";iconName: "folder";Layout.fillWidth: true;enabled: !App.documentBusy;onClicked: { fileOptions.close();root.importBoardRequested() } }
+            C.MenuAction { objectName: "importPdfButton";text: "Importar PDF…";iconName: "pdfImport";Layout.fillWidth: true;enabled: !App.documentBusy;onClicked: { fileOptions.close();root.importPdfRequested() } }
+            C.MenuAction { objectName: "exportPdfButton";text: "Exportar PDF…";iconName: "pdfExport";Layout.fillWidth: true;enabled: !App.documentBusy && !App.exporting;onClicked: { fileOptions.close();root.exportPdfRequested() } }
+            C.MenuAction { visible: root.width<700; text: "Fundo da página"; iconName: "background"; Layout.fillWidth: true; onClicked: {fileOptions.close();backgroundOptions.open()} }
+            C.MenuAction { visible: root.width<800; text: "Navegador lateral"; iconName: "planet"; Layout.fillWidth: true; onClicked: {fileOptions.close();root.browserCreated=true;root.browserOpen=!root.browserOpen} }
+            Rectangle { Layout.fillWidth: true; implicitHeight: 1; Layout.topMargin: Theme.sm; Layout.bottomMargin: Theme.sm; color: Theme.border }
             Text { text: "O arquivo .scalar guarda todas as páginas e objetos para abrir em outro computador.";Layout.fillWidth: true;wrapMode: Text.WordWrap;color: Theme.secondary;font.pixelSize: Theme.caption }
         }
     }
@@ -325,6 +336,8 @@ Item {
         backdropSource: board
         anchors.horizontalCenter: board.horizontalCenter
         anchors.bottom: parent.bottom; anchors.bottomMargin: board.width < toolbar.width+2*navigator.width+Theme.lg*3 ? navigator.height+Theme.lg+Theme.md : Theme.xxl
+        geometryMagnet: board.geometryMagnet
+        onMagnetToggled: {board.geometryMagnet=!board.geometryMagnet;board.forceActiveFocus()}
         activeTool: board.tool
         penColor: board.penColor
         markerColor: board.markerColor
