@@ -61,6 +61,16 @@ void AppController::detectToolbarBlurSupport(QObject* qmlOwner){
     if(toolbarBlurSupported_)emit toolbarBlurSupportChanged();
 }
 AppController::AppController(QObject* parent,const QString& dataDirectory):QObject(parent) {
+    connect(&recorder_,&ConstructionRecorder::changed,this,[this,position=-2,count=-1]() mutable {
+        const bool changedCount=count!=recorder_.count();count=recorder_.count();
+        if(position!=recorder_.position()||(constructionPlayback()&&changedCount)){
+            position=recorder_.position();++revision_;textRasterRevision_=0;
+            if(page()){const auto decoded=ProjectStore::decodePageImages(*page());for(auto it=decoded.images.cbegin();it!=decoded.images.cend();++it)images_.insert(it.key(),it.value());}
+            refreshTextTextures(textRasterRequestedScale_);emit documentChanged();
+        }
+        emit changed();
+    });
+    connect(this,&AppController::pageChanged,this,[this]{recorder_.stop();recorder_.closePreview();});
     registerTextFonts();
     dataDir_=dataDirectory.isEmpty()?QStandardPaths::writableLocation(QStandardPaths::AppDataLocation):dataDirectory;
     QDir().mkpath(dataDir_+"/projects"); library_=std::make_unique<Library>(dataDir_+"/library.sqlite");
@@ -146,7 +156,7 @@ AppController::AppController(QObject* parent,const QString& dataDirectory):QObje
         if(active()&&textRasterProjectId_==QString::fromStdString(project_.id)
             &&textRasterPageId_==QString::fromStdString(page()->id)){
             const auto results=textRasterWatcher_.result();
-            for(auto& object:current().texts){
+            for(auto& object:(constructionPlayback()?recorder_.replayPage()->texts:current().texts)){
                 const auto key=QString::fromStdString(object.id);
                 const auto input=textRasterPendingInputs_.constFind(key);
                 const auto visual=results.constFind(key);
@@ -298,8 +308,8 @@ void AppController::newDefaultInFolder(const QString& folderId){
     pendingFolderId_=folderId;
     newDefault();
 }
-void AppController::mutate(){dirty_=true;if(currentPage_==0)coverDirty_=true;++revision_;project_.updatedAt=now().toStdString();autosave_.start();refreshTextTextures(textRasterRequestedScale_);if(page())dirtyThumbnails_.insert(QString::fromStdString(page()->id));scheduleThumbnails();emit documentChanged();emit changed();}
-void AppController::addStroke(StrokeObject s){if(!active()||loading_||s.samples.empty())return;s.properties.zIndex=nextZIndex();history().add(current(),std::move(s));mutate();}
+void AppController::mutate(){if(active())recorder_.capture(current());dirty_=true;if(currentPage_==0)coverDirty_=true;++revision_;project_.updatedAt=now().toStdString();autosave_.start();refreshTextTextures(textRasterRequestedScale_);if(page())dirtyThumbnails_.insert(QString::fromStdString(page()->id));scheduleThumbnails();emit documentChanged();emit changed();}
+void AppController::addStroke(StrokeObject s){if(!active()||constructionPlayback()||loading_||s.samples.empty())return;s.properties.zIndex=nextZIndex();history().add(current(),std::move(s));mutate();}
 void AppController::fillRegion(Point seed,QColor color,double opacity){
     if(!active()||documentBusy())return;
     fillPending_=true;fillRevision_=revision_;fillPageId_=current().id;status_="Identificando região fechada…";emit changed();
@@ -347,15 +357,15 @@ void AppController::pasteImage(QPointF center){
     else if(mime->hasText())upsertText({},center,{{"source",mime->text()},{"color",pageColor().lightness()<128?"#f4f4f5":"#263345"}});
     else {status_="A área de transferência não contém imagem ou texto.";emit changed();}
 }
-void AppController::addShape(ShapeObject shape){const auto id=shape.id;const bool line=shape.kind==ShapeKind::Line;if(!active()||loading_)return;shape.properties.zIndex=nextZIndex();history().apply(current(),{{{},CanvasObject(std::move(shape))}},CommandKind::AddObject);mutate();if(line)closeLines(id);}
-void AppController::changeObjects(std::vector<ObjectChange> changes,CommandKind kind){if(!active()||loading_||changes.empty())return;history().apply(current(),std::move(changes),kind);mutate();}
-void AppController::eraseObjects(std::vector<ObjectChange> changes,std::vector<StrokeObject> recoverable){if(!active()||loading_||changes.empty())return;history().erase(current(),std::move(changes),std::move(recoverable));mutate();}
+void AppController::addShape(ShapeObject shape){const auto id=shape.id;const bool line=shape.kind==ShapeKind::Line;if(!active()||constructionPlayback()||loading_)return;shape.properties.zIndex=nextZIndex();history().apply(current(),{{{},CanvasObject(std::move(shape))}},CommandKind::AddObject);mutate();if(line)closeLines(id);}
+void AppController::changeObjects(std::vector<ObjectChange> changes,CommandKind kind){if(!active()||constructionPlayback()||loading_||changes.empty())return;history().apply(current(),std::move(changes),kind);mutate();}
+void AppController::eraseObjects(std::vector<ObjectChange> changes,std::vector<StrokeObject> recoverable){if(!active()||constructionPlayback()||loading_||changes.empty())return;history().erase(current(),std::move(changes),std::move(recoverable));mutate();}
 bool AppController::recognitionEnabled() const{return recognitionEnabled_;}
 void AppController::setRecognitionEnabled(bool value){recognitionEnabled_=value;library_->setSetting("recognitionEnabled",value);emit preferencesChanged();}
 int AppController::holdDelay() const{return holdDelay_;}
 void AppController::setHoldDelay(int value){holdDelay_=std::clamp(value,250,1500);library_->setSetting("holdDelay",holdDelay_);emit preferencesChanged();}
-void AppController::undo(){if(active()){const auto size=current().size;if(history().undo(current())){mutate();if(size.widthMm!=pageWidth()||size.heightMm!=pageHeight()||size.infinite!=pageInfinite())emit pagesChanged();}}}
-void AppController::redo(){if(active()){const auto size=current().size;if(history().redo(current())){mutate();if(size.widthMm!=pageWidth()||size.heightMm!=pageHeight()||size.infinite!=pageInfinite())emit pagesChanged();}}}
+void AppController::undo(){if(active()&&!constructionPlayback()){const auto size=current().size;if(history().undo(current())){mutate();if(size.widthMm!=pageWidth()||size.heightMm!=pageHeight()||size.infinite!=pageInfinite())emit pagesChanged();}}}
+void AppController::redo(){if(active()&&!constructionPlayback()){const auto size=current().size;if(history().redo(current())){mutate();if(size.widthMm!=pageWidth()||size.heightMm!=pageHeight()||size.infinite!=pageInfinite())emit pagesChanged();}}}
 void AppController::save(){if(active()){dirty_=true;beginSave();}}
 void AppController::saveAs(const QUrl& url){
     if(!active()||!url.isLocalFile()||url.toLocalFile().isEmpty()||!flush())return;

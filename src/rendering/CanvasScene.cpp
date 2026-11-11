@@ -376,7 +376,8 @@ QSGNode* CanvasItem::updatePaintNode(QSGNode* old,UpdatePaintNodeData*){
         if(cache.tail){root->live->removeChildNode(cache.tail);delete cache.tail;cache.tail=nullptr;}
         // Only seal samples whose smoothing window can no longer change.
         // Overlap one sample at each seam; opaque round caps cover the join.
-        const auto stable=smoothFreehand_?liveCurveStableSamples_:current_.samples.size();
+        const bool smoothingFreehand=smoothFreehand_&&(state_==State::Drawing||state_==State::PossibleHold);
+        const auto stable=smoothingFreehand?std::min(liveCurveStableSamples_,current_.samples.size()):current_.samples.size();
         constexpr std::size_t chunkSize=128;
         const auto appendChunk=[&](std::size_t first,std::size_t end){
             StrokeObject chunk;chunk.style=current_.style;

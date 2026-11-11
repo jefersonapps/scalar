@@ -14,6 +14,7 @@
 #include <QQuickWindow>
 #include <QQuickStyle>
 #include <QImage>
+#include <QImageReader>
 #include <QTemporaryDir>
 #include <QSignalSpy>
 #include <QDir>
@@ -637,6 +638,68 @@ private slots:
         send(QEvent::MouseButtonPress,groupResize);send(QEvent::MouseMove,doubleSize);send(QEvent::MouseButtonRelease,doubleSize);
         const auto& stroke=controller.page()->strokes[0];QVERIFY(std::abs(length(stroke.samples.back().position-stroke.samples.front().position)-60)<1e-6);
         controller.undo();controller.undo();QVERIFY(std::abs(canvas.selectionRotation())<1e-6);controller.redo();QVERIFY(std::abs(canvas.selectionRotation()-90)<1e-6);QVERIFY(controller.shutdown());
+    }
+    void constructionRecordingReplaysCanvasAndExports(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();QTRY_VERIFY(!controller.busy());
+        auto* recorder=qobject_cast<ConstructionRecorder*>(controller.constructionRecorder());QVERIFY(recorder);
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());
+        auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto* button=findVisualItem(window->contentItem(),"recordConstructionButton");QVERIFY(button);QVERIFY(QMetaObject::invokeMethod(button,"clicked"));QVERIFY(recorder->recording());
+        auto* timeline=findVisualItem(window->contentItem(),"constructionTimeline");QVERIFY(timeline);QVERIFY(timeline->isVisible());
+        auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);
+        StrokeObject stroke;stroke.id=newId();stroke.samples={{{20,20},1},{{80,60},1}};controller.addStroke(stroke);
+        ShapeObject circle;circle.id=newId();circle.kind=ShapeKind::Circle;circle.center={70,90};circle.radiusX=circle.radiusY=20;controller.addShape(circle);
+        QVERIFY(QMetaObject::invokeMethod(button,"clicked"));QVERIFY(!recorder->recording());QTRY_VERIFY_WITH_TIMEOUT(!recorder->pending(),30000);QVERIFY2(recorder->error().isEmpty(),qPrintable(recorder->error()));QCOMPARE(recorder->count(),3);
+        controller.save();QTRY_VERIFY(!controller.busy());QTRY_VERIFY(!controller.dirty());
+        recorder->seek(0);QVERIFY(controller.constructionPlayback());QVERIFY(!canvas->isEnabled());QVERIFY(controller.page()->strokes.empty());QVERIFY(controller.page()->shapes.empty());QVERIFY(!controller.dirty());
+        recorder->seek(1);QCOMPARE(controller.page()->strokes.size(),std::size_t(1));QVERIFY(controller.page()->shapes.empty());
+        recorder->seek(2);QCOMPARE(controller.page()->shapes.size(),std::size_t(1));controller.undo();QCOMPARE(controller.page()->shapes.size(),std::size_t(1));
+        recorder->seek(0);recorder->togglePlayback();QVERIFY(recorder->playing());QTRY_COMPARE_WITH_TIMEOUT(recorder->position(),2,5000);QTRY_VERIFY(!recorder->playing());
+        recorder->closePreview();QVERIFY(!controller.constructionPlayback());QVERIFY(canvas->isEnabled());QCOMPARE(controller.page()->shapes.size(),std::size_t(1));QVERIFY(!controller.dirty());
+        controller.undo();QVERIFY(controller.page()->shapes.empty());controller.redo();QCOMPARE(controller.page()->shapes.size(),std::size_t(1));QCOMPARE(recorder->count(),3);
+        recorder->seek(1);QCoreApplication::processEvents();
+        auto* playhead=findVisualItem(window->contentItem(),"constructionPlayhead");QVERIFY(playhead);QVERIFY(playhead->width()<16);
+        QTest::mouseClick(window,Qt::RightButton,Qt::NoModifier,playhead->mapToScene({playhead->width()/2,playhead->height()/2}).toPoint());
+        auto* menu=window->findChild<QObject*>("constructionStepMenu");QVERIFY(menu);QTRY_VERIFY(menu->property("opened").toBool());
+        auto* remove=findVisualItem(window->contentItem(),"deleteConstructionStep");QVERIFY(remove);QVERIFY(QMetaObject::invokeMethod(remove,"clicked"));
+        QCOMPARE(recorder->count(),2);QCOMPARE(controller.page()->shapes.size(),std::size_t(1));
+        recorder->seek(0);QVERIFY(controller.page()->strokes.empty());recorder->seek(1);QCOMPARE(controller.page()->strokes.size(),std::size_t(1));
+        if(recorder->encoderAvailable())for(const QString format:{QString("gif"),QString("mp4")}){
+            const auto path=directory.filePath("construction."+format);recorder->exportAnimation(QUrl::fromLocalFile(path),format);
+            QTRY_VERIFY_WITH_TIMEOUT(!recorder->exporting(),60000);QVERIFY2(recorder->error().isEmpty(),qPrintable(recorder->error()));QVERIFY(QFileInfo(path).size()>100);
+            if(format=="gif"){QImageReader reader(path);QVERIFY(reader.supportsAnimation());QCOMPARE(reader.imageCount(),2);}
+        }
+        recorder->clear();QCOMPARE(recorder->count(),0);QVERIFY(!controller.constructionPlayback());QVERIFY(warnings.isEmpty());QVERIFY(controller.shutdown());
+    }
+    void compassLiveMeshAfterLongFreehandStaysOnArc(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();controller.setRecognitionEnabled(false);controller.setSessionCompassMarkCenter(false);
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(800);canvas.setController(&controller);canvas.restorePageView();canvas.setTool("pen");
+        const auto send=[&](QEvent::Type type,QPointF p){QMouseEvent event(type,p,p,type==QEvent::MouseMove?Qt::NoButton:Qt::LeftButton,type==QEvent::MouseButtonRelease?Qt::NoButton:Qt::LeftButton,Qt::NoModifier);if(type==QEvent::MouseButtonPress)canvas.mousePressEvent(&event);else if(type==QEvent::MouseMove)canvas.mouseMoveEvent(&event);else canvas.mouseReleaseEvent(&event);};
+        const auto start=canvas.screenPoint({20,20});send(QEvent::MouseButtonPress,start);
+        for(int i=1;i<=600;++i)send(QEvent::MouseMove,canvas.screenPoint({20+i*.2,20+5*std::sin(i*.1)}));
+        send(QEvent::MouseButtonRelease,canvas.screenPoint({140,20}));QCOMPARE(controller.page()->strokes.size(),std::size_t(1));QVERIFY(controller.page()->strokes[0].samples.size()>128);
+        QSGNode* scene=canvas.updatePaintNode(nullptr,nullptr);
+        canvas.setTool("compass");canvas.setCompassRadius(25);const auto g=canvas.compassGeometry();
+        const QPointF center(g["cx"].toDouble(),g["cy"].toDouble()),handle(g["dx"].toDouble(),g["dy"].toDouble());
+        const auto zero=canvas.screenPoint({0,0});const double scale=canvas.screenPoint({1,0}).x()-zero.x();const Point pivot{(center.x()-zero.x())/scale,(center.y()-zero.y())/scale};
+        send(QEvent::MouseButtonPress,handle);QVERIFY(canvas.drawing());
+        for(int step=0;step<=15;++step){
+            const double angle=step*.025;const auto d=handle-center;const auto point=center+QPointF(d.x()*std::cos(angle)-d.y()*std::sin(angle),d.x()*std::sin(angle)+d.y()*std::cos(angle));
+            if(step)send(QEvent::MouseMove,point);scene=canvas.updatePaintNode(scene,nullptr);
+            auto* live=scene->firstChild()->nextSibling()->lastChild();QVERIFY(live);int vertices=0;
+            std::vector<QSGNode*> nodes{live};bool onArc=true;
+            while(!nodes.empty()){
+                auto* child=nodes.back();nodes.pop_back();for(auto* next=child->firstChild();next;next=next->nextSibling())nodes.push_back(next);
+                if(auto* node=dynamic_cast<QSGGeometryNode*>(child)){
+                    const auto* mesh=node->geometry();const auto* points=mesh->vertexDataAsPoint2D();vertices+=mesh->vertexCount();
+                    for(int i=0;i<mesh->vertexCount();++i){const double radius=length(Point{points[i].x,points[i].y}-pivot);onArc&=std::isfinite(radius)&&std::abs(radius-25)<1;}
+                }
+            }
+            QVERIFY(onArc);
+            QVERIFY(vertices>0);QVERIFY(vertices<10000);
+            if(step==15)send(QEvent::MouseButtonRelease,point);
+        }
+        delete scene;QCOMPARE(controller.page()->strokes.size(),std::size_t(2));QVERIFY(controller.shutdown());
     }
     void predefinedShapesKeepInitialAnchor(){
         for(const auto tool:{QString("circle"),QString("ellipse"),QString("triangle"),QString("rectangle"),QString("line")})for(const auto delta:{Point{20,15},Point{-20,15},Point{20,-15},Point{-20,-15}}){

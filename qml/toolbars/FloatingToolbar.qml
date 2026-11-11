@@ -37,6 +37,10 @@ C.GlassPanel {
     property alias shapesButton: shapesButton
     property alias rulerButton: rulerButton
     property alias compassButton: compassButton
+    property bool hasRecording: false
+    property bool recording: false
+    property bool recordingEnabled: true
+    signal recordingRequested()
     property bool geometryMagnet: false
     signal magnetToggled()
     property string activeTool: "pen"
@@ -78,6 +82,7 @@ C.GlassPanel {
         C.ToolButton { id: rulerButton;objectName: "rulerToolButton"; iconName: "ruler"; label: "Régua · clique novamente para opções"; selected: root.activeTool === "ruler"; onClicked: { if(selected) root.geometryOptionsRequested(); else root.toolSelected("ruler") } }
         C.ToolButton { id: compassButton;objectName: "compassToolButton"; iconName: "compass"; label: "Compasso · clique novamente para opções"; selected: root.activeTool === "compass"; onClicked: { if(selected) root.geometryOptionsRequested(); else root.toolSelected("compass") } }
         C.ToolButton { objectName: "geometryMagnetButton"; iconName: "magnet"; label: "Ímã · encaixar compasso e régua em extremidades e interseções"; selected: root.geometryMagnet; onClicked: root.magnetToggled() }
+        C.IconButton { objectName: "recordConstructionButton"; implicitWidth: 36; implicitHeight: 36; iconName: root.recording ? "stop" : "video"; label: root.recording ? "Parar gravação dos passos" : root.hasRecording ? "Iniciar nova gravação e substituir os passos anteriores" : "Gravar os passos de uma construção"; selected: root.recording; enabled: root.recordingEnabled; onClicked: root.recordingRequested() }
         Rectangle { width: 1; height: Theme.xl; color: Theme.border }
         C.IconButton { iconName: "undo"; label: "Desfazer (Ctrl+Z)"; enabled: App.canUndo; onClicked: App.undo() }
         C.IconButton { iconName: "redo"; label: "Refazer (Ctrl+Shift+Z)"; enabled: App.canRedo; onClicked: App.redo() }

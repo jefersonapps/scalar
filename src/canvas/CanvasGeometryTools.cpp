@@ -75,6 +75,10 @@ bool CanvasItem::beginGeometryPointer(PointerSample s){
             compassBefore_=compass_;dragStart_=lastPan_=p;state_=next;
             selectedGuide_="compass";selection_.clear();selectionUpdated();
             if(state_==State::DrawingCompass){
+                // Compass samples are exact arc points, independent of the
+                // preceding freehand stroke's smoothing window.
+                smoothFreehand_=false;freehandSamples_.clear();
+                liveCurveStableSamples_=liveCurveReleasePrefix_=1;liveCurveReleaseSegment_=0;
                 input_.reset();current_={newId(),style_,{input_.filter(s)}};current_.samples[0].position=compass_.pencil();
                 compassSweep_.begin(compass_.angle);compassPointerAngle_=std::atan2(p.y-compass_.center.y,p.x-compass_.center.x);compassComplete_=false;
                 emit drawingChanged();update();

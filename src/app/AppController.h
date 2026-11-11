@@ -1,6 +1,7 @@
 #pragma once
 #include "documents/Document.h"
 #include "commands/History.h"
+#include "recording/ConstructionRecorder.h"
 #include "persistence/Library.h"
 #include "persistence/ProjectStore.h"
 #include "clipboard/ImageImporter.h"
@@ -21,6 +22,8 @@
 namespace scalar {
 class AppController : public QObject {
     Q_OBJECT
+    Q_PROPERTY(QObject* constructionRecorder READ constructionRecorder CONSTANT)
+    Q_PROPERTY(bool constructionPlayback READ constructionPlayback NOTIFY changed)
     Q_PROPERTY(bool toolbarBlurSupported READ toolbarBlurSupported NOTIFY toolbarBlurSupportChanged)
     Q_PROPERTY(QVariantList trashedProjects READ trashedProjects NOTIFY recentChanged)
     Q_PROPERTY(QVariantMap background READ background NOTIFY changed)
@@ -73,6 +76,9 @@ class AppController : public QObject {
     Q_PROPERTY(QString pdfError READ pdfError NOTIFY changed)
     Q_PROPERTY(bool exporting READ exporting NOTIFY changed)
 public:
+    QObject* constructionRecorder(){return &recorder_;}
+    bool constructionPlayback() const{return recorder_.replayPage()!=nullptr;}
+    Q_INVOKABLE void startConstructionRecording(QRectF region){if(page()&&!constructionPlayback())recorder_.start(*page(),region);}
     bool toolbarBlurSupported() const { return toolbarBlurSupported_; }
     Q_INVOKABLE void detectToolbarBlurSupport(QObject* qmlOwner);
     explicit AppController(QObject* parent=nullptr,const QString& dataDirectory={});
@@ -114,8 +120,8 @@ public:
     Q_INVOKABLE void setBackground(const QVariantMap& values);
     Q_INVOKABLE void applyBackgroundPreset(const QString& name);
     Q_INVOKABLE void saveBackgroundPreset(const QString& name,const QVariantMap& values);
-    bool canUndo() const {const auto i=histories_.find(page()?page()->id:"");return i!=histories_.end()&&i->second.canUndo();}
-    bool canRedo() const {const auto i=histories_.find(page()?page()->id:"");return i!=histories_.end()&&i->second.canRedo();}
+    bool canUndo() const {if(constructionPlayback())return false;const auto i=histories_.find(page()?page()->id:"");return i!=histories_.end()&&i->second.canUndo();}
+    bool canRedo() const {if(constructionPlayback())return false;const auto i=histories_.find(page()?page()->id:"");return i!=histories_.end()&&i->second.canRedo();}
     bool dirty() const { return dirty_; }
     bool loading() const { return loading_; }
     bool pageImagesLoading() const { return pageImagesPending_; }
@@ -149,7 +155,7 @@ public:
     QString defaultBackground() const;
     void setDefaultBackground(const QString& value);
     bool recoveryAvailable() const { return recovery_; }
-    const Page* page() const { return active()?&project_.pages[currentPage_]:nullptr; }
+    const Page* page() const { return recorder_.replayPage()?recorder_.replayPage():(active()?&project_.pages[currentPage_]:nullptr); }
     // Session-only viewport state: deliberately excluded from Project/ProjectStore.
     struct PageView { double zoom; Point center; };
     std::optional<PageView> sessionPageView(const QString& id) const {
@@ -243,6 +249,7 @@ signals:
 protected:
     bool eventFilter(QObject* watched,QEvent* event) override;
 private:
+    ConstructionRecorder recorder_;
     bool toolbarBlurSupportChecked_=false;
     bool toolbarBlurSupported_=false;
     QFutureWatcher<ImportedImage> fillWatcher_;

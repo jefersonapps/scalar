@@ -11,6 +11,14 @@ Item {
     // clipping when icons are inside a horizontally scrolling toolbar.
     layer.enabled: GraphicsInfo.api === GraphicsInfo.Software
     readonly property var paths: ({
+        video: "M15 8 L22 4 V20 L15 16 M4 5 H13 Q15 5 15 7 V17 Q15 19 13 19 H4 Q2 19 2 17 V7 Q2 5 4 5 Z",
+        deleteStep: "M4 7 H20 M9 7 V4 H15 V7 M6 7 L7 21 H17 L18 7 M10 11 V17 M14 11 V17",
+        record: "M20 12 A8 8 0 1 1 4 12 A8 8 0 1 1 20 12 M16 12 A4 4 0 1 1 8 12 A4 4 0 1 1 16 12",
+        play: "M8 4 L20 12 L8 20 Z",
+        pause: "M8 5 V19 M16 5 V19",
+        stop: "M5 5 H19 V19 H5 Z",
+        previousStep: "M5 4 V20 M19 4 L7 12 L19 20 Z",
+        nextStep: "M19 4 V20 M5 4 L17 12 L5 20 Z",
         bold: "M7 4 H13 A4 4 0 0 1 13 12 H7 V4 M7 12 H14 A4 4 0 0 1 14 20 H7 V12",
         italic: "M10 4 H20 M4 20 H14 M15 4 L9 20",
         magnet: "M4 4 H9 V13 A3 3 0 0 0 15 13 V4 H20 V13 A8 8 0 0 1 4 13 Z M4 8 H9 M15 8 H20",

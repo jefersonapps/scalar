@@ -10,6 +10,7 @@ import "../theme"
 import "../dialogs"
 Item {
     id: root
+    readonly property var recorder: App.constructionRecorder
     property bool overlaysOpen: false
     property bool browserOpen: false
     property bool browserCreated: false
@@ -111,7 +112,7 @@ Item {
         onWindowPointerReleased: Qt.callLater(function(){root.pressedTogglePanel=null})
         controller: App
         wheelZoomEnabled: !toolOptions.textPopupOpen && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.formattingOpen && !App.loading
-        enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && !App.loading && !App.pageImagesLoading && !fileOptions.visible && !pagesPanel.visible && !geometryOptions.visible && !penOptions.visible && !penOptions.colorDialogOpen && !shapeOptions.visible && !eraserOptions.visible && !backgroundOptions.visible && !backgroundOptions.colorDialogOpen
+        enabled: !App.constructionPlayback && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && !App.loading && !App.pageImagesLoading && !fileOptions.visible && !pagesPanel.visible && !geometryOptions.visible && !penOptions.visible && !penOptions.colorDialogOpen && !shapeOptions.visible && !eraserOptions.visible && !backgroundOptions.visible && !backgroundOptions.colorDialogOpen
         toolbarExclusion: Qt.rect(toolbar.x, toolbar.y-y, toolbar.width, toolbar.height)
         optionsExclusion: properties.visible ? Qt.rect(properties.x,properties.y-y,properties.width,properties.height) : Qt.rect(0,0,0,0)
         onTextRequested: (position, id) => inlineText.begin(Qt.rect(position.x,position.y,60,18),id)
@@ -195,7 +196,7 @@ Item {
     }
     DropArea {
         objectName: "boardImageDropArea"
-        anchors.fill: board; enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active
+        anchors.fill: board; enabled: !App.constructionPlayback && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active
         onEntered: drag => {
             if(drag.hasUrls || drag.formats.indexOf("text/html")>=0) drag.acceptProposedAction()
             else drag.accepted = false
@@ -239,7 +240,7 @@ Item {
         }
     }
     BusyIndicator { objectName: "pageImagesLoadingIndicator"; anchors.centerIn: board; visible: App.pageImagesLoading; running: visible }
-    PropertiesPanel { id: properties; canvas: board; onExportRequested: svg => root.exportSelection(svg); visible: board.selectedCount > 0 && board.tool === "select" && !inlineText.active; anchors.top: parent.top; anchors.right: board.right; anchors.topMargin: root.headerHeight+Theme.lg; anchors.rightMargin: Theme.lg }
+    PropertiesPanel { id: properties; enabled: !App.constructionPlayback; canvas: board; onExportRequested: svg => root.exportSelection(svg); visible: board.selectedCount > 0 && board.tool === "select" && !inlineText.active; anchors.top: parent.top; anchors.right: board.right; anchors.topMargin: root.headerHeight+Theme.lg; anchors.rightMargin: Theme.lg }
     RowLayout {
         id: topbar
         anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
@@ -267,12 +268,14 @@ Item {
         }
         ToolOptionsBar {
             id: toolOptions
+            enabled: !App.constructionPlayback
             Layout.fillWidth: true; Layout.minimumWidth: 40; Layout.preferredWidth: implicitWidth
             canvas: board; palette: penOptions; textEditor: inlineText
             onCustomColorRequested: penOptions.chooseCustomColor()
         }
         RowLayout {
             id: headerActions
+            enabled: !App.constructionPlayback
             objectName: "headerActions"
             Layout.minimumWidth: implicitWidth; Layout.maximumWidth: implicitWidth
             spacing: Theme.sm
@@ -336,21 +339,51 @@ Item {
         backdropSource: board
         anchors.horizontalCenter: board.horizontalCenter
         anchors.bottom: parent.bottom; anchors.bottomMargin: board.width < toolbar.width+2*navigator.width+Theme.lg*3 ? navigator.height+Theme.lg+Theme.md : Theme.xxl
+        hasRecording: root.recorder.count>0
+        recording: root.recorder.recording
+        recordingEnabled: !App.documentBusy && !root.recorder.exporting && !root.recorder.pending && !App.constructionPlayback || root.recorder.recording
+        onRecordingRequested: root.finishTextThen(function(){
+            board.cancelStroke()
+            if(root.recorder.recording)root.recorder.stop()
+            else {
+                const center=board.viewportCenter(),scale=board.zoom*96/25.4
+                App.startConstructionRecording(Qt.rect(center.x-board.width/(2*scale),center.y-board.height/(2*scale),board.width/scale,board.height/scale))
+            }
+        })
         geometryMagnet: board.geometryMagnet
         onMagnetToggled: {board.geometryMagnet=!board.geometryMagnet;board.forceActiveFocus()}
         activeTool: board.tool
         penColor: board.penColor
         markerColor: board.markerColor
-        onToolSelected: tool => root.finishTextThen(function(){ board.tool=tool;board.forceActiveFocus() })
+        onToolSelected: tool => root.finishTextThen(function(){ root.recorder.closePreview();board.tool=tool;board.forceActiveFocus() })
         onPenOptionsRequested: root.togglePanel(penOptions)
         onShapeOptionsRequested: root.togglePanel(shapeOptions)
         onEraserOptionsRequested: root.togglePanel(eraserOptions)
         onImageRequested: root.imageRequested()
         onGeometryOptionsRequested: root.togglePanel(geometryOptions)
     }
+    C.ConstructionTimeline {
+        id: constructionTimeline
+        recorder: root.recorder
+        enabled: !App.documentBusy
+        anchors.horizontalCenter: board.horizontalCenter
+        anchors.bottom: toolbar.top; anchors.bottomMargin: Theme.sm
+        width: Math.min(760,board.width-Theme.lg*2)
+        onExportRequested: format => {constructionExport.format=format;constructionExport.open()}
+    }
+    FileDialog {
+        id: constructionExport
+        property string format: "mp4"
+        title: "Exportar construção"
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: format
+        nameFilters: format==="gif" ? ["Animação GIF (*.gif)"] : ["Vídeo MP4 (*.mp4)"]
+        onAccepted: root.recorder.exportAnimation(selectedFile,format)
+    }
     C.PageNavigator {
         id: navigator
         objectName: "pageNavigator"
+        enabled: !App.constructionPlayback
         x: Math.max(Theme.lg,board.width-width-Theme.lg)
         y: root.height-height-Theme.lg
         onPreviousRequested: root.finishTextThen(function(){board.cancelStroke();App.selectPage(App.currentPage-1);board.forceActiveFocus()})
@@ -407,7 +440,7 @@ Item {
         text: board.drawing ? board.interactionHint : App.status
         color: Theme.secondary; font.pixelSize: Theme.caption; elide: Text.ElideRight
     }
-    Shortcut { sequence: "E"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.tool = "eraser" }
+    Shortcut { sequence: "E"; enabled: !App.constructionPlayback && !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.tool = "eraser" }
     readonly property bool penColorShortcutsEnabled: {
         const focus=root.Window.window ? root.Window.window.activeFocusItem : null
         const typing=focus && (focus.hasOwnProperty("textDocument") || focus.hasOwnProperty("acceptableInput"))
@@ -420,26 +453,26 @@ Item {
         model: 7
         delegate: Item {
             required property int index
-            Shortcut { sequence: String(index+1); context: Qt.ApplicationShortcut; enabled: !root.browserFocused && root.penColorShortcutsEnabled; onActivated: penOptions.pickColor(index) }
+            Shortcut { sequence: String(index+1); context: Qt.ApplicationShortcut; enabled: !App.constructionPlayback && !root.browserFocused && root.penColorShortcutsEnabled; onActivated: penOptions.pickColor(index) }
         }
     }
     readonly property bool eraserSizeShortcutsEnabled: board.tool === "eraser" && (board.enabled || eraserOptions.visible) && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && !projectTitle.editing && !zoomControl.editing
-    Shortcut { sequences: ["+", "]"]; enabled: !root.browserFocused && root.eraserSizeShortcutsEnabled; autoRepeat: true; onActivated: board.adjustEraserSize(true) }
-    Shortcut { sequences: ["-", "["]; enabled: !root.browserFocused && root.eraserSizeShortcutsEnabled; autoRepeat: true; onActivated: board.adjustEraserSize(false) }
-    Shortcut { sequence: "Ctrl+C"; enabled: !root.browserFocused && board.enabled && !projectTitle.editing && !zoomControl.editing && board.selectedCount > 0; onActivated: board.copySelection() }
-    Shortcut { sequence: "Ctrl+V"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && !projectTitle.editing && !zoomControl.editing; onActivated: board.pasteSelection() }
-    Shortcut { sequence: "V"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.tool = "select" }
-    Shortcut { sequence: "Delete"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && (board.selectedCount > 0 || board.selectedGuide !== ""); onActivated: board.deleteSelection() }
-    Shortcut { sequence: "Ctrl+D"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && board.selectedCount > 0; onActivated: board.duplicateSelection() }
-    Shortcut { sequence: "Ctrl+Up"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && board.selectedCount > 0; onActivated: board.moveSelectionLayer(true) }
-    Shortcut { sequence: "Ctrl+Down"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && board.selectedCount > 0; onActivated: board.moveSelectionLayer(false) }
-    Shortcut { sequence: "T"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.tool = "text" }
-    Shortcut { sequence: "P"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.tool = "pen" }
-    Shortcut { sequence: "M"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.tool = "marker" }
-    Shortcut { sequence: "Ctrl+Z"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && !board.drawing; onActivated: App.undo() }
-    Shortcut { sequence: "Ctrl+Shift+Z"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && !board.drawing; onActivated: App.redo() }
-    Shortcut { sequence: "Ctrl+S"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible; onActivated: root.finishTextThen(function(){App.save()}) }
-    Shortcut { sequence: "Ctrl+Shift+S"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: root.saveAsRequested() }
-    Shortcut { sequence: "Ctrl+PgDown"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: { board.cancelStroke(); App.selectPage(App.currentPage+1) } }
-    Shortcut { sequence: "Ctrl+PgUp"; enabled: !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: { board.cancelStroke(); App.selectPage(App.currentPage-1) } }
+    Shortcut { sequences: ["+", "]"]; enabled: !App.constructionPlayback && !root.browserFocused && root.eraserSizeShortcutsEnabled; autoRepeat: true; onActivated: board.adjustEraserSize(true) }
+    Shortcut { sequences: ["-", "["]; enabled: !App.constructionPlayback && !root.browserFocused && root.eraserSizeShortcutsEnabled; autoRepeat: true; onActivated: board.adjustEraserSize(false) }
+    Shortcut { sequence: "Ctrl+C"; enabled: !App.constructionPlayback && !root.browserFocused && board.enabled && !projectTitle.editing && !zoomControl.editing && board.selectedCount > 0; onActivated: board.copySelection() }
+    Shortcut { sequence: "Ctrl+V"; enabled: !App.constructionPlayback && !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && !projectTitle.editing && !zoomControl.editing; onActivated: board.pasteSelection() }
+    Shortcut { sequence: "V"; enabled: !App.constructionPlayback && !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.tool = "select" }
+    Shortcut { sequence: "Delete"; enabled: !App.constructionPlayback && !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && (board.selectedCount > 0 || board.selectedGuide !== ""); onActivated: board.deleteSelection() }
+    Shortcut { sequence: "Ctrl+D"; enabled: !App.constructionPlayback && !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && board.selectedCount > 0; onActivated: board.duplicateSelection() }
+    Shortcut { sequence: "Ctrl+Up"; enabled: !App.constructionPlayback && !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && board.selectedCount > 0; onActivated: board.moveSelectionLayer(true) }
+    Shortcut { sequence: "Ctrl+Down"; enabled: !App.constructionPlayback && !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && board.selectedCount > 0; onActivated: board.moveSelectionLayer(false) }
+    Shortcut { sequence: "T"; enabled: !App.constructionPlayback && !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.tool = "text" }
+    Shortcut { sequence: "P"; enabled: !App.constructionPlayback && !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.tool = "pen" }
+    Shortcut { sequence: "M"; enabled: !App.constructionPlayback && !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: board.tool = "marker" }
+    Shortcut { sequence: "Ctrl+Z"; enabled: !App.constructionPlayback && !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && !board.drawing; onActivated: App.undo() }
+    Shortcut { sequence: "Ctrl+Shift+Z"; enabled: !App.constructionPlayback && !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && !board.drawing; onActivated: App.redo() }
+    Shortcut { sequence: "Ctrl+S"; enabled: !App.constructionPlayback && !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible; onActivated: root.finishTextThen(function(){App.save()}) }
+    Shortcut { sequence: "Ctrl+Shift+S"; enabled: !App.constructionPlayback && !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: root.saveAsRequested() }
+    Shortcut { sequence: "Ctrl+PgDown"; enabled: !App.constructionPlayback && !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: { board.cancelStroke(); App.selectPage(App.currentPage+1) } }
+    Shortcut { sequence: "Ctrl+PgUp"; enabled: !App.constructionPlayback && !root.browserFocused && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active; onActivated: { board.cancelStroke(); App.selectPage(App.currentPage-1) } }
 }
