@@ -37,19 +37,23 @@ AbstractButton {
     leftPadding: Theme.lg;rightPadding: Theme.lg
     topPadding: 0;bottomPadding: 0
     background: Rectangle { color: root.hovered ? Theme.hover : Theme.background;radius: Theme.radiusMedium;border.color: popup.visible ? Theme.accent : Theme.border }
-    onClicked: popup.open()
+    onClicked: popup.visible ? popup.close() : popup.open()
     Popup {
         id: popup;objectName: "fontPickerPopup"
         parent: Overlay.overlay
-        width: root.width
+        width: Math.min(Math.max(root.width,320),root.Window.window ? root.Window.window.width-Theme.lg*2 : 320)
         height: Math.min(Theme.touch*9,root.Window.window ? root.Window.window.height-Theme.xxl*2 : Theme.touch*9)
         padding: Theme.md;margins: Theme.lg;focus: true
-        modal: true;dim: false
+        modal: false;dim: true
+        Overlay.modeless: MouseArea {
+            onPressed: mouse => { popup.close();mouse.accepted=true }
+            onWheel: wheel => wheel.accepted=true
+        }
+        background: GlassPanel { radius: Theme.radiusLarge }
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-        background: GlassPanel { color: Theme.dropdownSurface;border.color: Theme.dropdownBorder;radius: Theme.radiusLarge }
         onAboutToShow: {
             const position=root.mapToItem(Overlay.overlay,0,root.height+Theme.xs)
-            x=position.x;y=position.y
+            x=Math.max(Theme.lg,Math.min(position.x,(root.Window.window ? root.Window.window.width : position.x+width)-width-Theme.lg));y=position.y
         }
         onOpened: { search.clear();list.currentIndex=-1;list.positionViewAtBeginning();search.forceActiveFocus() }
         contentItem: ColumnLayout {
@@ -131,7 +135,7 @@ AbstractButton {
                             }
                             Icon { anchors.right: parent.right;anchors.verticalCenter: parent.verticalCenter;name: "check";color: Theme.accent;visible: root.familyLabel(root.fontFamily)===option.modelData.label }
                         }
-                        background: Rectangle { objectName: "fontOptionBackground_"+option.index;color: option.hovered ? Theme.dropdownHover : option.highlighted || root.familyLabel(root.fontFamily)===option.modelData.label ? Theme.accentSoft : "transparent";radius: Theme.radiusSmall }
+                        background: Rectangle { objectName: "fontOptionBackground_"+option.index;color: option.hovered ? Theme.hover : option.highlighted || root.familyLabel(root.fontFamily)===option.modelData.label ? Theme.selectionSurface : "transparent";radius: Theme.radiusSmall }
                         onClicked: { root.picked(modelData.family);popup.close() }
                     }
                     Keys.onReturnPressed: if(currentIndex>=0){root.picked(root.filteredEntries[currentIndex].family);popup.close()}

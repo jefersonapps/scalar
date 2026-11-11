@@ -35,7 +35,7 @@ namespace scalar {
 namespace {
 bool sameTextVisual(const TextObject& a,const TextObject& b){
     return a.source==b.source&&a.fontFamily==b.fontFamily&&a.style.rgba==b.style.rgba
-        &&a.fontSizePt==b.fontSizePt&&a.boxWidthMm==b.boxWidthMm&&a.boxHeightMm==b.boxHeightMm
+        &&a.lineSpacing==b.lineSpacing&&a.fontSizePt==b.fontSizePt&&a.boxWidthMm==b.boxWidthMm&&a.boxHeightMm==b.boxHeightMm
         &&a.bold==b.bold&&a.italic==b.italic&&a.alignment==b.alignment&&a.latexEnabled==b.latexEnabled
         &&a.corners==b.corners&&a.math==b.math&&a.formats==b.formats;
 }
@@ -506,13 +506,14 @@ QVariantMap AppController::textEmphasis(QObject* document,int start,int end) con
 void AppController::formatTextSelection(QObject* document,int start,int end,bool bold,bool enabled){scalar::formatTextSelection(document,start,end,bold,enabled);}
 void AppController::colorTextSelection(QObject* document,int start,int end,const QColor& color){scalar::colorTextSelection(document,start,end,color);}
 QVariantList AppController::textFormats(QObject* document,bool bold,bool italic) const {return scalar::textFormats(document,bold,italic);}
+void AppController::setTextLineSpacing(QObject* document,double value){scalar::setTextLineSpacing(document,value);}
 void AppController::restoreTextFormats(QObject* document,const QVariantList& formats){scalar::restoreTextFormats(document,formats);}
 QVariantMap AppController::textValues(const QString& id) const {
     if(page())if(auto object=findObject(*page(),id.toStdString()))if(const auto* t=std::get_if<TextObject>(&*object)){
         const auto c=t->style.rgba;const auto origin=t->corners[0],edge=t->corners[1]-origin;
         QVariantList formats;for(const auto& f:t->formats){QVariantMap span{{"start",int(f.start)},{"length",int(f.length)},{"bold",f.bold},{"italic",f.italic}};
             if(f.rgba){const auto c=*f.rgba;span.insert("color",QColor((c>>24)&255,(c>>16)&255,(c>>8)&255,c&255).name(QColor::HexArgb));}formats.append(span);}
-        return {{"latexEnabled",t->latexEnabled},{"source",QString::fromStdString(t->source)},{"fontFamily",QString::fromStdString(t->fontFamily)},{"fontSizePt",t->fontSizePt},{"bold",t->bold},{"italic",t->italic},{"alignment",t->alignment},{"color",QColor((c>>24)&255,(c>>16)&255,(c>>8)&255,c&255).name()},
+        return {{"latexEnabled",t->latexEnabled},{"source",QString::fromStdString(t->source)},{"fontFamily",QString::fromStdString(t->fontFamily)},{"fontSizePt",t->fontSizePt},{"lineSpacing",t->lineSpacing},{"bold",t->bold},{"italic",t->italic},{"alignment",t->alignment},{"color",QColor((c>>24)&255,(c>>16)&255,(c>>8)&255,c&255).name()},
             {"formats",formats},{"x",origin.x},{"y",origin.y},{"width",length(edge)},{"height",length(t->corners[3]-origin)},{"rotation",std::atan2(edge.y,edge.x)*180/std::numbers::pi},{"boxWidthMm",t->boxWidthMm},{"boxHeightMm",t->boxHeightMm}};
     }return {};
 }
@@ -524,11 +525,11 @@ void AppController::upsertText(const QString& id,QPointF position,const QVariant
     }else{t.id=newId();t.properties.zIndex=nextZIndex();t.corners={{position.x(),position.y()}};}
     const auto source=v.value("source").toString();const QColor c(v.value("color","#263345").toString());
     t.latexEnabled=v.value("latexEnabled",t.latexEnabled).toBool();
-    t.source=source.toStdString();t.fontFamily=v.value("fontFamily",defaultTextFont()).toString().toStdString();t.fontSizePt=v.value("fontSizePt",16).toDouble();t.bold=v.value("bold",false).toBool();t.italic=v.value("italic",false).toBool();t.alignment=v.value("alignment",0).toInt();
+    t.source=source.toStdString();t.fontFamily=v.value("fontFamily",defaultTextFont()).toString().toStdString();t.fontSizePt=v.value("fontSizePt",16).toDouble();t.lineSpacing=v.value("lineSpacing",1).toDouble();t.bold=v.value("bold",false).toBool();t.italic=v.value("italic",false).toBool();t.alignment=v.value("alignment",0).toInt();
     t.boxWidthMm=v.value("boxWidthMm",t.boxWidthMm).toDouble();t.boxHeightMm=v.value("boxHeightMm",t.boxHeightMm).toDouble();
     if(t.fontFamily.empty())t.fontFamily=defaultTextFont().toStdString();
     if(!std::isfinite(t.boxWidthMm)||!std::isfinite(t.boxHeightMm)||t.boxWidthMm<0||t.boxWidthMm>10000||t.boxHeightMm<0||t.boxHeightMm>10000){textError_="Dimensões da caixa de texto inválidas.";emit changed();return;}
-    if(source.trimmed().isEmpty()||t.source.size()>32768||!c.isValid()||!std::isfinite(t.fontSizePt)||t.fontSizePt<6||t.fontSizePt>144||t.alignment<0||t.alignment>2){textError_="Use texto de até 32 KiB e tamanho de 6 a 144 pt.";emit changed();return;}
+    if(source.trimmed().isEmpty()||t.source.size()>32768||!c.isValid()||!std::isfinite(t.fontSizePt)||!std::isfinite(t.lineSpacing)||t.lineSpacing<.5||t.lineSpacing>3||t.fontSizePt<6||t.fontSizePt>144||t.alignment<0||t.alignment>2){textError_="Use texto de até 32 KiB e tamanho de 6 a 144 pt.";emit changed();return;}
     if(v.contains("formats")){
         t.formats.clear();int previous=0;
         for(const auto& value:v["formats"].toList()){const auto f=value.toMap();const int start=f["start"].toInt(),length=f["length"].toInt();

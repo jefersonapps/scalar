@@ -95,6 +95,7 @@ public:
     Q_INVOKABLE void formatTextSelection(QObject* document,int start,int end,bool bold,bool enabled);
     Q_INVOKABLE void colorTextSelection(QObject* document,int start,int end,const QColor& color);
     Q_INVOKABLE QVariantList textFormats(QObject* document,bool defaultBold,bool defaultItalic) const;
+    Q_INVOKABLE void setTextLineSpacing(QObject* document,double value);
     Q_INVOKABLE void restoreTextFormats(QObject* document,const QVariantList& formats);
     QString textError() const {return textError_;}
     Q_INVOKABLE QVariantMap textValues(const QString& id) const;

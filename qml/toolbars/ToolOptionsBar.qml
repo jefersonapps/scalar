@@ -7,11 +7,14 @@ Rectangle {
     id: root
     objectName: "toolOptionsBar"
     property var canvas
+    readonly property bool textPopupOpen: textControls.popupOpen
+    property var textEditor
+    readonly property bool textContext: tool==="text" || (textEditor && textEditor.active) || (canvas.selectionName==="Texto" && canvas.selectedCount===1)
     property var palette
     readonly property string tool: canvas.tool
     readonly property bool marker: tool === "marker"
     readonly property bool shapes: ["line","circle","ellipse","triangle","rectangle"].indexOf(tool)>=0
-    readonly property bool ink: tool === "pen" || marker || shapes || tool === "compass"
+    readonly property bool ink: !textContext && (tool === "pen" || marker || shapes || tool === "compass")
     readonly property bool geometry: tool === "ruler" || tool === "compass"
     readonly property real inkWidth: marker ? canvas.markerWidth : canvas.penWidth
     signal customColorRequested()
@@ -41,11 +44,11 @@ Rectangle {
         RowLayout {
             id: row
             height: scroll.height; spacing: Theme.sm
-            Text { text: ({pen:"Caneta",marker:"Marcador",eraser:"Borracha",select:"Seleção",hand:"Mover",text:"Texto",ruler:"Régua",compass:"Compasso",line:"Linha",circle:"Círculo",ellipse:"Elipse",triangle:"Triângulo",rectangle:"Retângulo"})[root.tool] || "Ferramenta"; font.pixelSize: Theme.caption; font.weight: Font.DemiBold; color: Theme.secondary }
+            Text { text: root.textContext ? "Fonte" : ({pen:"Caneta",marker:"Marcador",eraser:"Borracha",select:"Seleção",hand:"Mover",text:"Texto",ruler:"Régua",compass:"Compasso",line:"Linha",circle:"Círculo",ellipse:"Elipse",triangle:"Triângulo",rectangle:"Retângulo"})[root.tool] || "Ferramenta"; font.pixelSize: Theme.caption; font.weight: Font.DemiBold; color: Theme.secondary }
             C.SelectField { implicitHeight: 32; Layout.maximumHeight: 32; visible: root.shapes; Layout.preferredWidth: 132; model: ["Linha","Círculo","Elipse","Triângulo","Retângulo"]; currentIndex: ["line","circle","ellipse","triangle","rectangle"].indexOf(root.tool); onActivated: {root.canvas.tool=["line","circle","ellipse","triangle","rectangle"][index];root.canvas.forceActiveFocus()} }
             C.ThicknessPresets { objectName: "toolbarThicknessPresets"; visible: root.ink; values: root.marker ? [1, 5.75, 10.5, 15.25, 20] : [0.1, 0.4, 1.6, 2.3, 3]; value: root.inkWidth; onPicked: thickness => { if(root.marker)root.canvas.markerWidth=thickness;else root.canvas.penWidth=thickness;root.canvas.forceActiveFocus() } }
             RowLayout {
-                visible: root.ink || root.tool==="text"; spacing: 2
+                visible: root.ink && !root.textContext; spacing: 2
                 Repeater {
                     model: root.palette.paletteColors
                     C.ColorButton { required property var modelData; required property int index; objectName: "toolbarInkColor_"+index; implicitWidth: 30; implicitHeight: 32; Layout.maximumHeight: 32; swatch: modelData; selected: Qt.colorEqual(root.palette.currentColor,swatch); onClicked: {root.palette.setColor(swatch);root.canvas.forceActiveFocus()} }
@@ -78,10 +81,14 @@ Rectangle {
             C.ActionButton { implicitHeight: 32; Layout.maximumHeight: 32; visible: root.tool==="compass"; text: "Traçar círculo"; onClicked: root.canvas.drawCompassCircle() }
             C.ActionButton { implicitHeight: 32; Layout.maximumHeight: 32; visible: root.geometry; text: "Centralizar"; onClicked: root.canvas.centerGeometryTools() }
             C.ActionButton { implicitHeight: 32; Layout.maximumHeight: 32; visible: root.geometry; text: "Ocultar"; onClicked: {if(root.tool==="compass")root.canvas.compassVisible=false;else root.canvas.rulerVisible=false;root.canvas.tool="pen"} }
-            Text { visible: root.tool==="select"; text: "Arraste para selecionar · Shift para adicionar · da direita para a esquerda inclui contato parcial"; color: Theme.secondary; font.pixelSize: Theme.caption }
+            Text { visible: root.tool==="select" && !root.textContext; text: "Arraste para selecionar · Shift para adicionar · da direita para a esquerda inclui contato parcial"; color: Theme.secondary; font.pixelSize: Theme.caption }
             Text { visible: root.tool==="hand"; text: "Arraste para mover o quadro"; color: Theme.secondary; font.pixelSize: Theme.caption }
-            C.ModernCheckBox { implicitHeight: 32; Layout.maximumHeight: 32; visible: root.tool==="text"; text: "LaTeX"; checked: App.sessionLatexEnabled; onToggled: App.sessionLatexEnabled=checked }
-            Text { visible: root.tool==="text"; text: "Arraste para criar uma caixa · formatação disponível durante a edição"; color: Theme.secondary; font.pixelSize: Theme.caption }
+            C.TextFormatControls {
+                id: textControls
+                visible: root.textContext
+                editor: root.textEditor; canvas: root.canvas
+            }
+
         }
     }
 }

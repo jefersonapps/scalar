@@ -110,7 +110,7 @@ Item {
         onWindowPointerPressed: position => root.rememberPanelTrigger(position)
         onWindowPointerReleased: Qt.callLater(function(){root.pressedTogglePanel=null})
         controller: App
-        wheelZoomEnabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.formattingOpen && !App.loading
+        wheelZoomEnabled: !toolOptions.textPopupOpen && !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.formattingOpen && !App.loading
         enabled: !root.overlaysOpen && !selectionExport.visible && !selectionMenu.visible && !inlineText.active && !App.loading && !App.pageImagesLoading && !fileOptions.visible && !pagesPanel.visible && !geometryOptions.visible && !penOptions.visible && !penOptions.colorDialogOpen && !shapeOptions.visible && !eraserOptions.visible && !backgroundOptions.visible && !backgroundOptions.colorDialogOpen
         toolbarExclusion: Qt.rect(toolbar.x, toolbar.y-y, toolbar.width, toolbar.height)
         optionsExclusion: properties.visible ? Qt.rect(properties.x,properties.y-y,properties.width,properties.height) : Qt.rect(0,0,0,0)
@@ -268,7 +268,7 @@ Item {
         ToolOptionsBar {
             id: toolOptions
             Layout.fillWidth: true; Layout.minimumWidth: 40; Layout.preferredWidth: implicitWidth
-            canvas: board; palette: penOptions
+            canvas: board; palette: penOptions; textEditor: inlineText
             onCustomColorRequested: penOptions.chooseCustomColor()
         }
         RowLayout {
@@ -361,18 +361,6 @@ Item {
     C.InlineTextEditor {
         id: inlineText; anchors.fill: board; canvas: board
         onFinished: { const action=root.afterTextEdit;root.afterTextEdit=null;if(action)action() }
-    }
-    Item {
-        objectName: "selectedTextControls"
-        visible: !inlineText.active && board.selectionName==="Texto" && board.selectedCount===1
-        x: board.x+board.selectionFrame.x; y: board.y+board.selectionFrame.y
-        width: board.selectionFrame.width; height: board.selectionFrame.height
-        rotation: board.selectionRotation; transformOrigin: Item.TopLeft
-        C.TextEditingToolbar {
-            y: -height-Theme.xs; showColors: false
-            formatButtonName: "selectedTextFormatButton"
-            onFormatRequested: { inlineText.begin(Qt.rect(0,0,60,18),board.selectedTextId());Qt.callLater(inlineText.openFormatting) }
-        }
     }
     GeometryOptions {
         id: geometryOptions; canvas: board

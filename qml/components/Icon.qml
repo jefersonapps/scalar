@@ -11,6 +11,8 @@ Item {
     // clipping when icons are inside a horizontally scrolling toolbar.
     layer.enabled: GraphicsInfo.api === GraphicsInfo.Software
     readonly property var paths: ({
+        bold: "M7 4 H13 A4 4 0 0 1 13 12 H7 V4 M7 12 H14 A4 4 0 0 1 14 20 H7 V12",
+        italic: "M10 4 H20 M4 20 H14 M15 4 L9 20",
         magnet: "M4 4 H9 V13 A3 3 0 0 0 15 13 V4 H20 V13 A8 8 0 0 1 4 13 Z M4 8 H9 M15 8 H20",
         home: "M3 10 L12 3 L21 10 M5 9 V21 H10 V15 H14 V21 H19 V9",
         planet: "M20 12 A8 8 0 1 1 4 12 A8 8 0 1 1 20 12 M4 12 H20 M12 4 C7 8 7 16 12 20 C17 16 17 8 12 4 M2 18 Q10 15 22 6",
@@ -74,7 +76,7 @@ Item {
         scale: Math.min(root.width, root.height) / 24
         ShapePath {
             strokeColor: root.color
-            strokeWidth: Theme.iconStroke
+            strokeWidth: root.name==="bold" ? 2.6 : root.name==="italic" ? 2 : Theme.iconStroke
             fillColor: "transparent"
             capStyle: ShapePath.RoundCap
             joinStyle: ShapePath.RoundJoin

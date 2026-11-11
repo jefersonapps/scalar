@@ -106,6 +106,7 @@ struct TextObject {
     std::string id,source,fontFamily;
     PenStyle style; // shared RGBA color, retained across text and math edits
     double fontSizePt=16;
+    double lineSpacing=1;
     double boxWidthMm=0,boxHeightMm=0; // zero retains legacy automatic sizing
     bool bold=false,italic=false;
     int alignment=0; // left, center, right

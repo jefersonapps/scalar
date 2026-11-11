@@ -8,6 +8,7 @@
 #include <QFontDatabase>
 #include <QPointer>
 #include <algorithm>
+#include <cmath>
 namespace scalar {
 namespace {
 class MathSourceHighlighter final : public QSyntaxHighlighter {
@@ -103,6 +104,11 @@ QVariantList textFormats(QObject* wrapper,bool defaultBold,bool defaultItalic){
         result.append(span);
     }
     return result;
+}
+void setTextLineSpacing(QObject* wrapper,double value){
+    auto* doc=document(wrapper);if(!doc||!std::isfinite(value))return;
+    auto cursor=range(doc,0,doc->characterCount()-1);QTextBlockFormat format;
+    format.setLineHeight(std::clamp(value,.5,3.)*100,QTextBlockFormat::ProportionalHeight);cursor.mergeBlockFormat(format);
 }
 void restoreTextFormats(QObject* wrapper,const QVariantList& formats){
     auto* doc=document(wrapper);if(!doc)return;

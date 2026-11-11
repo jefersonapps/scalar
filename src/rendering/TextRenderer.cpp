@@ -56,6 +56,7 @@ std::unique_ptr<QTextDocument> plainDocument(const TextObject& t){
     doc->setDefaultTextOption(option);
     doc->setPlainText(QString::fromStdString(t.source));
     QTextCursor cursor(doc.get());cursor.select(QTextCursor::Document);
+    QTextBlockFormat block;block.setLineHeight(t.lineSpacing*100,QTextBlockFormat::ProportionalHeight);cursor.mergeBlockFormat(block);
     QTextCharFormat base;base.setForeground(textColor(t));cursor.mergeCharFormat(base);
     const int limit=doc->characterCount()-1;
     for(const auto& f:t.formats){
@@ -117,7 +118,7 @@ Layout layout(const TextObject& t){
         lines.emplace_back(lineStart,out.runs.size(),x);
         h=std::max(lineHeight,ascent+descent);lineStart=out.runs.size();
     };
-    auto newline=[&]{finishLine();out.width=std::max(out.width,x);x=0;y+=h;h=lineHeight;};
+    auto newline=[&]{finishLine();out.width=std::max(out.width,x);x=0;y+=h*t.lineSpacing;h=lineHeight;};
     auto add=[&](QString word,const MathFragment* math,bool bold,bool italic,std::uint32_t rgba){
         auto runFont=f;runFont.setBold(bold);runFont.setItalic(italic);const QFontMetricsF runMetrics(runFont);
         const double w=math?math->widthEm*em:runMetrics.horizontalAdvance(word),height=math?math->heightEm*em:runMetrics.height();

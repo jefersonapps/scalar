@@ -638,16 +638,57 @@ private slots:
         const auto& stroke=controller.page()->strokes[0];QVERIFY(std::abs(length(stroke.samples.back().position-stroke.samples.front().position)-60)<1e-6);
         controller.undo();controller.undo();QVERIFY(std::abs(canvas.selectionRotation())<1e-6);controller.redo();QVERIFY(std::abs(canvas.selectionRotation()-90)<1e-6);QVERIFY(controller.shutdown());
     }
+    void contextualTextFormattingAndFourCornerResize(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();controller.setSessionLatexEnabled(false);
+        controller.upsertText({},QPointF(80,100),{{"source","Example text"},{"fontSizePt",16},{"boxWidthMm",60},{"boxHeightMm",30},{"latexEnabled",false}});QTRY_VERIFY(!controller.textBusy());
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());
+        auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());window->resize(1800,1000);QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);canvas->setTool("select");canvas->selectText(QString::fromStdString(controller.page()->texts[0].id));QTest::mouseDClick(window,Qt::LeftButton,Qt::NoModifier,canvas->mapToScene(canvas->screenPoint({90,105})).toPoint());
+        auto* editor=window->findChild<QObject*>("inlineTextEditor");QTRY_VERIFY(editor->property("active").toBool());QCOMPARE(canvas->tool(),QString("text"));QCoreApplication::processEvents();
+        auto* controls=findVisualItem(window->contentItem(),"inlineTextControls");QVERIFY(controls);QVERIFY(controls->isVisible());QVERIFY(controls->mapToScene({0,0}).y()<80);
+        auto* box=findVisualItem(window->contentItem(),"inlineTextBox");QVERIFY(box);
+        const std::vector<std::pair<const char*,QPointF>> corners={{"inlineTextResizeTopLeft",{-20,-15}},{"inlineTextResizeTopRight",{20,-15}},{"inlineTextResizeBottomLeft",{-20,15}},{"inlineTextResizeHandle",{20,15}}};
+        for(const auto& [name,delta]:corners){
+            auto* handle=findVisualItem(window->contentItem(),name);QVERIFY(handle);const auto start=handle->mapToScene({handle->width()/2,handle->height()/2});
+            const double w=editor->property("boxWidth").toDouble(),h=editor->property("boxHeight").toDouble();
+            QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,start.toPoint());QTest::mouseMove(window,(start+delta).toPoint());QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,(start+delta).toPoint());
+            QVERIFY(editor->property("boxWidth").toDouble()>w);QVERIFY(editor->property("boxHeight").toDouble()>h);
+        }
+        auto* size=findVisualItem(window->contentItem(),"toolbarTextSize");QVERIFY(size);size->setProperty("editText","24");QVERIFY(QMetaObject::invokeMethod(size,"accepted"));QCOMPARE(editor->property("draft").toMap()["fontSizePt"].toInt(),24);
+        auto* spacing=findVisualItem(window->contentItem(),"toolbarTextLineSpacing");QVERIFY(spacing);QVERIFY(QMetaObject::invokeMethod(spacing,"activated",Q_ARG(int,3)));
+        QCOMPARE(editor->property("draft").toMap()["lineSpacing"].toDouble(),2.);
+        auto* source=findVisualItem(window->contentItem(),"textSource");QVERIFY(source);QVERIFY(QMetaObject::invokeMethod(source,"select",Q_ARG(int,0),Q_ARG(int,7)));
+        auto* bold=findVisualItem(window->contentItem(),"inlineBoldButton");QVERIFY(bold);QVERIFY(QMetaObject::invokeMethod(bold,"clicked"));
+        QVERIFY(controller.textEmphasis(source->property("textDocument").value<QObject*>(),0,7)["bold"].toBool());
+        QVERIFY(QMetaObject::invokeMethod(editor,"finish"));QTRY_VERIFY(!editor->property("active").toBool());QCOMPARE(controller.page()->texts[0].fontSizePt,24.);QCOMPARE(controller.page()->texts[0].lineSpacing,2.);
+        auto* alignment=findVisualItem(window->contentItem(),"toolbarTextAlignment");QVERIFY(alignment);
+        auto* alignmentPopup=alignment->property("popup").value<QObject*>();QVERIFY(alignmentPopup);
+        const auto trigger=alignment->mapToScene({alignment->width()/2,alignment->height()/2}).toPoint();
+        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,trigger);QTRY_VERIFY(alignmentPopup->property("opened").toBool());
+        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,trigger);QTRY_VERIFY(!alignmentPopup->property("visible").toBool());
+        auto* font=findVisualItem(window->contentItem(),"toolbarTextFont");QVERIFY(font);
+        const auto fontTrigger=font->mapToScene({font->width()/2,font->height()/2}).toPoint();
+        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,fontTrigger);QTRY_VERIFY(font->property("expanded").toBool());
+        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,fontTrigger);QTRY_VERIFY(!font->property("expanded").toBool());
+        for(const auto blank:{QString(),QString("   ")}){
+            canvas->setTool("text");
+            QVERIFY(QMetaObject::invokeMethod(editor,"begin",Q_ARG(QVariant,QVariant(QRectF(20,20,60,18))),Q_ARG(QVariant,QVariant(QString()))));QTRY_VERIFY(editor->property("active").toBool());
+            source->setProperty("text",blank);
+            QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,canvas->mapToScene({300,200}).toPoint());
+            QTRY_VERIFY(!editor->property("active").toBool());QCOMPARE(canvas->tool(),QString("select"));QCOMPARE(controller.page()->texts.size(),std::size_t(1));
+        }
+        QVERIFY(warnings.isEmpty());QVERIFY(controller.shutdown());
+    }
     void rotatedTextControlsAndInlineCornerResize(){
         QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
         controller.upsertText({},QPointF(90,100),{{"source","Short text"},{"fontSizePt",16},{"boxWidthMm",60},{"boxHeightMm",30}});QTRY_VERIFY(!controller.textBusy());QCOMPARE(controller.page()->texts.size(),std::size_t(1));
         const auto original=controller.page()->texts[0];const auto rotated=transformed(CanvasObject(original),original.corners[0],{},1,1,std::numbers::pi/4);controller.changeObjects({{CanvasObject(original),rotated}},CommandKind::TransformObject);
         QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));
         auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);canvas->setTool("select");canvas->selectText(QString::fromStdString(original.id));
-        auto* controls=findVisualItem(window->contentItem(),"selectedTextControls");QVERIFY(controls);QVERIFY(controls->isVisible());QVERIFY(std::abs(controls->rotation()-45)<1e-6);
+        QVERIFY(!findVisualItem(window->contentItem(),"selectedTextControls"));
         canvas->editSelectedText();auto* inlineEditor=window->findChild<QObject*>("inlineTextEditor");QVERIFY(inlineEditor);QTRY_VERIFY(inlineEditor->property("active").toBool());QCoreApplication::processEvents();
         auto* selectionFrame=findVisualItem(window->contentItem(),"selectionFrame");auto* handles=window->findChild<QObject*>("selectionHandleRepeater");QVERIFY(selectionFrame);QVERIFY(handles);QVERIFY(!selectionFrame->isVisible());QCOMPARE(handles->property("count").toInt(),0);
-        auto* box=findVisualItem(window->contentItem(),"inlineTextBox");auto* inlineControls=findVisualItem(window->contentItem(),"inlineTextControls");auto* resize=findVisualItem(window->contentItem(),"inlineTextResizeHandle");QVERIFY(box);QVERIFY(inlineControls);QVERIFY(resize);QCOMPARE(inlineControls->parentItem(),box);QVERIFY(std::abs(box->rotation()-45)<1e-6);
+        auto* box=findVisualItem(window->contentItem(),"inlineTextBox");auto* inlineControls=findVisualItem(window->contentItem(),"inlineTextControls");auto* resize=findVisualItem(window->contentItem(),"inlineTextResizeHandle");QVERIFY(box);QVERIFY(inlineControls);QVERIFY(resize);QVERIFY(inlineControls->parentItem()!=box);QVERIFY(inlineControls->mapToScene({0,0}).y()<80);QVERIFY(std::abs(box->rotation()-45)<1e-6);
         const double width=inlineEditor->property("boxWidth").toDouble(),height=inlineEditor->property("boxHeight").toDouble();
         const auto start=resize->mapToScene({resize->width()/2,resize->height()/2});const auto end=box->mapToScene({box->width()+40,box->height()+30});
         QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,start.toPoint());QTest::mouseMove(window,end.toPoint());QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,end.toPoint());
@@ -655,25 +696,7 @@ private slots:
         QVERIFY(!selectionFrame->isVisible());QCOMPARE(handles->property("count").toInt(),0);
         QTest::keyClick(window,Qt::Key_Return,Qt::ControlModifier);QTRY_VERIFY(!inlineEditor->property("active").toBool());const auto updated=controller.page()->texts[0];QCOMPARE(updated.fontSizePt,16.);QVERIFY(updated.boxWidthMm>width);QVERIFY(updated.boxHeightMm>height);const auto edge=updated.corners[1]-updated.corners[0];QVERIFY(std::abs(std::atan2(edge.y,edge.x)-std::numbers::pi/4)<1e-6);
         QTRY_VERIFY(selectionFrame->isVisible());QTRY_VERIFY(handles->property("count").toInt()>0);
-        canvas->editSelectedText();QTRY_VERIFY(inlineEditor->property("active").toBool());QCoreApplication::processEvents();
-        auto* source=findVisualItem(window->contentItem(),"textSource");QVERIFY(source);QVERIFY(QMetaObject::invokeMethod(source,"select",Q_ARG(int,0),Q_ARG(int,5)));
-        auto* swatch=findVisualItem(window->contentItem(),"inlineTextColor_3");QVERIFY(swatch);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,swatch->mapToScene({swatch->width()/2,swatch->height()/2}).toPoint());
-        QCOMPARE(source->property("selectionStart").toInt(),0);QCOMPARE(source->property("selectionEnd").toInt(),5);
-        auto* wrapper=source->property("textDocument").value<QObject*>();const auto coloredFormats=controller.textFormats(wrapper,false,false);QVERIFY(!coloredFormats.isEmpty());QCOMPARE(coloredFormats[0].toMap()["start"].toInt(),0);QCOMPARE(coloredFormats[0].toMap()["length"].toInt(),5);QVERIFY(coloredFormats[0].toMap().contains("color"));
-        auto* formatButton=findVisualItem(window->contentItem(),"textFormatButton");QVERIFY(formatButton);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,formatButton->mapToScene({formatButton->width()/2,formatButton->height()/2}).toPoint());
-        auto* dialog=window->findChild<QObject*>("textDialog");QVERIFY(dialog);QTRY_VERIFY(dialog->property("visible").toBool());auto draft=dialog->property("draft").toMap();draft["color"]="#cc5364";dialog->setProperty("draft",draft);
-        auto* apply=findVisualItem(window->contentItem(),"applyTextFormatButton");QVERIFY(apply);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,apply->mapToScene({apply->width()/2,apply->height()/2}).toPoint());QTRY_VERIFY(!dialog->property("visible").toBool());
-        const auto chosen=controller.textFormats(wrapper,false,false);QCOMPARE(QColor(chosen[0].toMap()["color"].toString()),QColor("#cc5364"));QCOMPARE(chosen[0].toMap()["length"].toInt(),5);
-        QVERIFY(window->grabWindow().save("text-editing-toolbar.png"));
-        QTest::keyClick(window,Qt::Key_Return,Qt::ControlModifier);QTRY_VERIFY(!inlineEditor->property("active").toBool());const auto coloredText=controller.page()->texts[0];QVERIFY(coloredText.formats[0].rgba);QCOMPARE(*coloredText.formats[0].rgba,std::uint32_t(0xcc5364ff));QCOMPARE(coloredText.style.rgba,updated.style.rgba);
-        const auto loaded=ProjectStore::deserialize(ProjectStore::serialize(Project{newId(),"Colors","now","now",{*controller.page()}}));QVERIFY(loaded);QCOMPARE(loaded.project.pages[0].texts[0].formats,coloredText.formats);
-        canvas->editSelectedText();QTRY_VERIFY(inlineEditor->property("active").toBool());QCoreApplication::processEvents();QVERIFY(QMetaObject::invokeMethod(source,"select",Q_ARG(int,0),Q_ARG(int,0)));
-        swatch=findVisualItem(window->contentItem(),"inlineTextColor_1");QVERIFY(swatch);const auto wholeColor=swatch->property("swatch").value<QColor>();QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,swatch->mapToScene({swatch->width()/2,swatch->height()/2}).toPoint());
-        const auto wholeFormats=controller.textFormats(wrapper,false,false);QCOMPARE(wholeFormats.size(),1);QCOMPARE(wholeFormats[0].toMap()["length"].toInt(),source->property("text").toString().size());QCOMPARE(QColor(wholeFormats[0].toMap()["color"].toString()).rgba(),wholeColor.rgba());
-        formatButton=findVisualItem(window->contentItem(),"textFormatButton");QVERIFY(formatButton);QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,formatButton->mapToScene({formatButton->width()/2,formatButton->height()/2}).toPoint());QTRY_VERIFY(dialog->property("visible").toBool());draft=dialog->property("draft").toMap();draft["color"]="#397ce0";dialog->setProperty("draft",draft);
-        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,apply->mapToScene({apply->width()/2,apply->height()/2}).toPoint());QTRY_VERIFY(!dialog->property("visible").toBool());const auto all=controller.textFormats(wrapper,false,false);QCOMPARE(all.size(),1);QCOMPARE(all[0].toMap()["length"].toInt(),source->property("text").toString().size());QCOMPARE(QColor(all[0].toMap()["color"].toString()),QColor("#397ce0"));
-        QTest::keyClick(window,Qt::Key_Return,Qt::ControlModifier);QTRY_VERIFY(!inlineEditor->property("active").toBool());
-        QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
+        QVERIFY(warnings.isEmpty());QVERIFY(controller.shutdown());
     }
     void newBoardKeepsCurrentFolderAndSavesBeforeSwitching(){
         QTemporaryDir directory;AppController controller(nullptr,directory.filePath("library"));const auto folder=controller.saveFolder({},"Aulas","#268fb5");
@@ -801,7 +824,7 @@ private slots:
         auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));
         auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);
         const QString source=QString::fromUtf8("Deseja-se interpolar 5 meios aritméticos entre cada termo da PA (1, 3, 5).\n\na) Determine a razão da PA obtida.\n\nb) Qual é a quantidade de termos dessa nova PA?\n\nTexto longo sem espaços: abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz");
-        controller.upsertText({},QPointF(20,30),{{"source",source},{"fontFamily",latexTextFont()},{"fontSizePt",16},{"boxWidthMm",160},{"boxHeightMm",5},{"latexEnabled",false},{"color","#ffffff"}});
+        controller.upsertText({},QPointF(20,30),{{"source",source},{"fontFamily",latexTextFont()},{"fontSizePt",16},{"boxWidthMm",160},{"boxHeightMm",5},{"lineSpacing",1.5},{"latexEnabled",false},{"color","#ffffff"}});
         QTRY_VERIFY(!controller.textBusy());QCOMPARE(controller.page()->texts.size(),std::size_t(1));
         const auto text=controller.page()->texts.front();canvas->selectText(QString::fromStdString(text.id));canvas->editSelectedText();
         auto* inlineEditor=window->findChild<QObject*>("inlineTextEditor");QTRY_VERIFY(inlineEditor->property("active").toBool());
@@ -2902,11 +2925,10 @@ private slots:
         QTest::keyClick(window,Qt::Key_I,Qt::ControlModifier);
         QVERIFY(controller.textEmphasis(textDocument,8,16)["italic"].toBool());QVERIFY(!controller.textEmphasis(textDocument,0,4)["italic"].toBool());
         QDir().mkpath("screenshots");QVERIFY(window->grabWindow().save("screenshots/text-inline-cursive.png"));
-        auto* format=findVisualItem(window->contentItem(),"textFormatButton");QVERIFY(format);
-        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,format->mapToScene({format->width()/2,format->height()/2}).toPoint());QTRY_VERIFY(dialog->property("opened").toBool());
+        QVERIFY(!findVisualItem(window->contentItem(),"textFormatButton"));
         QVERIFY(window->grabWindow().save("screenshots/text-formatting.png"));
         QVERIFY(!controller.fontFamilies().empty());QVERIFY(controller.fontFamilies().contains(controller.defaultTextFont()));
-        auto* fontSelector=findVisualItem(window->contentItem(),"textFontSelector");QVERIFY(fontSelector);
+        auto* fontSelector=findVisualItem(window->contentItem(),"toolbarTextFont");QVERIFY(fontSelector);
         QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,fontSelector->mapToScene({fontSelector->width()/2,fontSelector->height()/2}).toPoint());
         auto* fontPopup=window->findChild<QObject*>("fontPickerPopup");QVERIFY(fontPopup);QTRY_VERIFY(fontPopup->property("opened").toBool());
         auto* fontList=findVisualItem(window->contentItem(),"fontList");QVERIFY(fontList);QVERIFY(fontList->property("count").toInt()>6);
@@ -2946,17 +2968,15 @@ private slots:
         QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,thumbStart+QPoint(0,int(fontScrollBar->height()-15)));
         QVERIFY(fontList->property("contentY").toDouble()>fontList->property("contentHeight").toDouble()/2);
         QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,QPoint(600,170));
-        QTRY_VERIFY(!fontPopup->property("visible").toBool());QVERIFY(dialog->property("visible").toBool());
+        QTRY_VERIFY(!fontPopup->property("visible").toBool());QVERIFY(!dialog->property("visible").toBool());
         QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,fontSelector->mapToScene({fontSelector->width()/2,fontSelector->height()/2}).toPoint());
         QTRY_VERIFY(fontPopup->property("opened").toBool());
         QVERIFY(window->grabWindow().save("screenshots/text-font-picker.png"));
         auto* fontSearch=findVisualItem(window->contentItem(),"fontSearchField");QVERIFY(fontSearch);fontSearch->setProperty("text","DejaVu Sans");
         QTRY_VERIFY(fontList->property("count").toInt()>0);QTRY_VERIFY(fontSearch->hasActiveFocus());
         QTest::keyClick(window,Qt::Key_Return);QTRY_VERIFY(!fontPopup->property("visible").toBool());
-        QVERIFY(dialog->property("draft").toMap()["fontFamily"].toString().contains("DejaVu Sans"));
-        auto draft=dialog->property("draft").toMap();draft["fontFamily"]="DejaVu Sans";draft["fontSizePt"]=20;draft["color"]="#397ce0";dialog->setProperty("draft",draft);
-        auto* apply=findVisualItem(window->contentItem(),"applyTextFormatButton");QVERIFY(apply);
-        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,apply->mapToScene({apply->width()/2,apply->height()/2}).toPoint());QTRY_VERIFY(!dialog->property("visible").toBool());QTRY_VERIFY(source->hasActiveFocus());
+        QVERIFY(inlineEditor->property("draft").toMap()["fontFamily"].toString().contains("DejaVu Sans"));
+        auto* size=findVisualItem(window->contentItem(),"toolbarTextSize");QVERIFY(size);size->setProperty("editText","20");QVERIFY(QMetaObject::invokeMethod(size,"accepted"));QTRY_VERIFY(source->hasActiveFocus());
         QDir().mkpath("screenshots");QVERIFY(window->grabWindow().save("screenshots/text-inline-editing.png"));
         QTest::keyClick(window,Qt::Key_Return,Qt::ControlModifier);QTRY_VERIFY(!inlineEditor->property("active").toBool());QCOMPARE(controller.page()->texts.size(),std::size_t(1));
         const auto text=controller.page()->texts[0];QCOMPARE(text.source,std::string("Aula de geometria"));QCOMPARE(text.fontFamily,std::string("DejaVu Sans"));QCOMPARE(text.fontSizePt,20.);QCOMPARE(text.boxWidthMm,box.width());
