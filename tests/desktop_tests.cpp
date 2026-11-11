@@ -1586,18 +1586,24 @@ private slots:
         InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();canvas.setTool("ruler");
         QPointingDevice pen("Pen",1,QInputDevice::DeviceType::Stylus,QPointingDevice::PointerType::Pen,QInputDevice::Capability::Position|QInputDevice::Capability::Pressure,1,3);
         const auto rulerPoint=[&](double x,double y){const auto g=canvas.rulerGeometry();const double a=g["angle"].toDouble()*std::numbers::pi/180,s=g["scale"].toDouble();return QPointF(g["x"].toDouble()+s*(x*std::cos(a)-y*std::sin(a)),g["y"].toDouble()+s*(x*std::sin(a)+y*std::cos(a)));};
-        for(bool tablet:{false,true}){
+        for(double degrees:{-1080.1,-360.,-30.,0.,360.,725.}){
+            canvas.setRulerAngle(degrees);
+            QVERIFY(canvas.rulerAngle()>=0&&canvas.rulerAngle()<360);
+        }
+        for(bool rightHandle:{false,true})for(bool tablet:{false,true}){
             canvas.setRulerAngle(7); // Snap absolute angles, not offsets from the grab angle.
             const auto center=rulerPoint(canvas.rulerLength()/2,RulerGeometry::widthMm/2);
-            const double radius=canvas.rulerLength()/2*canvas.rulerGeometry()["scale"].toDouble();
-            const auto target=[&](double degrees){const auto a=degrees*std::numbers::pi/180;return center-QPointF(std::cos(a)*radius,std::sin(a)*radius);};
+            const auto geometry=canvas.rulerGeometry();
+            const double inset=geometry["rotationInset"].toDouble()/geometry["scale"].toDouble();
+            const double radius=(canvas.rulerLength()/2-inset)*geometry["scale"].toDouble();
+            const auto target=[&](double degrees){const auto a=degrees*std::numbers::pi/180;return center+QPointF(std::cos(a)*radius,std::sin(a)*radius)*(rightHandle?1.:-1.);};
             const auto send=[&](QEvent::Type type,QPointF local,Qt::KeyboardModifiers modifiers){
                 const bool release=type==QEvent::MouseButtonRelease,move=type==QEvent::MouseMove;
                 if(tablet){QTabletEvent event(release?QEvent::TabletRelease:move?QEvent::TabletMove:QEvent::TabletPress,&pen,local,local,release?0:.5,0,0,0,0,0,modifiers,move?Qt::NoButton:Qt::LeftButton,release?Qt::NoButton:Qt::LeftButton);QCoreApplication::sendEvent(&canvas,&event);}
                 else {QMouseEvent event(type,local,local,move?Qt::NoButton:Qt::LeftButton,release?Qt::NoButton:Qt::LeftButton,modifiers);if(release)canvas.mouseReleaseEvent(&event);else if(move)canvas.mouseMoveEvent(&event);else canvas.mousePressEvent(&event);}
             };
             const auto angle=[&]{return std::remainder(canvas.rulerAngle(),360.);};
-            send(QEvent::MouseButtonPress,rulerPoint(0,RulerGeometry::widthMm/2),Qt::NoModifier);
+            send(QEvent::MouseButtonPress,rulerPoint(rightHandle?canvas.rulerLength()-inset:inset,RulerGeometry::widthMm/2),Qt::NoModifier);
             send(QEvent::MouseMove,target(23.2),Qt::NoModifier);QVERIFY(std::abs(angle()-23.2)<1e-8);
             QKeyEvent down(QEvent::KeyPress,Qt::Key_Control,Qt::ControlModifier);canvas.keyPressEvent(&down);QVERIFY(std::abs(angle()-30)<1e-8);
             send(QEvent::MouseMove,target(44),Qt::ControlModifier);QVERIFY(std::abs(angle()-45)<1e-8);
@@ -1761,7 +1767,7 @@ private slots:
         auto center=rulerPoint(canvas->rulerLength()/3,6);QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,center);QTest::mouseMove(window,center+QPoint(25,-15));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,center+QPoint(25,-15));QVERIFY(std::abs(canvas->rulerGeometry()["x"].toDouble()-ruler["x"].toDouble()-25)<1);
         const auto beforeCancel=canvas->rulerGeometry();center=rulerPoint(canvas->rulerLength()/3,6);QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,center);QTest::mouseMove(window,center+QPoint(20,0));QTest::keyClick(window,Qt::Key_Escape);QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,center+QPoint(20,0));QCOMPARE(canvas->rulerGeometry()["x"],beforeCancel["x"]);
         const auto resizeStart=rulerPoint(canvas->rulerLength(),6),resizeEnd=rulerPoint(150,6);QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,resizeStart);QTest::mouseMove(window,resizeEnd);QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,resizeEnd);QVERIFY(std::abs(canvas->rulerLength()-150)<1);
-        const auto rotateStart=rulerPoint(0,6),rotateEnd=rulerPoint(canvas->rulerLength()/2,6-canvas->rulerLength()/2);QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,rotateStart);QTest::mouseMove(window,rotateEnd);QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,rotateEnd);QVERIFY(std::abs(std::cos(canvas->rulerAngle()*std::numbers::pi/180))<.03);
+        const auto rotateStart=rulerPoint(canvas->rulerGeometry()["rotationInset"].toDouble()/canvas->rulerGeometry()["scale"].toDouble(),6),rotateEnd=rulerPoint(canvas->rulerLength()/2,6-canvas->rulerLength()/2);QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,rotateStart);QTest::mouseMove(window,rotateEnd);QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,rotateEnd);QVERIFY(std::abs(std::cos(canvas->rulerAngle()*std::numbers::pi/180))<.03);
         canvas->setRulerAngle(25);canvas->setTool("pen");
         QPointingDevice pen("Geometry test pen",456,QInputDevice::DeviceType::Stylus,QPointingDevice::PointerType::Pen,QInputDevice::Capability::Position|QInputDevice::Capability::Pressure,1,1);
         const auto send=[&](QEvent::Type type,QPoint pos,double pressure){QTabletEvent event(type,&pen,pos,window->mapToGlobal(pos),pressure,0,0,0,0,0,Qt::NoModifier,type==QEvent::TabletMove?Qt::NoButton:Qt::LeftButton,type==QEvent::TabletRelease?Qt::NoButton:Qt::LeftButton);QCoreApplication::sendEvent(window,&event);};

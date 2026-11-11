@@ -1,9 +1,13 @@
 #include "CanvasItem.h"
 #include <cmath>
 namespace scalar {
+double CanvasItem::rulerAngle() const {
+    const double degrees=std::fmod(ruler_.angle*180/std::numbers::pi,360.);
+    return degrees<0?degrees+360.:degrees;
+}
 QVariantMap CanvasItem::rulerGeometry() const {
     const auto origin=view_.worldToScreen(ruler_.origin);const double scale=view_.pixelsPerMm*view_.zoom;
-    return {{"x",origin.x},{"y",origin.y},{"angle",rulerAngle()},{"length",ruler_.lengthMm*scale},{"width",RulerGeometry::widthMm*scale},{"scale",scale},{"mm",ruler_.lengthMm},{"flipped",rulerFlipped_}};
+    return {{"x",origin.x},{"y",origin.y},{"angle",rulerAngle()},{"length",ruler_.lengthMm*scale},{"width",RulerGeometry::widthMm*scale},{"scale",scale},{"mm",ruler_.lengthMm},{"flipped",rulerFlipped_},{"rotationInset",std::min(10.,ruler_.lengthMm*.2)*scale}};
 }
 Point CanvasItem::compassDrawHandle() const {
     const auto tip=compass_.pencil(),direction=tip-compass_.hinge();
@@ -60,12 +64,18 @@ bool CanvasItem::beginGeometryPointer(PointerSample s){
     }
     if(rulerVisible_&&(tool_=="ruler"||tool_=="compass"||tool_=="pen"||tool_=="select")){
         const auto q=ruler_.local(p);const Point center{ruler_.lengthMm/2,RulerGeometry::widthMm/2};
-        if(length(q-center)<tolerance){
+        const double inset=std::min(10.,ruler_.lengthMm*.2);
+        const double left=length(q-Point{inset,center.y});
+        const double right=length(q-Point{ruler_.lengthMm-inset,center.y});
+        const double end=length(q-Point{ruler_.lengthMm,center.y});
+        const double middle=length(q-center);
+        const double nearest=std::min({left,right,end,middle});
+        if(middle==nearest&&middle<tolerance){
             if(tool_=="compass")setTool("ruler");
             flipRuler();state_=State::FlippingRuler;return true;
         }
-        const double left=length(q-Point{0,RulerGeometry::widthMm/2}),right=length(q-Point{ruler_.lengthMm,RulerGeometry::widthMm/2}),middle=length(q-center);
-        const bool rotate=left<tolerance&&left<std::min(right,middle),resize=right<tolerance&&right<std::min(left,middle);
+        const bool rotate=std::min(left,right)==nearest&&nearest<tolerance;
+        const bool resize=end==nearest&&nearest<tolerance&&!rotate;
         // A pen starting near an edge draws along it; the controls still move the ruler.
         const bool nearDrawingEdge=tool_=="pen"&&rulerSnap_&&ruler_.nearEdge(p,rulerSnapDistance_).has_value();
         const bool body=!nearDrawingEdge&&q.x>=0&&q.x<=ruler_.lengthMm&&q.y>0&&q.y<RulerGeometry::widthMm;

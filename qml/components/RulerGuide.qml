@@ -12,7 +12,7 @@ Item {
     width: geometry.length; height: geometry.width
     rotation: geometry.angle; transformOrigin: Item.TopLeft
     Rectangle { anchors.fill: parent; radius: Theme.xs; color: Theme.guideSurface; border.color: Theme.guideInk; border.width: root.canvas.selectedGuide === "ruler" ? Theme.focusBorder : Theme.hairline }
-    Text { x: (root.width-width)/2; y: -height-Theme.sm; text: root.geometry.mm.toFixed(0) + " mm · " + Number(root.geometry.angle.toFixed(1)) + "°"; color: Theme.guideInk; font.pixelSize: Theme.caption }
+    Text { x: (root.width-width)/2; y: -height-Theme.sm; text: root.geometry.mm.toFixed(0) + " mm · " + (Number(root.geometry.angle.toFixed(1))%360) + "°"; color: Theme.guideInk; font.pixelSize: Theme.caption }
     Text { x: root.width-width-Theme.md; y: root.geometry.flipped ? Theme.xs : root.height-height-Theme.xs; text: "cm"; color: Theme.guideInk; font.pixelSize: Theme.caption }
     Repeater {
         model: Math.floor(root.geometry.mm/root.tickStep)+1
@@ -34,7 +34,7 @@ Item {
         }
     }
     Repeater {
-        model: [{x:0,icon:"rotate"},{x:root.width,icon:"plus"}]
+        model: [{x:root.geometry.rotationInset,icon:"rotate"},{x:root.width-root.geometry.rotationInset,icon:"rotate"},{x:root.width,icon:"plus"}]
         Rectangle {
             required property var modelData
             x: modelData.x-width/2; y: root.height/2-height/2; width: Theme.guideHandle; height: width; radius: width/2

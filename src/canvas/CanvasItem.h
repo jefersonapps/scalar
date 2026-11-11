@@ -169,7 +169,7 @@ public:
     bool rulerSnap() const {return rulerSnap_;}
     double rulerSnapDistance() const {return rulerSnapDistance_;}
     double rulerLength() const {return ruler_.lengthMm;}
-    double rulerAngle() const {return ruler_.angle*180/std::numbers::pi;}
+    double rulerAngle() const;
     double compassRadius() const {return compass_.radiusMm;}
     void setRulerVisible(bool value);
     void setCompassVisible(bool value);
