@@ -2,12 +2,13 @@
 #include <cmath>
 namespace scalar {
 double CanvasItem::rulerAngle() const {
-    const double degrees=std::fmod(ruler_.angle*180/std::numbers::pi,360.);
-    return degrees<0?degrees+360.:degrees;
+    return std::remainder(ruler_.angle*180/std::numbers::pi,360.);
 }
 QVariantMap CanvasItem::rulerGeometry() const {
     const auto origin=view_.worldToScreen(ruler_.origin);const double scale=view_.pixelsPerMm*view_.zoom;
-    return {{"x",origin.x},{"y",origin.y},{"angle",rulerAngle()},{"length",ruler_.lengthMm*scale},{"width",RulerGeometry::widthMm*scale},{"scale",scale},{"mm",ruler_.lengthMm},{"flipped",rulerFlipped_},{"rotationInset",std::min(10.,ruler_.lengthMm*.2)*scale}};
+    // Screen coordinates grow downward; present the angle in the opposite direction.
+    const double displayAngle=std::fmod(360.-rulerAngle(),360.);
+    return {{"x",origin.x},{"y",origin.y},{"angle",rulerAngle()},{"displayAngle",displayAngle},{"length",ruler_.lengthMm*scale},{"width",RulerGeometry::widthMm*scale},{"scale",scale},{"mm",ruler_.lengthMm},{"flipped",rulerFlipped_},{"rotationInset",std::min(10.,ruler_.lengthMm*.2)*scale}};
 }
 Point CanvasItem::compassDrawHandle() const {
     const auto tip=compass_.pencil(),direction=tip-compass_.hinge();

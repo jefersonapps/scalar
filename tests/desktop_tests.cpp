@@ -1465,6 +1465,14 @@ private slots:
         QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());
         auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);QTRY_VERIFY(!controller.busy());
         canvas->setTool("ruler");auto* button=findVisualItem(window->contentItem(),"rulerFlipButton");QVERIFY(button);
+        canvas->setRulerAngle(-33.6);
+        auto* measurement=findVisualItem(window->contentItem(),"rulerMeasurementLabel");QVERIFY(measurement);
+        QTRY_VERIFY(measurement->property("text").toString().endsWith("33.6°"));
+        auto* angleField=window->findChild<QObject*>("rulerAngleField");QVERIFY(angleField);
+        QTRY_COMPARE(angleField->property("text").toString(),QString("33.6"));
+        angleField->setProperty("text","60.0");QVERIFY(QMetaObject::invokeMethod(angleField,"editingFinished"));
+        QVERIFY(std::abs(canvas->rulerAngle()+60)<1e-8);
+        QTRY_VERIFY(measurement->property("text").toString().endsWith("60°"));
         for(double rotation:{0.,37.})for(double zoom:{1.,2.}){
             canvas->setRulerAngle(rotation);canvas->setZoom(zoom);
             const auto before=canvas->rulerGeometry();
@@ -1586,9 +1594,14 @@ private slots:
         InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();canvas.setTool("ruler");
         QPointingDevice pen("Pen",1,QInputDevice::DeviceType::Stylus,QPointingDevice::PointerType::Pen,QInputDevice::Capability::Position|QInputDevice::Capability::Pressure,1,3);
         const auto rulerPoint=[&](double x,double y){const auto g=canvas.rulerGeometry();const double a=g["angle"].toDouble()*std::numbers::pi/180,s=g["scale"].toDouble();return QPointF(g["x"].toDouble()+s*(x*std::cos(a)-y*std::sin(a)),g["y"].toDouble()+s*(x*std::sin(a)+y*std::cos(a)));};
-        for(double degrees:{-1080.1,-360.,-30.,0.,360.,725.}){
+        for(double degrees:{-1080.1,-360.,-33.6,-30.,0.,360.,725.}){
             canvas.setRulerAngle(degrees);
-            QVERIFY(canvas.rulerAngle()>=0&&canvas.rulerAngle()<360);
+            QVERIFY(canvas.rulerAngle()>=-180&&canvas.rulerAngle()<=180);
+            QVERIFY(std::abs(canvas.rulerAngle()-std::remainder(degrees,360.))<1e-8);
+            const double display=canvas.rulerGeometry()["displayAngle"].toDouble();
+            QVERIFY(display>=0&&display<360);
+            const double expected=std::fmod(360.-std::remainder(degrees,360.),360.);
+            QVERIFY(std::abs(display-expected)<1e-8);
         }
         for(bool rightHandle:{false,true})for(bool tablet:{false,true}){
             canvas.setRulerAngle(7); // Snap absolute angles, not offsets from the grab angle.
@@ -1608,8 +1621,8 @@ private slots:
             QKeyEvent down(QEvent::KeyPress,Qt::Key_Control,Qt::ControlModifier);canvas.keyPressEvent(&down);QVERIFY(std::abs(angle()-30)<1e-8);
             send(QEvent::MouseMove,target(44),Qt::ControlModifier);QVERIFY(std::abs(angle()-45)<1e-8);
             QKeyEvent up(QEvent::KeyRelease,Qt::Key_Control,Qt::NoModifier);canvas.keyReleaseEvent(&up);QVERIFY(std::abs(angle()-44)<1e-8);
-            send(QEvent::MouseMove,target(-22),Qt::ControlModifier);QVERIFY(std::abs(angle()+15)<1e-8);
-            send(QEvent::MouseButtonRelease,target(-22),Qt::ControlModifier);QVERIFY(std::abs(angle()+15)<1e-8);
+            send(QEvent::MouseMove,target(-22),Qt::ControlModifier);QVERIFY(std::abs(canvas.rulerAngle()+15)<1e-8);QVERIFY(std::abs(canvas.rulerGeometry()["displayAngle"].toDouble()-15)<1e-8);
+            send(QEvent::MouseButtonRelease,target(-22),Qt::ControlModifier);QVERIFY(std::abs(canvas.rulerAngle()+15)<1e-8);
             QVERIFY(QLineF(center,rulerPoint(canvas.rulerLength()/2,RulerGeometry::widthMm/2)).length()<1e-8);
         }
         QVERIFY(controller.page()->strokes.empty());QVERIFY(controller.shutdown());
