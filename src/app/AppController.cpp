@@ -33,6 +33,12 @@
 Q_LOGGING_CATEGORY(appLog,"scalar.app")
 namespace scalar {
 namespace {
+bool sameTextVisual(const TextObject& a,const TextObject& b){
+    return a.source==b.source&&a.fontFamily==b.fontFamily&&a.style.rgba==b.style.rgba
+        &&a.fontSizePt==b.fontSizePt&&a.boxWidthMm==b.boxWidthMm&&a.boxHeightMm==b.boxHeightMm
+        &&a.bold==b.bold&&a.italic==b.italic&&a.alignment==b.alignment&&a.latexEnabled==b.latexEnabled
+        &&a.corners==b.corners&&a.math==b.math&&a.formats==b.formats;
+}
 QString now(){return QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);}
 void applyWindowTheme(QWindow* window,bool dark){
 #ifdef Q_OS_WIN
@@ -136,10 +142,24 @@ AppController::AppController(QObject* parent,const QString& dataDirectory):QObje
     });
     connect(&textRasterWatcher_,&QFutureWatcher<QHash<QString,TextVisual>>::finished,this,[this]{
         textRasterPending_=false;
-        if(textRasterRevision_!=revision_){textRasterRevision_=0;refreshTextTextures(textRasterRequestedScale_);return;}
-        const auto results=textRasterWatcher_.result();for(auto i=results.begin();i!=results.end();++i){cacheTextVisual(i.key().toStdString(),i.value());if(!i.value().error.isEmpty())status_=i.value().error;}
-        if(active())for(auto& object:current().texts)++object.properties.revision;
-        emit documentChanged();
+        bool updated=false;
+        if(active()&&textRasterProjectId_==QString::fromStdString(project_.id)
+            &&textRasterPageId_==QString::fromStdString(page()->id)){
+            const auto results=textRasterWatcher_.result();
+            for(auto& object:current().texts){
+                const auto key=QString::fromStdString(object.id);
+                const auto input=textRasterPendingInputs_.constFind(key);
+                const auto visual=results.constFind(key);
+                if(input==textRasterPendingInputs_.cend()||visual==results.cend()
+                    ||!sameTextVisual(input->object,object))continue;
+                cacheTextVisual(object.id,*visual);
+                textRasterInputs_.insert(key,*input);
+                if(!visual->error.isEmpty())status_=visual->error;
+                ++object.properties.revision;updated=true;
+            }
+        }
+        textRasterPendingInputs_.clear();textRasterRevision_=0;
+        if(updated)emit documentChanged();
         refreshTextTextures(textRasterRequestedScale_);
     });
     recovery_=library_->setting("cleanShutdown","true").toString()=="false"&&QFile::exists(dataDir_+"/session.board");
@@ -203,7 +223,7 @@ bool AppController::defaultLandscape() const{return library_->setting("defaultLa
 void AppController::setDefaultLandscape(bool v){library_->setSetting("defaultLandscape",v);emit preferencesChanged();}
 QString AppController::defaultBackground() const{const auto value=library_->setting("defaultBackground","Pautado").toString();return value=="Branco"||value=="Preto"||value=="Verde"?"Sem grade":value;}
 void AppController::setDefaultBackground(const QString& v){bool found=false;for(const auto& preset:gridPresets())if(preset.toMap().value("name").toString()==v)found=true;if(!found)return;library_->setSetting("defaultBackground",v);emit preferencesChanged();}
-void AppController::install(Project p,const QString& path){setSessionLatexEnabled(defaultLatexEnabled());setSessionCompassMarkCenter(true);project_=std::move(p);currentPage_=0;path_=path;coverDirty_=!QFileInfo::exists(path+".png");images_.clear();textMeshes_.clear();textMathColors_.clear();textSizes_.clear();histories_.clear();thumbnails_.clear();dirtyThumbnails_.clear();requestedThumbnails_.clear();for(const auto& page:project_.pages)dirtyThumbnails_.insert(QString::fromStdString(page.id));pdfCache_.clear();dirty_=false;++revision_;textRasterRevision_=0;scheduleThumbnails();refreshPdf(textRasterScale_);emit pagesChanged();emit pageChanged();emit documentChanged();emit changed();}
+void AppController::install(Project p,const QString& path){setSessionLatexEnabled(defaultLatexEnabled());setSessionCompassMarkCenter(true);project_=std::move(p);currentPage_=0;path_=path;coverDirty_=!QFileInfo::exists(path+".png");images_.clear();textRasterInputs_.clear();textMeshes_.clear();textMathColors_.clear();textSizes_.clear();histories_.clear();thumbnails_.clear();dirtyThumbnails_.clear();requestedThumbnails_.clear();for(const auto& page:project_.pages)dirtyThumbnails_.insert(QString::fromStdString(page.id));pdfCache_.clear();dirty_=false;++revision_;textRasterRevision_=0;scheduleThumbnails();refreshPdf(textRasterScale_);emit pagesChanged();emit pageChanged();emit documentChanged();emit changed();}
 void AppController::newProject(const QString& name,const QString& preset,double width,double height,bool landscape,const QString& background,const QString& pageColor) {
     if(loading_)return;
     PageSize size=preset=="A4"?PageSize::a4():preset=="Carta"?PageSize::letter():PageSize{width,height};
@@ -411,7 +431,7 @@ void AppController::openPath(const QString& path){
     if(trashPending_||loading_||!flush())return;loading_=true;pendingOpenPath_=path;status_="Abrindo projeto…";
     loadWatcher_.setFuture(QtConcurrent::run([path]{return ProjectStore::load(path,ImageLoading::FirstPage);}));emit changed();
 }
-void AppController::home(){if(loading_||!flush())return;project_={};status_.clear();currentPage_=0;images_.clear();textMeshes_.clear();textMathColors_.clear();textSizes_.clear();histories_.clear();thumbnails_.clear();pdfCache_.clear();thumbnailsTimer_.stop();++revision_;emit pagesChanged();emit pageChanged();emit documentChanged();emit changed();}
+void AppController::home(){if(loading_||!flush())return;project_={};status_.clear();currentPage_=0;images_.clear();textRasterInputs_.clear();textMeshes_.clear();textMathColors_.clear();textSizes_.clear();histories_.clear();thumbnails_.clear();pdfCache_.clear();thumbnailsTimer_.stop();++revision_;emit pagesChanged();emit pageChanged();emit documentChanged();emit changed();}
 void AppController::requestHome(){beginLeaving(LeaveAction::Home);}
 void AppController::requestShutdown(){beginLeaving(LeaveAction::Shutdown);}
 void AppController::beginLeaving(LeaveAction action){
@@ -515,8 +535,21 @@ void AppController::refreshTextTextures(double scale){
     if(!active()||page()->texts.empty()||textRasterPending_)return;
     const double bucket=std::pow(2.,std::ceil(std::log2(std::clamp(textRasterRequestedScale_*1.5,1.,64.))));
     if(bucket==textRasterScale_&&textRasterRevision_==revision_)return;
-    textRasterScale_=bucket;textRasterRevision_=revision_;textRasterPending_=true;const auto texts=page()->texts;
-    textRasterWatcher_.setFuture(QtConcurrent::run([texts,bucket]{QHash<QString,TextVisual> result;for(const auto& t:texts){
+    textRasterScale_=bucket;textRasterRevision_=revision_;
+    std::vector<TextObject> texts;
+    for(const auto& object:page()->texts){
+        const auto key=QString::fromStdString(object.id);
+        const auto cached=textRasterInputs_.constFind(key);
+        if(cached!=textRasterInputs_.cend()&&cached->bucket==bucket
+            &&sameTextVisual(cached->object,object))continue;
+        texts.push_back(object);
+        textRasterPendingInputs_.insert(key,{object,bucket});
+    }
+    if(texts.empty())return;
+    textRasterProjectId_=QString::fromStdString(project_.id);
+    textRasterPageId_=QString::fromStdString(page()->id);
+    textRasterPending_=true;
+    textRasterWatcher_.setFuture(QtConcurrent::run([texts=std::move(texts),bucket]{QHash<QString,TextVisual> result;for(const auto& t:texts){
         const auto natural=textNaturalSize(t);double gain=1;
         if(t.corners.size()==4)gain=std::max({1.,length(t.corners[1]-t.corners[0])/natural.width(),length(t.corners[3]-t.corners[0])/natural.height()});
         result.insert(QString::fromStdString(t.id),textVisual(t,bucket*gain));

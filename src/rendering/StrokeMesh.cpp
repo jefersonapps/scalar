@@ -1,5 +1,6 @@
 #include "StrokeMesh.h"
 #include <numbers>
+#include <array>
 #include "geometry/Geometry.h"
 namespace scalar {
 void appendSmoothStrokeSegment(const std::vector<PointerSample>& samples,std::size_t i,std::vector<PointerSample>& result){
@@ -53,12 +54,17 @@ namespace {
 std::vector<Point> solidStrokeMesh(const StrokeObject& stroke) {
     std::vector<Point> vertices;
     vertices.reserve(stroke.samples.size()*42);
-    auto disk = [&](Point center,double radius) {
-        constexpr int segments=12;
-        for(int i=0;i<segments;++i) {
-            const double a=2*std::numbers::pi*i/segments, b=2*std::numbers::pi*(i+1)/segments;
-            vertices.insert(vertices.end(),{center,center+Point{std::cos(a),std::sin(a)}*radius,center+Point{std::cos(b),std::sin(b)}*radius});
+    static const auto circle=[] {
+        std::array<Point,13> points;
+        for(std::size_t i=0;i<points.size();++i){
+            const double angle=2*std::numbers::pi*i/12;
+            points[i]={std::cos(angle),std::sin(angle)};
         }
+        return points;
+    }();
+    auto disk = [&](Point center,double radius) {
+        for(std::size_t i=0;i+1<circle.size();++i)
+            vertices.insert(vertices.end(),{center,center+circle[i]*radius,center+circle[i+1]*radius});
     };
     for(std::size_t i=0;i<stroke.samples.size();++i) {
         const auto& s=stroke.samples[i]; const double r=stroke.style.width(s.pressure)/2;
@@ -74,18 +80,19 @@ std::vector<Point> solidStrokeMesh(const StrokeObject& stroke) {
     return vertices;
 }
 }
-std::vector<Point> strokeMesh(const StrokeObject& stroke) {
+namespace {
+std::vector<Point> patternedStrokeMesh(const StrokeObject& stroke,double distanceOffsetMm,bool compact) {
     if(stroke.style.pattern==LinePattern::Solid||stroke.samples.size()<2)return solidStrokeMesh(stroke);
     std::vector<Point> vertices;
     StrokeObject run{stroke.id,stroke.style,{}};run.style.pattern=LinePattern::Solid;
-    const auto flush=[&]{const auto mesh=solidStrokeMesh(run);vertices.insert(vertices.end(),mesh.begin(),mesh.end());run.samples.clear();};
+    const auto flush=[&]{const auto mesh=compact?strokeDisplayMesh(run):solidStrokeMesh(run);vertices.insert(vertices.end(),mesh.begin(),mesh.end());run.samples.clear();};
     const auto sampleAt=[](const PointerSample& a,const PointerSample& b,double t){
         auto sample=a;sample.position=a.position+(b.position-a.position)*t;
         sample.pressure=a.pressure+(b.pressure-a.pressure)*t;return sample;
     };
     if(stroke.style.pattern==LinePattern::Dotted){
         const double spacing=std::max(stroke.style.dotSpacingMm,stroke.style.maxWidthMm*2);
-        double next=0,distance=0;
+        double next=std::ceil(distanceOffsetMm/spacing-1e-9)*spacing-distanceOffsetMm,distance=0;
         for(std::size_t i=1;i<stroke.samples.size();++i){
             const auto& a=stroke.samples[i-1];const auto& b=stroke.samples[i];const double len=length(b.position-a.position);
             if(len<1e-9)continue;
@@ -95,7 +102,9 @@ std::vector<Point> strokeMesh(const StrokeObject& stroke) {
         return vertices;
     }
     const double dash=std::max(0.1,stroke.style.dashLengthMm),gap=std::max(stroke.style.gapLengthMm,stroke.style.maxWidthMm*1.5);
-    bool on=true;double remaining=dash;
+    const double phase=std::fmod(std::max(0.,distanceOffsetMm),dash+gap);
+    bool on=phase<dash;
+    double remaining=on?dash-phase:dash+gap-phase;
     for(std::size_t i=1;i<stroke.samples.size();++i){
         const auto& a=stroke.samples[i-1];const auto& b=stroke.samples[i];const double len=length(b.position-a.position);
         if(len<1e-9)continue;
@@ -110,6 +119,9 @@ std::vector<Point> strokeMesh(const StrokeObject& stroke) {
     if(!run.samples.empty())flush();
     return vertices;
 }
+
+}
+std::vector<Point> strokeMesh(const StrokeObject& stroke){return patternedStrokeMesh(stroke,0,false);}
 
 std::vector<PointerSample> strokeDisplaySamples(const StrokeObject& stroke,double tolerance){
     if(stroke.samples.size()<3)return stroke.samples;
@@ -139,8 +151,9 @@ std::vector<PointerSample> strokeDisplaySamples(const StrokeObject& stroke,doubl
     for(std::size_t i=0;i<source.size();++i)if(keep[i])samples.push_back(source[i]);
     return samples;
 }
-std::vector<Point> strokeDisplayMesh(const StrokeObject& stroke){
-    if(stroke.style.pattern!=LinePattern::Solid||stroke.samples.size()<2)return strokeMesh(stroke);
+std::vector<Point> strokeDisplayMesh(const StrokeObject& stroke,double distanceOffsetMm){
+    if(stroke.style.pattern!=LinePattern::Solid)return patternedStrokeMesh(stroke,distanceOffsetMm,true);
+    if(stroke.samples.size()<2)return solidStrokeMesh(stroke);
     const auto samples=strokeDisplaySamples(stroke);
     std::vector<Point> vertices;vertices.reserve(samples.size()*12);
     const auto arc=[&](Point center,double radius,double angle,double sweep){

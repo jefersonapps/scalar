@@ -47,6 +47,7 @@ struct SceneRoot : QSGTransformNode {
     struct LivePen {
         std::string id;
         std::size_t sealed=0;
+        double distanceMm=0;
         QSGNode* tail=nullptr;
     } livePen;
     quint64 documentRevision=0,pdfSceneRevision=0;
@@ -361,7 +362,7 @@ QSGNode* CanvasItem::updatePaintNode(QSGNode* old,UpdatePaintNodeData*){
     root->wasDrawing=drawing();
     const bool liveMarker=drawing()&&!previewShape_&&current_.marker&&window();
     const bool livePen=drawing()&&!previewShape_&&!current_.marker
-        &&current_.style.pattern==LinePattern::Solid&&(current_.style.rgba&255)==255;
+        &&(current_.style.rgba&255)==255;
     if(liveMarker){
         root->livePen={};
         appendLiveMarker(*root,current_,window(),std::clamp(physicalScale,1.,12.));
@@ -380,10 +381,15 @@ QSGNode* CanvasItem::updatePaintNode(QSGNode* old,UpdatePaintNodeData*){
         const auto appendChunk=[&](std::size_t first,std::size_t end){
             StrokeObject chunk;chunk.style=current_.style;
             chunk.samples.assign(current_.samples.begin()+first,current_.samples.begin()+end);
-            auto* node=new QSGNode;appendMeshNodes(*node,strokeDisplayMesh(chunk),fromRgba(chunk.style.rgba));
+            auto* node=new QSGNode;appendMeshNodes(*node,strokeDisplayMesh(chunk,cache.distanceMm),fromRgba(chunk.style.rgba));
             root->live->appendChildNode(node);return node;
         };
-        while(cache.sealed+chunkSize<stable){appendChunk(cache.sealed,cache.sealed+chunkSize+1);cache.sealed+=chunkSize;}
+        while(cache.sealed+chunkSize<stable){
+            appendChunk(cache.sealed,cache.sealed+chunkSize+1);
+            for(std::size_t i=cache.sealed;i<cache.sealed+chunkSize;++i)
+                cache.distanceMm+=length(current_.samples[i+1].position-current_.samples[i].position);
+            cache.sealed+=chunkSize;
+        }
         if(cache.sealed<current_.samples.size())cache.tail=appendChunk(cache.sealed,current_.samples.size());
     }else{
     root->livePen={};

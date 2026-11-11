@@ -44,7 +44,7 @@ QVariantList AppController::pages() const {
 void AppController::selectPage(int index){
     if(index<0||index>=pageCount()||index==currentPage_||loading_||imageImportPending_||textPending_||pdfPending_)return;
     currentPage_=index;++revision_;textRasterRevision_=0;latestLineId_.clear();
-    refreshPageImages();refreshTextTextures(textRasterScale_);refreshPdf(textRasterScale_);scheduleThumbnails();emit pageChanged();emit documentChanged();emit changed();
+    refreshPageImages();refreshTextTextures(textRasterRequestedScale_);refreshPdf(textRasterScale_);scheduleThumbnails();emit pageChanged();emit documentChanged();emit changed();
 }
 void AppController::addPage(){
     if(!page()||loading_||imageImportPending_||textPending_||pdfPending_||pageCount()>=1000)return;
@@ -62,7 +62,7 @@ void AppController::deletePage(int index){
     if(project_.pages.empty()){Page blank;blank.id=newId();blank.size=size;blank.background=background;blank.backgroundStyle=style;project_.pages.push_back(std::move(blank));currentPage_=0;}
     else if(index<currentPage_)--currentPage_;else currentPage_=std::min(currentPage_,pageCount()-1);
     latestLineId_.clear();textRasterRevision_=0;mutate();
-    if(selected){refreshPageImages();refreshTextTextures(textRasterScale_);refreshPdf(textRasterScale_);emit pageChanged();}
+    if(selected){refreshPageImages();refreshTextTextures(textRasterRequestedScale_);refreshPdf(textRasterScale_);emit pageChanged();}
     emit pagesChanged();emit changed();
 }
 bool AppController::setPageSize(const QString& preset,double width,double height,bool landscape){

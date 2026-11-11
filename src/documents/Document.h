@@ -94,6 +94,7 @@ struct MathFragment {
     bool display=false;
     std::size_t start=0,length=0; // UTF-8 byte offsets including delimiters
     double widthEm=0,heightEm=0;
+    bool operator==(const MathFragment&) const=default;
 };
 struct TextFormat {
     std::size_t start=0,length=0; // UTF-16 positions, matching the text editor

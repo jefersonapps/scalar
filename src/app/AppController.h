@@ -311,6 +311,9 @@ private:
     QString textPageId_;
     std::optional<CanvasObject> textBefore_;
     bool textPending_=false;
+    struct TextRasterInput {TextObject object;double bucket=0;};
+    QHash<QString,TextRasterInput> textRasterInputs_,textRasterPendingInputs_;
+    QString textRasterProjectId_,textRasterPageId_;
     bool textRasterPending_=false;
     double textRasterScale_=96./25.4;
     double textRasterRequestedScale_=96./25.4;

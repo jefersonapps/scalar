@@ -241,11 +241,39 @@ private slots:
         const auto imported=importImageUrl(QUrl("data:image/png;base64,"+QString::fromLatin1(png.toBase64())),{},PageSize{});QVERIFY2(imported.error.isEmpty(),qPrintable(imported.error));QCOMPARE(imported.image.size(),bitmap.size());
         controller.undo();QVERIFY(controller.page()->images.empty());QCOMPARE(controller.page()->strokes.size(),std::size_t(1));QVERIFY(controller.shutdown());
     }
+    void longLivePenKeepsSealedGeometryAndExactFinalSmoothing_data(){
+        QTest::addColumn<QString>("pattern");
+        QTest::addColumn<bool>("crowded");
+        QTest::newRow("solid")<<QString("solid")<<false;
+        QTest::newRow("dashed")<<QString("dashed")<<false;
+        QTest::newRow("dotted")<<QString("dotted")<<false;
+        QTest::newRow("dashed-crowded")<<QString("dashed")<<true;
+        QTest::newRow("dotted-crowded")<<QString("dotted")<<true;
+    }
     void longLivePenKeepsSealedGeometryAndExactFinalSmoothing(){
+        QFETCH(QString,pattern);
+        QFETCH(bool,crowded);
         QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();controller.setRecognitionEnabled(false);
         InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();
+        canvas.setPenLineStyle(pattern);
+        if(crowded){
+            std::vector<ObjectChange> changes;
+            for(int i=0;i<2000;++i){
+                StrokeObject stroke;stroke.id=newId();stroke.style.pattern=LinePattern::Dashed;stroke.properties.zIndex=i;
+                for(int j=0;j<20;++j)stroke.samples.push_back({{10+(i%20)*8+j*.2,20+(i/20)*2.},.7});
+                changes.push_back({{},CanvasObject(std::move(stroke))});
+            }
+            for(int i=0;i<60;++i){
+                TextObject text;text.id=newId();text.source="Aula "+std::to_string(i);text.latexEnabled=false;text.properties.zIndex=2000+i;
+                text.corners={{10,10},{50,10},{50,20},{10,20}};
+                changes.push_back({{},CanvasObject(std::move(text))});
+            }
+            controller.changeObjects(std::move(changes),CommandKind::AddObject);
+            QTRY_VERIFY_WITH_TIMEOUT(controller.page()->texts.back().properties.revision>0,10000);
+        }
         InputManager input;std::vector<PointerSample> filtered;std::unique_ptr<QSGNode> scene;
         QSGNode* sealed=nullptr;int retained=0;
+        scene.reset(canvas.updatePaintNode(nullptr,nullptr));
         QElapsedTimer timer;timer.start();
         for(int i=0;i<1600;++i){
             const Point world{20+double(i)*.1,80+5*std::sin(i*.035)};const auto position=canvas.screenPoint({world.x,world.y});
@@ -256,14 +284,80 @@ private slots:
             auto* live=scene->firstChild()->nextSibling()->lastChild();
             if(live&&live->childCount()>1){if(!sealed)sealed=live->firstChild();else {QCOMPARE(live->firstChild(),sealed);++retained;}}
         }
-        QVERIFY(retained>1000);qInfo()<<"1600 live pen samples and scene synchronizations:"<<timer.elapsed()<<"ms; sealed geometry reused:"<<retained;
+        QVERIFY(retained>1000);qInfo()<<pattern<<"1600 live pen samples and scene synchronizations:"<<timer.elapsed()<<"ms; sealed geometry reused:"<<retained;
         const auto endpoint=Point{179.91,80+5*std::sin(1599*.035)};const auto position=canvas.screenPoint({endpoint.x,endpoint.y});
         QMouseEvent release(QEvent::MouseButtonRelease,position,position,Qt::LeftButton,Qt::NoButton,Qt::NoModifier);release.setTimestamp(1600*8);
         const auto last=input.filter(InputManager::mouse(release,endpoint),true);if(length(last.position-filtered.back().position)>.005)filtered.push_back(last);filtered.back().position=endpoint;
         canvas.mouseReleaseEvent(&release);scene.reset(canvas.updatePaintNode(scene.release(),nullptr));
-        QCOMPARE(controller.page()->strokes.size(),std::size_t(1));const auto expected=smoothStrokeSamples(filtered);const auto& actual=controller.page()->strokes.front().samples;
+        QCOMPARE(controller.page()->strokes.size(),std::size_t(crowded?2001:1));const auto expected=smoothStrokeSamples(filtered);const auto& actual=controller.page()->strokes.back().samples;
         QCOMPARE(actual.size(),expected.size());for(std::size_t i=0;i<actual.size();++i)QVERIFY(length(actual[i].position-expected[i].position)<1e-8);
         QVERIFY(!canvas.drawing());QVERIFY(controller.shutdown());
+    }
+    void inkCommitsKeepUnchangedTextTextures(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        std::vector<ObjectChange> changes;
+        for(int i=0;i<60;++i){
+            TextObject text;text.id=newId();text.source="Texto da aula "+std::to_string(i);text.latexEnabled=false;
+            text.corners={{10,10},{70,10},{70,20},{10,20}};
+            changes.push_back({{},CanvasObject(text)});
+        }
+        controller.changeObjects(std::move(changes),CommandKind::AddObject);
+        const auto originalTexts=controller.page()->texts;
+        const auto firstId=controller.page()->texts.front().id;
+        QTRY_VERIFY_WITH_TIMEOUT(controller.page()->texts.back().properties.revision>0,10000);
+        std::vector<qint64> imageKeys;std::vector<std::uint64_t> revisions;
+        for(const auto& text:controller.page()->texts){imageKeys.push_back(controller.image(text.id).cacheKey());revisions.push_back(text.properties.revision);}
+        QElapsedTimer timer;timer.start();
+        for(int i=0;i<300;++i){StrokeObject stroke;stroke.id=newId();stroke.samples={{{10.,double(i)},1},{{100.,double(i)},1}};stroke.style.pattern=LinePattern::Dashed;controller.addStroke(std::move(stroke));}
+        qInfo()<<"300 stroke commits with 60 cached text boxes:"<<timer.elapsed()<<"ms";
+        QTest::qWait(200);
+        for(std::size_t i=0;i<controller.page()->texts.size();++i){const auto& text=controller.page()->texts[i];QCOMPARE(controller.image(text.id).cacheKey(),imageKeys[i]);QCOMPARE(text.properties.revision,revisions[i]);}
+        const auto before=controller.page()->texts.front();auto edited=before;edited.source="Texto editado";++edited.properties.revision;
+        controller.changeObjects({{CanvasObject(before),CanvasObject(edited)}},CommandKind::ChangeStyle);
+        QTRY_VERIFY(controller.image(firstId).cacheKey()!=imageKeys.front());
+        for(std::size_t i=1;i<originalTexts.size();++i)QCOMPARE(controller.image(originalTexts[i].id).cacheKey(),imageKeys[i]);
+        const auto changedKey=controller.image(firstId).cacheKey();controller.undo();QTRY_VERIFY(controller.image(firstId).cacheKey()!=changedKey);
+        const auto undoKey=controller.image(firstId).cacheKey();controller.redo();QTRY_VERIFY(controller.image(firstId).cacheKey()!=undoKey);
+        // Drawing changes the document revision while the zoom worker is running.
+        const auto previousKey=controller.image(firstId).cacheKey();controller.refreshTextTextures(24);
+        StrokeObject stroke;stroke.id=newId();stroke.samples={{{10,10},1},{{20,20},1}};controller.addStroke(stroke);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.image(firstId).cacheKey()!=previousKey,10000);
+        controller.refreshTextTextures(40);controller.addPage();
+        TextObject other;other.id=newId();other.source="Outra página";other.latexEnabled=false;
+        other.corners={{10,10},{50,10},{50,20},{10,20}};
+        controller.changeObjects({{{},CanvasObject(other)}},CommandKind::AddObject);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.image(other.id).isNull(),10000);
+        QCOMPARE(controller.page()->texts.size(),std::size_t(1));QCOMPARE(controller.page()->texts.front().id,other.id);
+        controller.selectPage(0);QCOMPARE(controller.page()->texts.size(),std::size_t(60));
+        const auto highResolutionKey=controller.image(firstId).cacheKey();controller.refreshTextTextures(3);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.image(firstId).cacheKey()!=highResolutionKey,10000);
+        const auto stableKey=controller.image(firstId).cacheKey();
+        controller.selectPage(1);controller.selectPage(0);QTest::qWait(200);
+        QCOMPARE(controller.image(firstId).cacheKey(),stableKey);
+        QVERIFY(controller.shutdown());
+    }
+    void patternedDisplayChunksKeepDashPhase(){
+        const auto raster=[](const std::vector<Point>& vertices){
+            QImage image(1280,480,QImage::Format_RGB32);image.fill(Qt::white);QPainter painter(&image);painter.scale(8,8);
+            QPainterPath path;path.setFillRule(Qt::WindingFill);
+            for(std::size_t i=0;i+2<vertices.size();i+=3){auto a=vertices[i],b=vertices[i+1],c=vertices[i+2];if((b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x)<0)std::swap(b,c);path.moveTo(a.x,a.y);path.lineTo(b.x,b.y);path.lineTo(c.x,c.y);path.closeSubpath();}
+            painter.fillPath(path,Qt::black);return image;
+        };
+        for(auto pattern:{LinePattern::Dashed,LinePattern::Dotted}){
+            StrokeObject stroke;stroke.style.pattern=pattern;stroke.style.minWidthMm=stroke.style.maxWidthMm=.5;
+            for(int i=0;i<1400;++i)stroke.samples.push_back({{5+i*.1,30+5*std::sin(i*.015)},.7});
+            const auto reference=raster(strokeDisplayMesh(stroke));std::vector<Point> chunks;double distance=0;
+            for(std::size_t begin=0;begin+1<stroke.samples.size();begin+=128){
+                const auto end=std::min(begin+128,stroke.samples.size()-1);StrokeObject chunk;chunk.style=stroke.style;
+                chunk.samples.assign(stroke.samples.begin()+begin,stroke.samples.begin()+end+1);
+                const auto mesh=strokeDisplayMesh(chunk,distance);chunks.insert(chunks.end(),mesh.begin(),mesh.end());
+                for(auto i=begin;i<end;++i)distance+=length(stroke.samples[i+1].position-stroke.samples[i].position);
+            }
+            const auto actual=raster(chunks);int different=0,ink=0;
+            for(int y=0;y<actual.height();++y)for(int x=0;x<actual.width();++x){if(reference.pixel(x,y)!=qRgb(255,255,255))++ink;if(actual.pixel(x,y)!=reference.pixel(x,y))++different;}
+            QVERIFY(ink>0);QVERIFY2(different<ink*.02,qPrintable(QString("Dash phase differs at %1 of %2 pixels").arg(different).arg(ink)));
+            if(pattern==LinePattern::Dashed)QVERIFY(strokeDisplayMesh(stroke).size()<strokeMesh(stroke).size()/2);
+        }
     }
     void erasureRecoveryEndsWhenBoardCloses(){
         QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
