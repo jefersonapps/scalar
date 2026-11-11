@@ -364,7 +364,7 @@ void CanvasItem::endPointer(PointerSample s){
         }
         commit();
     }
-    else if(state_==State::Marquee){updateSelection(s.position);selection_.marquee(*controller_->page(),{std::min(dragStart_.x,s.position.x),std::min(dragStart_.y,s.position.y),std::max(dragStart_.x,s.position.x),std::max(dragStart_.y,s.position.y)},marqueeAdditive_);const auto ids=selection_.ids();for(const auto& id:ids)if(auto object=findObject(*controller_->page(),id);object&&!hasVisibleInk(*object))selection_.select(id,true);state_=State::Idle;selectionUpdated();}
+    else if(state_==State::Marquee){updateSelection(s.position);selection_.marquee(*controller_->page(),{std::min(dragStart_.x,s.position.x),std::min(dragStart_.y,s.position.y),std::max(dragStart_.x,s.position.x),std::max(dragStart_.y,s.position.y)},marqueeAdditive_,s.position.x<dragStart_.x);const auto ids=selection_.ids();for(const auto& id:ids)if(auto object=findObject(*controller_->page(),id);object&&!hasVisibleInk(*object))selection_.select(id,true);state_=State::Idle;selectionUpdated();}
     else if(state_==State::Moving||state_==State::Resizing||state_==State::Rotating||state_==State::EditingHandle){updateSelection(s.position);commitSelection();}
 }
 void CanvasItem::eraseAt(Point point){

@@ -10,9 +10,9 @@ public:
     }
     bool contains(const std::string& id) const{return std::find(ids_.begin(),ids_.end(),id)!=ids_.end();}
     void prune(const Page& page){std::erase_if(ids_,[&](const auto& id){return !findObject(page,id).has_value();});}
-    void marquee(const Page& page,Bounds box,bool additive){
+    void marquee(const Page& page,Bounds box,bool additive,bool touching=false){
         if(!additive)clear();for(const auto& object:objects(page)){const auto& p=properties(object);const auto b=bounds(object);
-            if(!p.locked&&p.visible&&box.contains({b.left,b.top})&&box.contains({b.right,b.bottom})&&!contains(objectId(object)))ids_.push_back(objectId(object));}
+            if(!p.locked&&p.visible&&(touching?intersectsBox(object,box):(box.contains({b.left,b.top})&&box.contains({b.right,b.bottom})))&&!contains(objectId(object)))ids_.push_back(objectId(object));}
     }
 private:
     std::vector<std::string> ids_;

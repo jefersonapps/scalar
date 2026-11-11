@@ -15,6 +15,7 @@ Point rotatePoint(Point p,Point center,double radians);
 std::vector<Point> shapeOutline(const ShapeObject& shape,int segments=128);
 Bounds bounds(const CanvasObject& object);
 Bounds pageRenderBounds(const Page& page,double marginMm=10);
+bool intersectsBox(const CanvasObject& object,Bounds box);
 bool hitTest(const CanvasObject& object,Point p,double tolerance);
 bool shapeTouchesEraser(const ShapeObject& shape,Point from,Point to,double radius);
 bool strokeTouchesEraser(const StrokeObject& stroke,Point from,Point to,double radius);

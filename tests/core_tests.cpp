@@ -1,4 +1,5 @@
 #include "commands/History.h"
+#include "selection/SelectionModel.h"
 #include "rendering/StrokeMesh.h"
 #include "rendering/BackgroundMesh.h"
 #include <iostream>
@@ -21,6 +22,19 @@ int main(int argc,char** argv) {
             view.zoom=z; auto p=view.screenToWorld(view.worldToScreen({43.7,-12})); near(p.x,43.7); near(p.y,-12);
             const auto w=view.screenToWorld({300,240}); view.zoomAt({300,240},1.1);
             near(view.screenToWorld({300,240}).x,w.x); near(view.screenToWorld({300,240}).y,w.y);
+        }
+        {
+            Page page;StrokeObject stroke;stroke.id=newId();stroke.samples={{{0,0},1},{{100,100},1}};page.strokes.push_back(stroke);
+            SelectionModel selection;
+            selection.marquee(page,{45,40,55,60},false,true);check(selection.contains(stroke.id),"crossing marquee missed stroke segment");
+            selection.marquee(page,{45,40,55,60},false,false);check(selection.ids().empty(),"containment marquee selected partial stroke");
+            selection.marquee(page,{0,80,10,90},false,true);check(selection.ids().empty(),"crossing marquee selected empty bounding-box corner");
+            selection.marquee(page,{-1,-1,101,101},false,false);check(selection.contains(stroke.id),"containment marquee missed full stroke");
+            page.strokes[0].properties.locked=true;selection.marquee(page,{-1,-1,101,101},false,true);check(selection.ids().empty(),"marquee selected locked object");
+            page.strokes[0].properties.locked=false;page.strokes[0].properties.visible=false;selection.marquee(page,{-1,-1,101,101},false,true);check(selection.ids().empty(),"marquee selected hidden object");
+            TextObject text;text.id=newId();text.corners={{20,20},{40,20},{40,40},{20,40}};page.texts.push_back(text);
+            selection.marquee(page,{35,35,50,50},false,true);check(selection.contains(text.id),"crossing marquee missed text");
+            selection.marquee(page,{200,200,210,210},true,true);check(selection.contains(text.id),"additive marquee lost selection");
         }
         PenStyle style; near(style.maxWidthMm,0.40); near(style.width(0),style.minWidthMm); near(style.width(1),style.maxWidthMm);
         const std::vector<PointerSample> curve{{{0,0},.2},{{1,1},.6},{{2,0},.8},{{3,1},1}};

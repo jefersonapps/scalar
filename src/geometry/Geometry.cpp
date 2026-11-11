@@ -163,6 +163,29 @@ bool strokeTouchesEraser(const StrokeObject& stroke,Point from,Point to,double r
     }
     return false;
 }
+bool intersectsBox(const CanvasObject& object,Bounds box){
+    const auto b=bounds(object);
+    const double radius=std::visit([](const auto& item){if constexpr(requires{item.style;})return item.style.maxWidthMm*.5;else return 0.;},object);
+    if(b.right+radius<box.left||b.left-radius>box.right||b.bottom+radius<box.top||b.top-radius>box.bottom)return false;
+    const std::vector<Point> corners{{box.left,box.top},{box.right,box.top},{box.right,box.bottom},{box.left,box.bottom}};
+    for(const auto p:corners)if(hitTest(object,p,0))return true;
+    return std::visit([&](const auto& item){
+        using T=std::decay_t<decltype(item)>;
+        if constexpr(std::is_same_v<T,StrokeObject>){
+            for(const auto& sample:item.samples)if(box.contains(sample.position)&&hitTest(object,sample.position,0))return true;
+            for(int i=0;i<4;++i)if(strokeTouchesEraser(item,corners[i],corners[(i+1)%4],0))return true;
+        }else if constexpr(std::is_same_v<T,ShapeObject>){
+            for(const auto p:shapeOutline(item))if(box.contains(p)&&hitTest(object,p,0))return true;
+            for(int i=0;i<4;++i)if(shapeTouchesEraser(item,corners[i],corners[(i+1)%4],0))return true;
+        }else {
+            // Text and images are selectable over their rotated rectangular area.
+            ShapeObject rectangle;rectangle.kind=ShapeKind::Rectangle;rectangle.vertices=item.corners;rectangle.style.maxWidthMm=0;rectangle.fillOpacity=1;
+            for(const auto p:item.corners)if(box.contains(p))return true;
+            for(int i=0;i<4;++i)if(shapeTouchesEraser(rectangle,corners[i],corners[(i+1)%4],0))return true;
+        }
+        return false;
+    },object);
+}
 CanvasObject transformed(CanvasObject o,Point center,Point translation,double sx,double sy,double rotation){
     sx=std::max(0.01,sx);
     sy=std::max(0.01,sy);
