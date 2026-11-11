@@ -70,7 +70,6 @@ bool CanvasItem::beginGeometryPointer(PointerSample s){
         const bool nearDrawingEdge=tool_=="pen"&&rulerSnap_&&ruler_.nearEdge(p,rulerSnapDistance_).has_value();
         const bool body=!nearDrawingEdge&&q.x>=0&&q.x<=ruler_.lengthMm&&q.y>0&&q.y<RulerGeometry::widthMm;
         if(rotate||resize||body||middle<tolerance){if(tool_=="compass")setTool("ruler");selectedGuide_="ruler";selection_.clear();selectionUpdated();emit geometryToolsChanged();rulerBefore_=ruler_;dragStart_=lastPan_=p;state_=rotate?State::RotatingRuler:resize?State::ResizingRuler:State::MovingRuler;return true;}
-        if(tool_=="ruler"&&!ruler_.nearEdge(p,rulerSnapDistance_)){if(s.device==DeviceType::Touch)return false;ruler_.origin=p-center;emit geometryToolsChanged();return true;}
     }
     return false;
 }
