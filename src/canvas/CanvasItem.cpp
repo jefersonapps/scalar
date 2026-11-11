@@ -573,13 +573,10 @@ bool CanvasItem::eventFilter(QObject* object,QEvent* e){
         if(e->type()==QEvent::Wheel&&isVisible()&&wheelZoomEnabled_&&controller_&&controller_->active()&&!drawing()&&state_!=State::Erasing){
             auto* wheel=static_cast<QWheelEvent*>(e);const auto local=mapFromScene(wheel->position());
             if(QRectF(0,0,width(),height()).contains(local)){
-                if(wheel->modifiers().testFlag(Qt::ControlModifier)){
-                    zoomWheelAt(local,*wheel);wheel->accept();return true;
-                }
                 const auto delta=wheel->pixelDelta().isNull()?wheel->angleDelta():wheel->pixelDelta();
-                if(wheel->modifiers().testFlag(Qt::AltModifier)||(delta.y()==0&&delta.x()!=0)){
-                    panWheel(*wheel);wheel->accept();return true;
-                }
+                if(wheel->modifiers().testFlag(Qt::ControlModifier)||wheel->modifiers().testFlag(Qt::AltModifier)||(delta.y()==0&&delta.x()!=0))panWheel(*wheel);
+                else zoomWheelAt(local,*wheel);
+                wheel->accept();return true;
             }
         }
         if(e->type()==QEvent::TabletPress||e->type()==QEvent::TabletMove||e->type()==QEvent::TabletRelease){auto* t=static_cast<QTabletEvent*>(e);return tablet(t,mapFromScene(t->position()));}
@@ -677,11 +674,9 @@ void CanvasItem::panWheel(const QWheelEvent& event){
 }
 void CanvasItem::wheelEvent(QWheelEvent* e){
     if(!drawing()&&state_!=State::Erasing){
-        if(e->modifiers().testFlag(Qt::ControlModifier)){
-            if(wheelZoomEnabled_)zoomWheelAt(e->position(),*e);
-        }else {
-            panWheel(*e);
-        }
+        const auto delta=e->pixelDelta().isNull()?e->angleDelta():e->pixelDelta();
+        if(e->modifiers().testFlag(Qt::ControlModifier)||e->modifiers().testFlag(Qt::AltModifier)||(delta.y()==0&&delta.x()!=0))panWheel(*e);
+        else if(wheelZoomEnabled_)zoomWheelAt(e->position(),*e);
     }e->accept();
 }
 void CanvasItem::touchEvent(QTouchEvent* e){

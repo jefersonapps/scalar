@@ -1151,19 +1151,19 @@ private slots:
         canvas.mouseUngrabEvent();QCOMPARE(controller.page()->strokes.size(),std::size_t(21));QVERIFY(!canvas.drawing());
         QVERIFY(controller.shutdown());
     }
-    void mouseWheelPansVerticallyUnlessControlIsHeld(){
+    void mouseWheelZoomsAndModifiersPan(){
         QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
         QQmlApplicationEngine engine;engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());
         auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);QVERIFY(canvas->setZoom(1.5));
         const auto position=canvas->mapToScene({canvas->width()/2+80,canvas->height()/2+35});
-        const auto wheel=[&](int angle,Qt::KeyboardModifiers modifiers=Qt::NoModifier,QPoint pixels={},bool horizontal=false){
+        const auto wheel=[&](int angle,Qt::KeyboardModifiers modifiers=Qt::ControlModifier,QPoint pixels={},bool horizontal=false){
             QWheelEvent event(position,window->mapToGlobal(position.toPoint()),pixels,horizontal?QPoint(angle,0):QPoint(0,angle),Qt::NoButton,modifiers,Qt::NoScrollPhase,false);QCoreApplication::sendEvent(window,&event);
         };
         const auto initial=canvas->viewportCenter();const double scale=canvas->zoom()*96/25.4;
         wheel(-120);QCOMPARE(canvas->zoom(),1.5);QCOMPARE(canvas->viewportCenter().x(),initial.x());QVERIFY(std::abs(canvas->viewportCenter().y()-initial.y()-60/scale)<1e-8);
         wheel(120);QVERIFY(QLineF(canvas->viewportCenter(),initial).length()<1e-8);
         wheel(-60);QVERIFY(std::abs(canvas->viewportCenter().y()-initial.y()-30/scale)<1e-8);
-        const auto beforePixels=canvas->viewportCenter();wheel(0,Qt::NoModifier,{10,-20});QCOMPARE(canvas->zoom(),1.5);QCOMPARE(canvas->viewportCenter().x(),beforePixels.x());QVERIFY(std::abs(canvas->viewportCenter().y()-beforePixels.y()-20/scale)<1e-8);
+        const auto beforePixels=canvas->viewportCenter();wheel(0,Qt::ControlModifier,{10,-20});QCOMPARE(canvas->zoom(),1.5);QCOMPARE(canvas->viewportCenter().x(),beforePixels.x());QVERIFY(std::abs(canvas->viewportCenter().y()-beforePixels.y()-20/scale)<1e-8);
         const auto beforeHorizontal=canvas->viewportCenter();
         wheel(-120,Qt::AltModifier);QCOMPARE(canvas->zoom(),1.5);QCOMPARE(canvas->viewportCenter().y(),beforeHorizontal.y());QVERIFY(std::abs(canvas->viewportCenter().x()-beforeHorizontal.x()-60/scale)<1e-8);
         wheel(120,Qt::AltModifier);QVERIFY(QLineF(canvas->viewportCenter(),beforeHorizontal).length()<1e-8);
@@ -1171,8 +1171,8 @@ private slots:
         const auto beforeNative=canvas->viewportCenter();wheel(-120,Qt::AltModifier,{},true);QCOMPARE(canvas->viewportCenter().y(),beforeNative.y());QVERIFY(std::abs(canvas->viewportCenter().x()-beforeNative.x()-60/scale)<1e-8);
         wheel(120,Qt::NoModifier,{},true);QVERIFY(QLineF(canvas->viewportCenter(),beforeNative).length()<1e-8);
         const auto anchor=[&]{return canvas->viewportCenter()+QPointF(80,35)/(canvas->zoom()*96/25.4);};const auto beforeZoom=anchor();
-        wheel(120,Qt::ControlModifier);QVERIFY(std::abs(canvas->zoom()-1.575)<1e-8);QVERIFY(QLineF(anchor(),beforeZoom).length()<1e-8);
-        canvas->setProperty("wheelZoomEnabled",false);const auto disabledCenter=canvas->viewportCenter();wheel(120,Qt::ControlModifier);QVERIFY(std::abs(canvas->zoom()-1.575)<1e-8);QCOMPARE(canvas->viewportCenter(),disabledCenter);
+        wheel(120,Qt::NoModifier);QVERIFY(std::abs(canvas->zoom()-1.575)<1e-8);QVERIFY(QLineF(anchor(),beforeZoom).length()<1e-8);
+        canvas->setProperty("wheelZoomEnabled",false);const auto disabledCenter=canvas->viewportCenter();wheel(120,Qt::NoModifier);QVERIFY(std::abs(canvas->zoom()-1.575)<1e-8);QCOMPARE(canvas->viewportCenter(),disabledCenter);
         QVERIFY(controller.shutdown());
     }
     void handCursorAndHoldShortcutRestorePreviousTool(){
@@ -2214,20 +2214,20 @@ private slots:
         click();QTRY_VERIFY(panel->property("opened").toBool());click();QTRY_VERIFY(!panel->property("visible").toBool());
         QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
     }
-    void ctrlWheelZoomWithOptionsOpen(){
+    void mouseWheelZoomWithOptionsOpen(){
         QTemporaryDir dir;AppController controller(nullptr,dir.path());controller.newDefault();QTRY_VERIFY(!controller.busy());
         QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
         auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(window);QVERIFY(QTest::qWaitForWindowExposed(window));auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);QVERIFY(canvas->setZoom(1));
         auto* panel=window->findChild<QObject*>("backgroundOptions");QVERIFY(panel);QVERIFY(QMetaObject::invokeMethod(panel,"open"));QTRY_VERIFY(panel->property("opened").toBool());QVERIFY(!canvas->isEnabled());
         auto* field=findVisualItem(window->contentItem(),"currentPageSizeSelector");QVERIFY(field);const auto overPopup=field->mapToScene({field->width()/2,field->height()/2});
         const auto wheel=[&](QPointF position,Qt::KeyboardModifiers modifiers,int angle=120,QPoint pixels={}){QWheelEvent event(position,window->mapToGlobal(position.toPoint()),pixels,QPoint(0,angle),Qt::NoButton,modifiers,Qt::NoScrollPhase,false);QCoreApplication::sendEvent(window,&event);};
-        wheel(overPopup,Qt::ControlModifier);QCOMPARE(canvas->zoom(),1.05);QVERIFY(panel->property("opened").toBool());
-        wheel(canvas->mapToScene({200,160}),Qt::ControlModifier,-120);QCOMPARE(canvas->zoom(),1.);QVERIFY(panel->property("opened").toBool());
-        wheel(overPopup,Qt::NoModifier,-120);QCOMPARE(canvas->zoom(),1.);
-        wheel(overPopup,Qt::ControlModifier,0,{0,40});QCOMPARE(canvas->zoom(),1.05);
-        canvas->setProperty("wheelZoomEnabled",false);wheel(overPopup,Qt::ControlModifier);QCOMPARE(canvas->zoom(),1.05);
+        wheel(overPopup,Qt::NoModifier);QCOMPARE(canvas->zoom(),1.05);QVERIFY(panel->property("opened").toBool());
+        wheel(canvas->mapToScene({200,160}),Qt::NoModifier,-120);QCOMPARE(canvas->zoom(),1.);QVERIFY(panel->property("opened").toBool());
+        wheel(overPopup,Qt::ControlModifier,-120);QCOMPARE(canvas->zoom(),1.);
+        wheel(overPopup,Qt::NoModifier,0,{0,40});QCOMPARE(canvas->zoom(),1.05);
+        canvas->setProperty("wheelZoomEnabled",false);wheel(overPopup,Qt::NoModifier);QCOMPARE(canvas->zoom(),1.05);
         QVERIFY(QMetaObject::invokeMethod(panel,"close"));QTRY_VERIFY(!panel->property("visible").toBool());
-        canvas->setProperty("wheelZoomEnabled",true);wheel(canvas->mapToScene({200,160}),Qt::ControlModifier,-120);QCOMPARE(canvas->zoom(),1.);
+        canvas->setProperty("wheelZoomEnabled",true);wheel(canvas->mapToScene({200,160}),Qt::NoModifier,-120);QCOMPARE(canvas->zoom(),1.);
         QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
     }
     void controlledWheelAndEditableZoom(){
@@ -2236,8 +2236,8 @@ private slots:
         auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);canvas->setTool("hand");QVERIFY(canvas->setZoom(1));
         const QPointF pointer(canvas->width()/2+80,canvas->height()/2+35);const auto wheelPosition=canvas->mapToScene(pointer);
         const auto anchoredWorld=[&](){return canvas->viewportCenter()+QPointF(80,35)/(canvas->zoom()*96/25.4);};const auto before=anchoredWorld();
-        QWheelEvent up(wheelPosition,window->mapToGlobal(wheelPosition.toPoint()),{},QPoint(0,120),Qt::NoButton,Qt::ControlModifier,Qt::NoScrollPhase,false);QCoreApplication::sendEvent(window,&up);QCOMPARE(canvas->zoom(),1.05);QVERIFY(QLineF(before,anchoredWorld()).length()<1e-8);
-        QWheelEvent down(wheelPosition,window->mapToGlobal(wheelPosition.toPoint()),{},QPoint(0,-120),Qt::NoButton,Qt::ControlModifier,Qt::NoScrollPhase,false);QCoreApplication::sendEvent(window,&down);QCOMPARE(canvas->zoom(),1.);
+        QWheelEvent up(wheelPosition,window->mapToGlobal(wheelPosition.toPoint()),{},QPoint(0,120),Qt::NoButton,Qt::NoModifier,Qt::NoScrollPhase,false);QCoreApplication::sendEvent(window,&up);QCOMPARE(canvas->zoom(),1.05);QVERIFY(QLineF(before,anchoredWorld()).length()<1e-8);
+        QWheelEvent down(wheelPosition,window->mapToGlobal(wheelPosition.toPoint()),{},QPoint(0,-120),Qt::NoButton,Qt::NoModifier,Qt::NoScrollPhase,false);QCoreApplication::sendEvent(window,&down);QCOMPARE(canvas->zoom(),1.);
         auto* value=findVisualItem(window->contentItem(),"zoomValueArea");QVERIFY(value);auto* input=findVisualItem(window->contentItem(),"zoomValueInput");QVERIFY(input);
         const auto edit=[&](const QString& text){QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,value->mapToScene({value->width()/2,value->height()/2}).toPoint());input->setProperty("text",text);};
         edit("125.5");QTest::keyClick(window,Qt::Key_Return);QCOMPARE(canvas->zoom(),1.255);QVERIFY(!input->isVisible());
@@ -2888,8 +2888,8 @@ private slots:
             const auto position=overText?source->mapToScene({source->width()/2,source->height()/2}):canvas->mapToScene({800,450});
             QWheelEvent event(position,window->mapToGlobal(position.toPoint()),pixels,{0,angle},Qt::NoButton,modifiers,Qt::NoScrollPhase,false);QCoreApplication::sendEvent(window,&event);
         };
-        const auto zoom=canvas->zoom();wheel(Qt::ControlModifier,120);QVERIFY(canvas->zoom()>zoom);
-        wheel(Qt::ControlModifier,-120,{},false);QVERIFY(std::abs(canvas->zoom()-zoom)<1e-8);
+        const auto zoom=canvas->zoom();wheel(Qt::NoModifier,120);QVERIFY(canvas->zoom()>zoom);
+        wheel(Qt::NoModifier,-120,{},false);QVERIFY(std::abs(canvas->zoom()-zoom)<1e-8);
         const auto center=canvas->viewportCenter();const auto sourcePosition=source->mapToScene({0,0});const double scale=zoom*96/25.4;
         wheel(Qt::AltModifier,-120);QCOMPARE(canvas->zoom(),zoom);QCOMPARE(canvas->viewportCenter().y(),center.y());QVERIFY(std::abs(canvas->viewportCenter().x()-center.x()-60/scale)<1e-8);
         QVERIFY(std::abs(source->mapToScene({0,0}).x()-sourcePosition.x()+60)<1e-8);
