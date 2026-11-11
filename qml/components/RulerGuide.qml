@@ -13,13 +13,14 @@ Item {
     rotation: geometry.angle; transformOrigin: Item.TopLeft
     Rectangle { anchors.fill: parent; radius: Theme.xs; color: Theme.guideSurface; border.color: Theme.guideInk; border.width: root.canvas.selectedGuide === "ruler" ? Theme.focusBorder : Theme.hairline }
     Text { x: (root.width-width)/2; y: -height-Theme.sm; text: root.geometry.mm.toFixed(0) + " mm · " + Number(root.geometry.angle.toFixed(1)) + "°"; color: Theme.guideInk; font.pixelSize: Theme.caption }
-    Text { x: root.width-width-Theme.md; y: root.height-height-Theme.xs; text: "cm"; color: Theme.guideInk; font.pixelSize: Theme.caption }
+    Text { x: root.width-width-Theme.md; y: root.geometry.flipped ? Theme.xs : root.height-height-Theme.xs; text: "cm"; color: Theme.guideInk; font.pixelSize: Theme.caption }
     Repeater {
         model: Math.floor(root.geometry.mm/root.tickStep)+1
         Rectangle {
             required property int index
             readonly property real mm: index*root.tickStep
             x: mm*root.geometry.scale; width: Theme.hairline; height: (mm%10===0?4:2)*root.geometry.scale
+            y: root.geometry.flipped ? root.height-height : 0
             color: Theme.guideInk
         }
     }
@@ -28,12 +29,12 @@ Item {
         Text {
             required property int index
             visible: index*root.labelStep*root.geometry.scale < root.width-Theme.xxl-Theme.md
-            x: index*root.labelStep*root.geometry.scale-width/2; y: root.height-height-Theme.xs
+            x: index*root.labelStep*root.geometry.scale-width/2; y: root.geometry.flipped ? Theme.xs : root.height-height-Theme.xs
             text: (index*root.labelStep/10).toFixed(0); color: Theme.guideInk; font.pixelSize: Theme.caption
         }
     }
     Repeater {
-        model: [{x:0,icon:"rotate"},{x:root.width/2,icon:"hand"},{x:root.width,icon:"plus"}]
+        model: [{x:0,icon:"rotate"},{x:root.width,icon:"plus"}]
         Rectangle {
             required property var modelData
             x: modelData.x-width/2; y: root.height/2-height/2; width: Theme.guideHandle; height: width; radius: width/2
@@ -41,4 +42,17 @@ Item {
             Icon { anchors.centerIn: parent; width: Theme.guideHandle-Theme.xs; height: width; name: modelData.icon; color: Theme.guideInk }
         }
     }
+    Rectangle {
+        objectName: "rulerFlipButton"
+        x: root.width/2-width/2
+        y: root.height/2-height/2
+        width: 24; height: width; radius: width/2
+        color: root.geometry.flipped ? Theme.accentSoft : Theme.surface
+        border.color: Theme.guideInk; border.width: Theme.hairline
+        Accessible.role: Accessible.Button
+        Accessible.name: "Virar régua"
+        Accessible.onPressAction: root.canvas.flipRuler()
+        Icon { anchors.centerIn: parent; width: 18; height: width; name: "flipVertical"; color: Theme.guideInk }
+    }
+
 }

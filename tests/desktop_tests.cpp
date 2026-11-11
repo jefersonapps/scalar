@@ -1460,11 +1460,31 @@ private slots:
         const auto edgePoint=[&](double x,double y){return canvas->mapToScene({r["x"].toDouble()+x*scale,r["y"].toDouble()+y*scale}).toPoint();};
         canvas->setTool("pen");QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,edgePoint(20,-1));QTest::mouseMove(window,edgePoint(40,-1));QTest::mouseMove(window,edgePoint(60,-15));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,edgePoint(70,-15));QCOMPARE(controller.page()->strokes.size(),strokesBeforeRuler+1);const auto& samples=controller.page()->strokes.back().samples;QVERIFY(samples.size()>=3);const double initialY=samples.front().position.y;QVERIFY(std::abs(samples[1].position.y-initialY)<1e-8);QVERIFY(std::abs(samples.back().position.y-initialY)<1e-8);QCOMPARE(warnings.size(),0);QVERIFY(controller.shutdown());
     }
+    void rulerFlipButtonKeepsPositionAndAngle(){
+        QTemporaryDir dir;AppController controller(nullptr,dir.path());controller.newDefault();
+        QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());
+        auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);QTRY_VERIFY(!controller.busy());
+        canvas->setTool("ruler");auto* button=findVisualItem(window->contentItem(),"rulerFlipButton");QVERIFY(button);
+        for(double rotation:{0.,37.})for(double zoom:{1.,2.}){
+            canvas->setRulerAngle(rotation);canvas->setZoom(zoom);
+            const auto before=canvas->rulerGeometry();
+            QVERIFY(std::abs(button->x()+button->width()/2-before["length"].toDouble()/2)<1e-8);
+            const auto center=button->mapToScene({button->width()/2,button->height()/2}).toPoint();
+            QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,center);
+            QTest::mouseMove(window,center+QPoint(20,10));
+            QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,center+QPoint(20,10));
+            auto after=canvas->rulerGeometry();QCOMPARE(after["flipped"].toBool(),!before["flipped"].toBool());
+            for(const auto& key:{"x","y","angle","length","width","scale"})QCOMPARE(after[key],before[key]);
+            QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,center);QCOMPARE(canvas->rulerGeometry()["flipped"],before["flipped"]);
+        }
+        QVERIFY(controller.page()->strokes.empty());QCOMPARE(warnings.size(),0);QVERIFY(controller.shutdown());
+    }
     void rulerLocksInitialEdgeUntilRelease(){
         QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
         InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();canvas.setRulerVisible(true);canvas.setTool("pen");
         QPointingDevice pen("Test stylus",123,QInputDevice::DeviceType::Stylus,QPointingDevice::PointerType::Pen,QInputDevice::Capability::Position|QInputDevice::Capability::Pressure,1,3);
-        for(bool tablet:{false,true})for(double rotation:{0.,32.})for(int edge:{0,1})for(double side:{-1.,1.})for(bool reverse:{false,true}){
+        for(bool flipped:{false,true})for(bool tablet:{false,true})for(double rotation:{0.,32.})for(int edge:{0,1})for(double side:{-1.,1.})for(bool reverse:{false,true}){
+            if(canvas.rulerGeometry()["flipped"].toBool()!=flipped)canvas.flipRuler();
             canvas.setRulerAngle(rotation);
             const auto g=canvas.rulerGeometry();const double scale=g["scale"].toDouble(),angle=rotation*std::numbers::pi/180;
             const auto point=[&](double x,double y){return QPointF(g["x"].toDouble()+scale*(x*std::cos(angle)-y*std::sin(angle)),g["y"].toDouble()+scale*(x*std::sin(angle)+y*std::cos(angle)));};
@@ -1738,8 +1758,8 @@ private slots:
         auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(QTest::qWaitForWindowExposed(window));auto* canvas=window->findChild<CanvasItem*>("boardCanvas");QVERIFY(canvas);QTRY_VERIFY(!controller.busy());
         canvas->setTool("ruler");QVERIFY(canvas->rulerVisible());auto ruler=canvas->rulerGeometry();
         const auto rulerPoint=[&](double x,double y){const auto m=canvas->rulerGeometry();const double a=m["angle"].toDouble()*std::numbers::pi/180,s=m["scale"].toDouble();return canvas->mapToScene({m["x"].toDouble()+s*(x*std::cos(a)-y*std::sin(a)),m["y"].toDouble()+s*(x*std::sin(a)+y*std::cos(a))}).toPoint();};
-        auto center=rulerPoint(canvas->rulerLength()/2,6);QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,center);QTest::mouseMove(window,center+QPoint(25,-15));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,center+QPoint(25,-15));QVERIFY(std::abs(canvas->rulerGeometry()["x"].toDouble()-ruler["x"].toDouble()-25)<1);
-        const auto beforeCancel=canvas->rulerGeometry();center=rulerPoint(canvas->rulerLength()/2,6);QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,center);QTest::mouseMove(window,center+QPoint(20,0));QTest::keyClick(window,Qt::Key_Escape);QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,center+QPoint(20,0));QCOMPARE(canvas->rulerGeometry()["x"],beforeCancel["x"]);
+        auto center=rulerPoint(canvas->rulerLength()/3,6);QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,center);QTest::mouseMove(window,center+QPoint(25,-15));QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,center+QPoint(25,-15));QVERIFY(std::abs(canvas->rulerGeometry()["x"].toDouble()-ruler["x"].toDouble()-25)<1);
+        const auto beforeCancel=canvas->rulerGeometry();center=rulerPoint(canvas->rulerLength()/3,6);QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,center);QTest::mouseMove(window,center+QPoint(20,0));QTest::keyClick(window,Qt::Key_Escape);QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,center+QPoint(20,0));QCOMPARE(canvas->rulerGeometry()["x"],beforeCancel["x"]);
         const auto resizeStart=rulerPoint(canvas->rulerLength(),6),resizeEnd=rulerPoint(150,6);QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,resizeStart);QTest::mouseMove(window,resizeEnd);QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,resizeEnd);QVERIFY(std::abs(canvas->rulerLength()-150)<1);
         const auto rotateStart=rulerPoint(0,6),rotateEnd=rulerPoint(canvas->rulerLength()/2,6-canvas->rulerLength()/2);QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,rotateStart);QTest::mouseMove(window,rotateEnd);QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,rotateEnd);QVERIFY(std::abs(std::cos(canvas->rulerAngle()*std::numbers::pi/180))<.03);
         canvas->setRulerAngle(25);canvas->setTool("pen");

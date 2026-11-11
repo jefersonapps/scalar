@@ -178,6 +178,7 @@ public:
     void setRulerLength(double value);
     void setRulerAngle(double value);
     void setCompassRadius(double value);
+    Q_INVOKABLE void flipRuler();
     Q_INVOKABLE void centerGeometryTools();
     Q_INVOKABLE void drawCompassCircle();
     Q_INVOKABLE bool constructFromSelection(const QString& kind);
@@ -218,7 +219,7 @@ private:
     void panWheel(const QWheelEvent& event);
     double markerWidth_=4;
     double markerOpacity_=.10;
-    enum class State { Idle,Erasing,Drawing,PossibleHold,ShapePreview,CreatingShape,CreatingText,Panning,TouchGesture,Marquee,Moving,Resizing,Rotating,EditingHandle,MovingRuler,RotatingRuler,ResizingRuler,MovingCompass,ResizingCompass,DrawingCompass };
+    enum class State { Idle,Erasing,Drawing,PossibleHold,ShapePreview,CreatingShape,CreatingText,Panning,TouchGesture,Marquee,Moving,Resizing,Rotating,EditingHandle,FlippingRuler,MovingRuler,RotatingRuler,ResizingRuler,MovingCompass,ResizingCompass,DrawingCompass };
     bool beginGeometryPointer(PointerSample sample);
     bool moveGeometryPointer(PointerSample sample);
     bool geometryGesture() const;
@@ -322,6 +323,7 @@ private:
     std::optional<CompassGeometry> compassBefore_;
     std::optional<int> guidedEdge_;
     QString selectedGuide_;
+    bool rulerFlipped_=false;
     bool rulerVisible_=false,compassVisible_=false,rulerSnap_=true,compassComplete_=false;
     double rulerSnapDistance_=3;
 };

@@ -3,7 +3,7 @@
 namespace scalar {
 QVariantMap CanvasItem::rulerGeometry() const {
     const auto origin=view_.worldToScreen(ruler_.origin);const double scale=view_.pixelsPerMm*view_.zoom;
-    return {{"x",origin.x},{"y",origin.y},{"angle",rulerAngle()},{"length",ruler_.lengthMm*scale},{"width",RulerGeometry::widthMm*scale},{"scale",scale},{"mm",ruler_.lengthMm}};
+    return {{"x",origin.x},{"y",origin.y},{"angle",rulerAngle()},{"length",ruler_.lengthMm*scale},{"width",RulerGeometry::widthMm*scale},{"scale",scale},{"mm",ruler_.lengthMm},{"flipped",rulerFlipped_}};
 }
 Point CanvasItem::compassDrawHandle() const {
     const auto tip=compass_.pencil(),direction=tip-compass_.hinge();
@@ -14,6 +14,7 @@ QVariantMap CanvasItem::compassGeometry() const {
     const auto draw=view_.worldToScreen(compassDrawHandle());
     return {{"cx",center.x},{"cy",center.y},{"px",pencil.x},{"py",pencil.y},{"dx",draw.x},{"dy",draw.y},{"hx",hinge.x},{"hy",hinge.y},{"ox",opening.x},{"oy",opening.y},{"radius",compass_.radiusMm*view_.pixelsPerMm*view_.zoom},{"mm",compass_.radiusMm},{"visualScale",view_.zoom}};
 }
+void CanvasItem::flipRuler(){cancelStroke();rulerFlipped_=!rulerFlipped_;selectedGuide_="ruler";selection_.clear();selectionUpdated();emit geometryToolsChanged();update();}
 void CanvasItem::centerGeometryTools(){
     cancelStroke();const auto center=world({width()/2,height()/2});ruler_.origin=center-Point{ruler_.lengthMm/2,RulerGeometry::widthMm/2};ruler_.angle=0;compass_.center=center;emit geometryToolsChanged();
 }
@@ -24,8 +25,8 @@ void CanvasItem::setRulerSnapDistance(double value){if(!std::isfinite(value))ret
 void CanvasItem::setRulerLength(double value){if(!std::isfinite(value))return;cancelStroke();ruler_.lengthMm=std::clamp(value,20.,500.);emit geometryToolsChanged();}
 void CanvasItem::setRulerAngle(double value){if(!std::isfinite(value))return;cancelStroke();const auto center=ruler_.world({ruler_.lengthMm/2,RulerGeometry::widthMm/2});ruler_.angle=std::remainder(value*std::numbers::pi/180,2*std::numbers::pi);ruler_.origin=center-rotatePoint({ruler_.lengthMm/2,RulerGeometry::widthMm/2},{},ruler_.angle);emit geometryToolsChanged();}
 void CanvasItem::setCompassRadius(double value){if(!std::isfinite(value))return;cancelStroke();compass_.radiusMm=std::clamp(value,1.,500.);emit geometryToolsChanged();}
-void CanvasItem::resetGeometryTools(){cancelStroke();selectedGuide_.clear();rulerVisible_=compassVisible_=false;if(tool_=="ruler"||tool_=="compass"){tool_="pen";emit toolChanged();}emit geometryToolsChanged();}
-bool CanvasItem::geometryGesture() const {return state_==State::MovingRuler||state_==State::RotatingRuler||state_==State::ResizingRuler||state_==State::MovingCompass||state_==State::ResizingCompass||state_==State::DrawingCompass;}
+void CanvasItem::resetGeometryTools(){cancelStroke();selectedGuide_.clear();rulerFlipped_=false;rulerVisible_=compassVisible_=false;if(tool_=="ruler"||tool_=="compass"){tool_="pen";emit toolChanged();}emit geometryToolsChanged();}
+bool CanvasItem::geometryGesture() const {return state_==State::FlippingRuler||state_==State::MovingRuler||state_==State::RotatingRuler||state_==State::ResizingRuler||state_==State::MovingCompass||state_==State::ResizingCompass||state_==State::DrawingCompass;}
 bool CanvasItem::beginGeometryPointer(PointerSample s){
     if(!std::isfinite(s.position.x)||!std::isfinite(s.position.y))return false;
     const double tolerance=12/(view_.pixelsPerMm*view_.zoom);const auto p=s.position;
@@ -59,6 +60,10 @@ bool CanvasItem::beginGeometryPointer(PointerSample s){
     }
     if(rulerVisible_&&(tool_=="ruler"||tool_=="compass"||tool_=="pen"||tool_=="select")){
         const auto q=ruler_.local(p);const Point center{ruler_.lengthMm/2,RulerGeometry::widthMm/2};
+        if(length(q-center)<tolerance){
+            if(tool_=="compass")setTool("ruler");
+            flipRuler();state_=State::FlippingRuler;return true;
+        }
         const double left=length(q-Point{0,RulerGeometry::widthMm/2}),right=length(q-Point{ruler_.lengthMm,RulerGeometry::widthMm/2}),middle=length(q-center);
         const bool rotate=left<tolerance&&left<std::min(right,middle),resize=right<tolerance&&right<std::min(left,middle);
         // A pen starting near an edge draws along it; the controls still move the ruler.

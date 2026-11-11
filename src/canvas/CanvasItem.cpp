@@ -202,7 +202,7 @@ void CanvasItem::begin(PointerSample s){
     if(!controller_||!controller_->active())return;
     if(!controller_->pageInfinite()&&(s.position.x<0||s.position.y<0||s.position.x>controller_->pageWidth()||s.position.y>controller_->pageHeight()))return;
     selection_.clear();selectionUpdated();++inputEpoch_;holdTimer_.stop();previewShape_.reset();
-    guidedEdge_.reset();if(rulerVisible_&&rulerSnap_&&(tool_=="pen"||tool_=="ruler")){guidedEdge_=ruler_.nearEdge(s.position,rulerSnapDistance_);if(guidedEdge_)s.position=ruler_.project(s.position,*guidedEdge_);}
+    guidedEdge_.reset();if(rulerVisible_&&rulerSnap_&&tool_=="pen"){guidedEdge_=ruler_.nearEdge(s.position,rulerSnapDistance_);if(guidedEdge_)s.position=ruler_.project(s.position,*guidedEdge_);}
     auto ink=style_;if(tool_=="marker"){ink.rgba=(std::uint32_t(markerColor_.red())<<24)|(std::uint32_t(markerColor_.green())<<16)|(std::uint32_t(markerColor_.blue())<<8)|std::uint32_t(std::lround(markerOpacity_*255));ink.minWidthMm=ink.maxWidthMm=markerWidth_;ink.pattern=LinePattern::Solid;}
     smoothFreehand_=!rulerVisible_&&(tool_=="pen"||tool_=="marker");
     recognitionDashed_=false;input_.reset();current_={newId(),ink,{input_.filter(s,smoothFreehand_)}};holdAnchor_=lastPan_=s.position;
@@ -216,7 +216,7 @@ void CanvasItem::append(PointerSample s){
     if(!drawing())return;
     lastPan_=s.position;
     if(state_==State::ShapePreview){updateRecognizedLine(s.position);return;}
-    const bool usesRuler=rulerVisible_&&(tool_=="pen"||tool_=="ruler");
+    const bool usesRuler=rulerVisible_&&tool_=="pen";
     if(usesRuler&&rulerSnap_&&!guidedEdge_){
         // Catch the first crossed edge even when input events skip over the ruler.
         const auto entry=current_.samples.empty()?std::optional<Point>{}:ruler_.entryPoint(current_.samples.back().position,s.position);
@@ -309,7 +309,7 @@ void CanvasItem::startPointer(PointerSample s,Qt::KeyboardModifiers modifiers){
     shiftHeld_=modifiers.testFlag(Qt::ShiftModifier);
     if(tool_=="marker"&&modifiers.testFlag(Qt::ControlModifier)){if(controller_)controller_->fillRegion(s.position,markerColor_,markerOpacity_);return;}
     if(beginGeometryPointer(s))return;
-    if(tool_=="compass")return;
+    if(tool_=="compass"||tool_=="ruler")return;
     selectedGuide_.clear();emit geometryToolsChanged();
     if(tool_=="text"){
         if(!controller_||!controller_->page())return;
