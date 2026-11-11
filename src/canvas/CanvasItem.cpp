@@ -298,11 +298,11 @@ void CanvasItem::cancelStroke(){
 }
 ShapeObject CanvasItem::directShape(Point a,Point b) const{
     ShapeObject s;s.id=current_.id;s.style=style_;s.style.pattern=manualShapePattern_;
-    const auto center=(a+b)*0.5;const double w=std::max(0.2,std::abs(b.x-a.x)),h=std::max(0.2,std::abs(b.y-a.y));
+    const double w=std::max(0.2,std::abs(b.x-a.x)),h=std::max(0.2,std::abs(b.y-a.y));
     if(tool_=="line"){if(angleSnap_){const auto delta=b-a;const double angle=std::round(std::atan2(delta.y,delta.x)/(std::numbers::pi/12))*(std::numbers::pi/12);b=a+Point{std::cos(angle),std::sin(angle)}*length(delta);}s.kind=ShapeKind::Line;s.vertices={a,b};s.fillOpacity=0;}
-    else if(tool_=="circle"){s.kind=ShapeKind::Circle;s.center=center;s.radiusX=s.radiusY=std::max(0.2,length(b-a)/2);}
-    else if(tool_=="ellipse"){s.kind=ShapeKind::Ellipse;s.center=center;s.radiusX=w/2;s.radiusY=h/2;}
-    else if(tool_=="triangle"){s.kind=ShapeKind::Triangle;s.vertices={{center.x,std::min(a.y,b.y)},{std::max(a.x,b.x),std::max(a.y,b.y)},{std::min(a.x,b.x),std::max(a.y,b.y)}};}
+    else if(tool_=="circle"){s.kind=ShapeKind::Circle;s.center=a;s.radiusX=s.radiusY=std::max(0.2,length(b-a));}
+    else if(tool_=="ellipse"){s.kind=ShapeKind::Ellipse;s.center=a;s.radiusX=w;s.radiusY=h;}
+    else if(tool_=="triangle"){s.kind=ShapeKind::Triangle;s.vertices={a,{a.x+w,b.y},{a.x-w,b.y}};}
     else {s.kind=ShapeKind::Rectangle;s.vertices={{std::min(a.x,b.x),std::min(a.y,b.y)},{std::max(a.x,b.x),std::min(a.y,b.y)},{std::max(a.x,b.x),std::max(a.y,b.y)},{std::min(a.x,b.x),std::max(a.y,b.y)}};}
     return s;
 }

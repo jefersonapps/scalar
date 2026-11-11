@@ -638,6 +638,21 @@ private slots:
         const auto& stroke=controller.page()->strokes[0];QVERIFY(std::abs(length(stroke.samples.back().position-stroke.samples.front().position)-60)<1e-6);
         controller.undo();controller.undo();QVERIFY(std::abs(canvas.selectionRotation())<1e-6);controller.redo();QVERIFY(std::abs(canvas.selectionRotation()-90)<1e-6);QVERIFY(controller.shutdown());
     }
+    void predefinedShapesKeepInitialAnchor(){
+        for(const auto tool:{QString("circle"),QString("ellipse"),QString("triangle"),QString("rectangle"),QString("line")})for(const auto delta:{Point{20,15},Point{-20,15},Point{20,-15},Point{-20,-15}}){
+            QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(800);canvas.setController(&controller);canvas.restorePageView();canvas.setTool(tool);
+            const Point start{100,140},end=start+delta;
+            const auto send=[&](QEvent::Type type,Point p){const auto screen=canvas.screenPoint({p.x,p.y});QMouseEvent event(type,screen,screen,type==QEvent::MouseMove?Qt::NoButton:Qt::LeftButton,type==QEvent::MouseButtonRelease?Qt::NoButton:Qt::LeftButton,Qt::NoModifier);if(type==QEvent::MouseButtonPress)canvas.mousePressEvent(&event);else if(type==QEvent::MouseMove)canvas.mouseMoveEvent(&event);else canvas.mouseReleaseEvent(&event);};
+            send(QEvent::MouseButtonPress,start);send(QEvent::MouseMove,start-delta);send(QEvent::MouseMove,end);send(QEvent::MouseButtonRelease,end);
+            QCOMPARE(controller.page()->shapes.size(),std::size_t(1));const auto& shape=controller.page()->shapes.front();
+            if(tool=="circle"||tool=="ellipse"){
+                QVERIFY(length(shape.center-start)<1e-8);
+                if(tool=="circle")QVERIFY(std::abs(shape.radiusX-length(delta))<1e-8);
+                else {QVERIFY(std::abs(shape.radiusX-20)<1e-8);QVERIFY(std::abs(shape.radiusY-15)<1e-8);}
+            }else QVERIFY(std::any_of(shape.vertices.begin(),shape.vertices.end(),[&](Point p){return length(p-start)<1e-8;}));
+            QVERIFY(controller.shutdown());
+        }
+    }
     void contextualTextFormattingAndFourCornerResize(){
         QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();controller.setSessionLatexEnabled(false);
         controller.upsertText({},QPointF(80,100),{{"source","Example text"},{"fontSizePt",16},{"boxWidthMm",60},{"boxHeightMm",30},{"latexEnabled",false}});QTRY_VERIFY(!controller.textBusy());
