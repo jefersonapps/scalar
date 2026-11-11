@@ -18,7 +18,7 @@ O ícone nativo `packaging/scalar.ico` é atualizado automaticamente a partir de
 
 Ao instalar e criar o atalho, o instalador notifica o Shell do Windows para invalidar o cache de ícones e atualizar o executável e o atalho. Essa notificação evita que instalações atualizadas continuem exibindo o desenho anterior armazenado no cache.
 
-**Instalador para distribuir:** `build-package\packages\Scalar-1.0.0-win64.exe` (o nome acompanha a versão do projeto). O executável `build-package\scalar.exe` é uma saída de compilação; distribua o instalador em `packages/`, que inclui as dependências.
+**Instalador para distribuir:** `build-package\packages\Scalar-1.1.0-win64.exe` (o nome acompanha a versão do projeto). O executável `build-package\scalar.exe` é uma saída de compilação; distribua o instalador em `packages/`, que inclui as dependências.
 
 ### Ferramentas necessárias
 
