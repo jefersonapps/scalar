@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -e
+export APPDIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+source "$APPDIR/usr/libexec/scalar/runtime-env.sh"
+exec "$APPDIR/usr/bin/scalar-whiteboard" "$@"

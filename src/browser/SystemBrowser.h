@@ -5,7 +5,7 @@
 
 namespace scalar {
 // Native system web view: WebView2 on Windows, shared WebKitGTK on Linux.
-// No private browser engine is shipped by Scalar.
+// Native packages use the system engine; AppImage supplies a private WebKit runtime.
 class SystemBrowser : public QQuickItem {
     Q_OBJECT
     Q_PROPERTY(QUrl url READ url NOTIFY changed)

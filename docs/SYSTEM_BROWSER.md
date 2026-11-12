@@ -18,6 +18,10 @@ O perfil web (cookies/cache) fica em `AppLocalDataLocation/web-profile`, separad
 
 O host aplica uma configuração Fontconfig própria que ignora fontes locais WOFF/WOFF2, evitando o [travamento do Skia/WebKit 325185](https://bugs.webkit.org/show_bug.cgi?id=325185) em entradas sem família. As fontes do sistema e a configuração do quadro não são alteradas; fontes web carregadas pelos sites continuam disponíveis. Há um limite de 30 segundos para apresentar uma opção de tentar novamente em carregamentos sem resposta.
 
+### Exceção: distribuição AppImage
+
+O script `scripts/package-appimage.sh` inclui WebKitGTK e seus processos auxiliares no AppImage, junto com GTK, TLS/GIO e plugins de mídia. O painel integrado permanece disponível sem instalar WebKitGTK separadamente. O launcher ajusta os caminhos internos do navegador em uma cópia temporária privada e mantém o sandbox habilitado. Isso exige suporte a namespaces de usuário e X11/XWayland no destino. Atualizações do navegador chegam por uma nova geração do AppImage; o `.deb` continua usando o WebKit atualizado pelo sistema. Veja [geração e limites de compatibilidade](../BUILDING.md#appimage-linux-portátil-x86_64).
+
 ## Arrastar imagens
 
 As imagens são inseridas na posição onde são soltas e podem ser desfeitas normalmente. Quando o navegador fornece os pixels no arraste, o Scalar os incorpora diretamente, sem baixar o endereço novamente. Quando fornece HTML/URL, o Scalar prioriza o `src` da imagem sobre o link que a envolve e baixa HTTP/HTTPS em uma tarefa de fundo. URLs `data:image/` também são aceitas.

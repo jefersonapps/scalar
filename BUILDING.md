@@ -75,6 +75,53 @@ sudo apt install ./build-package/packages/scalar_*.deb
 
 A instalação direta usa a interface do gerenciador de pacotes, sem as opções do assistente. O comando instalado é `scalar-whiteboard`, para evitar conflito com o comando `scalar` fornecido pelo Git. No menu, o nome é Scalar.
 
+## AppImage Linux portátil (x86_64)
+
+Para gerar o AppImage com Qt/QML, Node/MathJax e **navegador integrado WebKitGTK**, instale Podman (ou use Docker já instalado) e execute:
+
+```sh
+sudo apt install podman
+bash scripts/package-appimage.sh
+```
+
+O script compila em `python:3.12-bookworm` (Debian 12), sem instalar as dependências de desenvolvimento no sistema anfitrião. A primeira execução baixa a imagem, dependências e ferramentas de empacotamento; as próximas reutilizam os caches. Use `SCALAR_JOBS=2 bash scripts/package-appimage.sh` para limitar o consumo de memória. Docker deve estar acessível pelo usuário; não execute o script inteiro com `sudo`. O contêiner usa o UID do usuário e libera seus filtros seccomp/AppArmor para permitir o sandbox aninhado do WebKit durante o teste; não usa modo privilegiado. Restrições globais de namespaces impostas pelo anfitrião ainda podem impedir esse teste.
+
+Saídas em `build-package/packages/`:
+
+- `Scalar-1.1.0-x86_64.AppImage` (a versão acompanha o CMake).
+- `Scalar-1.1.0-x86_64.AppImage.sha256`.
+
+```sh
+chmod +x build-package/packages/Scalar-1.1.0-x86_64.AppImage
+./build-package/packages/Scalar-1.1.0-x86_64.AppImage
+# Alternativa sem FUSE:
+./build-package/packages/Scalar-1.1.0-x86_64.AppImage --appimage-extract-and-run
+```
+
+A base visa sistemas x86_64 com **glibc >= 2.36**, como Debian 12+, Ubuntu 24.04+ e Mint 22+. Ubuntu 22.04/Mint 21 e sistemas musl (Alpine) não são alvos desse pacote. A glibc, o servidor X11/XWayland e os drivers gráficos continuam sendo fornecidos pelo sistema. Isso amplia a compatibilidade, mas não substitui testes nas distribuições e GPUs de destino. O navegador conserva o sandbox do WebKit e exige que o sistema permita namespaces de usuário; o script não desativa essa proteção. O contêiner de compilação também precisa permitir esses namespaces para o teste do navegador.
+
+Antes de publicar, o script verifica dependências ELF e a versão mínima de glibc, converte LaTeX em SVG, abre a interface com configurações temporárias e exige que o WebKit empacotado carregue uma página e execute JavaScript. A imagem final é extraída e conferida antes de substituir o artefato anterior. Esses testes não cobrem todos os sites, codecs, GPU ou stylus.
+
+Para compatibilidade com drivers Mesa/LLVM recentes, o launcher prefere a `libstdc++` do sistema quando ela oferece a versão GLIBCXX exigida pela biblioteca incluída. Isso evita que a biblioteca da base Debian 12 impeça o carregamento de drivers mais novos. Em sistemas com runtime mais antigo, permanece a biblioteca do pacote.
+
+O AppImage inclui uma cópia privada do WebKit, seus processos Web/Network/GPU quando disponíveis, GTK, módulos TLS/GIO e os plugins GStreamer instalados na base. Um launcher usa o Node já empacotado para ajustar os caminhos absolutos do WebKit em uma cópia temporária privada; a imagem permanece somente leitura. A cópia é removida quando o navegador termina normalmente. Como o WebKit é incluído, gere e redistribua o AppImage novamente para receber atualizações de segurança do navegador.
+
+Para desenvolver o empacotamento usando as dependências locais:
+
+```sh
+# Além das dependências de desenvolvimento Linux listadas neste documento:
+sudo apt install curl file patchelf desktop-file-utils imagemagick \
+  qt6-declarative-dev-tools qt6-tools-dev-tools qmake6 \
+  libgirepository1.0-dev librsvg2-dev glib-networking \
+  bubblewrap xdg-dbus-proxy gstreamer1.0-plugins-base \
+  gstreamer1.0-plugins-good xvfb xauth
+bash scripts/package-appimage.sh --local
+```
+
+**`--local` herda a glibc e as bibliotecas da máquina atual**, portanto não tem a mesma base de compatibilidade. O relatório `usr/share/scalar/appimage-build.txt` dentro da imagem registra a glibc detectada. Os diretórios `build-package/appimage-local` e `build-package/appimage-container` separam os caches CMake. As ferramentas baixadas ficam em `build-package/appimage-tools`; remova esse cache quando quiser atualizar linuxdeploy e os plugins. A base do contêiner e os downloads `continuous` recebem atualizações: o processo não promete reprodução byte a byte.
+
+Referências do empacotamento: [linuxdeploy](https://github.com/linuxdeploy/linuxdeploy), [plugin Qt](https://github.com/linuxdeploy/linuxdeploy-plugin-qt) e [plugin GTK](https://github.com/linuxdeploy/linuxdeploy-plugin-gtk).
+
 ## Organização das pastas
 
 | Pasta | Uso |

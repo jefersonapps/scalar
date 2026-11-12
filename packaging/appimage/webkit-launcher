@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -e
+scalar_appdir="$(cd "$(dirname "$(readlink -f "$0")")/../../.." && pwd)"
+exec "$scalar_appdir/usr/share/scalar/math/node" \
+    "$scalar_appdir/usr/libexec/scalar/webkit-launcher.cjs" "$@"
