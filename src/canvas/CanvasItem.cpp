@@ -131,6 +131,7 @@ void CanvasItem::setController(AppController* c){
         if(controller_->page()){selection_.prune(*controller_->page());const auto ids=selection_.ids();for(const auto& id:ids)if(auto object=findObject(*controller_->page(),id);object&&!hasVisibleInk(*object))selection_.select(id,true);}else selection_.clear();selectionUpdated();update();
     });
     if(c)connect(c,&AppController::pageChanged,this,[this]{cancelStroke();resetGeometryTools();selection_.clear();selectionUpdated();restorePageView();});
+    if(c)connect(c,&AppController::preferencesChanged,this,&CanvasItem::penChanged);
     if(c&&c->pageColor().lightness()<128)setPenColor(QColor("#f4f4f5"));emit controllerChanged();update();
 }
 void CanvasItem::setTool(const QString& t){
@@ -147,6 +148,26 @@ void CanvasItem::setTool(const QString& t){
 }
 void CanvasItem::setPenColor(const QColor& c){if(!c.isValid())return;color_=c;style_.rgba=(std::uint32_t(c.red())<<24)|(std::uint32_t(c.green())<<16)|(std::uint32_t(c.blue())<<8)|255;emit penChanged();}
 void CanvasItem::setPenWidth(double w){style_.maxWidthMm=std::clamp(w,0.1,5.0);style_.minWidthMm=std::min(0.15,style_.maxWidthMm);emit penChanged();}
+void CanvasItem::setShortenGuidedStroke(bool value){
+    if(!controller_||value==shortenGuidedStroke())return;
+    cancelStroke();controller_->setShortenGuidedStroke(value);
+}
+void CanvasItem::trimGuidedStroke(Point position){
+    if(!shortenGuidedStroke()||current_.samples.size()<=guidedStart_+1)return;
+    const auto coordinate=[this](Point p){return guidedArc_?protractor_.arcAngle(p):ruler_.local(p).x;};
+    const double start=coordinate(current_.samples[guidedStart_].position);
+    const double last=coordinate(current_.samples.back().position),next=coordinate(position);
+    const double direction=last>=start?1.:-1.;
+    if((next-last)*direction>=0)return;
+    const double remaining=std::max(0.,(next-start)*direction);
+    const auto previousSize=current_.samples.size();
+    while(current_.samples.size()>guidedStart_+1&&
+          (coordinate(current_.samples.back().position)-start)*direction>=remaining-1e-9)
+        current_.samples.pop_back();
+    // The live renderer seals immutable chunks. Retraction invalidates them,
+    // even when the next append restores the previous sample count.
+    if(current_.samples.size()!=previousSize)current_.id=newId();
+}
 void CanvasItem::setPressureGamma(double g){style_.gamma=std::clamp(g,0.3,3.0);emit penChanged();}
 QString CanvasItem::shapeLineStyle() const {return manualShapePattern_==LinePattern::Dashed?"dashed":manualShapePattern_==LinePattern::Dotted?"dotted":"solid";}
 void CanvasItem::setShapeLineStyle(const QString& value){
@@ -204,6 +225,7 @@ void CanvasItem::begin(PointerSample s){
     if(!controller_->pageInfinite()&&(s.position.x<0||s.position.y<0||s.position.x>controller_->pageWidth()||s.position.y>controller_->pageHeight()))return;
     selection_.clear();selectionUpdated();++inputEpoch_;holdTimer_.stop();previewShape_.reset();
     guidedArcBoundary_.reset();
+    guidedStart_=0;
     guidedArc_=protractorVisible_&&tool_=="pen"&&protractor_.nearArc(s.position,rulerSnapDistance_);
     if(guidedArc_)s.position=protractor_.at(protractor_.arcAngle(s.position));
     guidedEdge_.reset();if(!guidedArc_&&rulerVisible_&&rulerSnap_&&tool_=="pen"){guidedEdge_=ruler_.nearEdge(s.position,rulerSnapDistance_);if(guidedEdge_)s.position=ruler_.project(s.position,*guidedEdge_);}
@@ -227,11 +249,12 @@ void CanvasItem::append(PointerSample s){
             guidedArc_=true;holdTimer_.stop();++inputEpoch_;state_=State::Drawing;
             auto contact=s;contact.position=protractor_.at(protractor_.arcAngle(entry.value_or(s.position)));
             current_.samples.push_back(input_.filter(contact,false));
+            guidedStart_=current_.samples.size()-1;
         }
     }
     if(guidedArc_){
         // Retain the same contour until release, including pointer drift and reversal.
-        const double a=protractor_.arcAngle(current_.samples.back().position);
+        double a=protractor_.arcAngle(current_.samples.back().position);
         const auto local=protractor_.local(s.position);
         double b=protractor_.arcAngle(s.position);
         // Below the baseline, nearest-point projection switches between the
@@ -243,6 +266,8 @@ void CanvasItem::append(PointerSample s){
             else b=*guidedArcBoundary_;
         }
         if(length(local)<1e-6)b=a;
+        trimGuidedStroke(protractor_.at(b));
+        a=protractor_.arcAngle(current_.samples.back().position);
         if(std::abs(b-a)<1e-9){update();return;}
         const int steps=std::max(1,int(std::ceil(std::abs(b-a)*protractor_.radiusMm/.3)));
         for(int i=1;i<=steps;++i){auto point=s;point.position=protractor_.at(a+(b-a)*i/steps);current_.samples.push_back(input_.filter(point,false));}
@@ -259,10 +284,11 @@ void CanvasItem::append(PointerSample s){
                 contact=input_.filter(contact,false);
                 if(length(contact.position-current_.samples.back().position)>.005)current_.samples.push_back(contact);
             }
+            guidedStart_=current_.samples.size()-1;
         }
     }
     // Once an edge is reached, keep it until release regardless of cursor drift.
-    if(guidedEdge_)s.position=ruler_.project(s.position,*guidedEdge_);
+    if(guidedEdge_){s.position=ruler_.project(s.position,*guidedEdge_);trimGuidedStroke(s.position);}
     // Stop at the physical edge, including fast moves that cross the entire ruler.
     if(usesRuler&&!guidedEdge_&&!current_.samples.empty()){
         if(const auto entry=ruler_.entryPoint(current_.samples.back().position,s.position)){

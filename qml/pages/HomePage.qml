@@ -19,7 +19,6 @@ Item {
     readonly property var childFolders: App.folders.filter(folder => folder.parentId===activeFolder)
     signal createRequested()
     signal openRequested()
-    signal settingsRequested()
     signal fullScreenRequested()
     readonly property bool fullScreen: root.Window.window && root.Window.window.visibility===Window.FullScreen
     signal importPdfRequested()
@@ -56,7 +55,13 @@ Item {
     id: contentArea
     anchors.top: parent.top; anchors.bottom: parent.bottom; anchors.right: parent.right
     anchors.left: root.hasSidebar ? sidebar.right : parent.left
+    Loader {
+        anchors.fill: parent
+        active: root.viewMode === "settings"
+        sourceComponent: Component { SettingsPage { showBackButton: !root.hasSidebar; onBackRequested: root.viewMode="folder" } }
+    }
     ColumnLayout {
+        visible: root.viewMode !== "settings"
         width: Math.min(Theme.homeContentWidth,contentArea.width-(root.compactHome?Theme.lg:Theme.xl)*2)
         height: root.height-(root.width<Theme.mediumBreakpoint?Theme.lg:Theme.xxl)*2
         anchors.centerIn: parent
@@ -84,7 +89,7 @@ Item {
                 }
                 C.IconButton { objectName: "openTrashButton"; iconName: "trash"; label: "Lixeira (" + App.trashedProjects.length + ")"; onClicked: trash.open() }
                 C.IconButton { objectName: "homeFullScreenButton";iconName: root.fullScreen ? "restoreScreen" : "fullScreen";label: root.fullScreen ? "Sair da tela cheia (F11)" : "Tela cheia (F11)";selected: root.fullScreen;onClicked: root.fullScreenRequested() }
-                C.IconButton { objectName: "homeSettingsButton"; iconName: "settings"; label: "Configurações"; onClicked: root.settingsRequested() }
+                C.ActionButton { visible: !root.hasSidebar; text: "Configurações"; onClicked: { root.activeFolder=""; root.viewMode="settings" } }
             }
         }
         Rectangle {

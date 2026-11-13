@@ -1,4 +1,5 @@
 #include "AppController.h"
+#include <QSettings>
 #include "tools/RegionFill.h"
 #include "documents/Backgrounds.h"
 #include "math/MathRenderer.h"
@@ -75,6 +76,7 @@ AppController::AppController(QObject* parent,const QString& dataDirectory):QObje
     dataDir_=dataDirectory.isEmpty()?QStandardPaths::writableLocation(QStandardPaths::AppDataLocation):dataDirectory;
     QDir().mkpath(dataDir_+"/projects"); library_=std::make_unique<Library>(dataDir_+"/library.sqlite");
     recognitionEnabled_=library_->setting("recognitionEnabled",true).toBool();holdDelay_=std::clamp(library_->setting("holdDelay",1000).toInt(),250,1500);
+    shortenGuidedStroke_=library_->setting("shortenGuidedStroke",QSettings().value("pen/shortenGuidedStroke",false)).toBool();
     sessionLatexEnabled_=defaultLatexEnabled();
     if(sessionLatexEnabled_)warmMathRuntime();
     qGuiApp->installEventFilter(this);
@@ -361,6 +363,10 @@ void AppController::addShape(ShapeObject shape){const auto id=shape.id;const boo
 void AppController::changeObjects(std::vector<ObjectChange> changes,CommandKind kind){if(!active()||constructionPlayback()||loading_||changes.empty())return;history().apply(current(),std::move(changes),kind);mutate();}
 void AppController::eraseObjects(std::vector<ObjectChange> changes,std::vector<StrokeObject> recoverable){if(!active()||constructionPlayback()||loading_||changes.empty())return;history().erase(current(),std::move(changes),std::move(recoverable));mutate();}
 bool AppController::recognitionEnabled() const{return recognitionEnabled_;}
+void AppController::setShortenGuidedStroke(bool value){
+    if(value==shortenGuidedStroke_)return;
+    shortenGuidedStroke_=value;library_->setSetting("shortenGuidedStroke",value);emit preferencesChanged();
+}
 void AppController::setRecognitionEnabled(bool value){recognitionEnabled_=value;library_->setSetting("recognitionEnabled",value);emit preferencesChanged();}
 int AppController::holdDelay() const{return holdDelay_;}
 void AppController::setHoldDelay(int value){holdDelay_=std::clamp(value,250,1500);library_->setSetting("holdDelay",holdDelay_);emit preferencesChanged();}

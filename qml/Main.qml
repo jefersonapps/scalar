@@ -45,7 +45,6 @@ ApplicationWindow {
             onFolderProjectCreated: folderId => window.homeFolder=folderId
             onOpenRequested: { window.homeFolder=""; openFile.open() }
             onImportPdfRequested: pdfFile.open()
-            onSettingsRequested: settings.open()
             onFullScreenRequested: window.toggleFullScreen()
         }
     }

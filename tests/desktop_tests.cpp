@@ -1840,6 +1840,65 @@ private slots:
         }
         QVERIFY(controller.page()->strokes.empty());QCOMPARE(warnings.size(),0);QVERIFY(controller.shutdown());
     }
+    void globalSettingsNavigationAndGuidedStrokeDefault(){
+        QTemporaryDir directory;
+        {
+            AppController controller(nullptr,directory.path());controller.setShortenGuidedStroke(false);
+            QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);
+            engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));
+            QVERIFY(!engine.rootObjects().isEmpty());auto* window=qobject_cast<QQuickWindow*>(engine.rootObjects().first());QVERIFY(window);
+            QVERIFY(QTest::qWaitForWindowExposed(window));
+            auto* section=findVisualItem(window->contentItem(),"sidebarSection_settings");QVERIFY(section);QVERIFY(section->isVisible());
+            QVERIFY(!window->findChild<QObject*>("homeSettingsButton"));
+            QVERIFY(QMetaObject::invokeMethod(section,"clicked"));
+            QTRY_VERIFY(window->findChild<QObject*>("settingsPage"));
+            auto* settings=window->findChild<QObject*>("settingsPage");
+            auto* toggle=settings->findChild<QObject*>("shortenGuidedStrokeToggle");QVERIFY(toggle);
+            toggle->setProperty("checked",true);QVERIFY(QMetaObject::invokeMethod(toggle,"toggled"));QVERIFY(controller.shortenGuidedStroke());
+            CanvasItem first,second;first.setController(&controller);second.setController(&controller);
+            QVERIFY(first.shortenGuidedStroke());QVERIFY(second.shortenGuidedStroke());
+            controller.newDefault();QVERIFY(first.shortenGuidedStroke());
+            controller.newDefault();QVERIFY(second.shortenGuidedStroke());
+            controller.setShortenGuidedStroke(false);QVERIFY(!first.shortenGuidedStroke());QVERIFY(!second.shortenGuidedStroke());
+            controller.setShortenGuidedStroke(true);
+            QCOMPARE(warnings.count(),0);QVERIFY(controller.shutdown());
+        }
+        AppController reopened(nullptr,directory.path());QVERIFY(reopened.shortenGuidedStroke());QVERIFY(reopened.shutdown());
+    }
+    void guidedStrokeCanBeShortenedByRetracing(){
+        QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
+        InspectableCanvas canvas;canvas.setWidth(1000);canvas.setHeight(700);canvas.setController(&controller);canvas.restorePageView();
+        const bool previous=canvas.shortenGuidedStroke();
+        QPointingDevice pen("Test stylus",123,QInputDevice::DeviceType::Stylus,QPointingDevice::PointerType::Pen,QInputDevice::Capability::Position|QInputDevice::Capability::Pressure,1,3);
+        for(bool tablet:{false,true})for(bool arc:{false,true})for(bool enabled:{false,true})for(bool reverse:{false,true}){
+            canvas.setRulerVisible(!arc);canvas.setProtractorVisible(arc);canvas.setTool("pen");canvas.setShortenGuidedStroke(enabled);
+            const auto g=arc?canvas.protractorGeometry():canvas.rulerGeometry();
+            const QPointF origin(g["x"].toDouble(),g["y"].toDouble());
+            const double scale=arc?g["radius"].toDouble():g["scale"].toDouble();
+            const auto point=[&](double coordinate){return arc?origin+QPointF(std::cos(coordinate*std::numbers::pi/180),-std::sin(coordinate*std::numbers::pi/180))*scale:origin+QPointF(coordinate*scale,0);};
+            const auto send=[&](QEvent::Type type,double coordinate){
+                const auto p=point(coordinate);const bool move=type==QEvent::MouseMove,release=type==QEvent::MouseButtonRelease;
+                if(tablet){
+                    QTabletEvent event(release?QEvent::TabletRelease:move?QEvent::TabletMove:QEvent::TabletPress,&pen,p,p,release?0.:.7,0,0,0,0,0,Qt::NoModifier,move?Qt::NoButton:Qt::LeftButton,release?Qt::NoButton:Qt::LeftButton);
+                    QCoreApplication::sendEvent(&canvas,&event);return;
+                }
+                QMouseEvent event(type,p,p,move?Qt::NoButton:Qt::LeftButton,release?Qt::NoButton:Qt::LeftButton,Qt::NoModifier);
+                if(move)canvas.mouseMoveEvent(&event);else if(release)canvas.mouseReleaseEvent(&event);else canvas.mousePressEvent(&event);
+            };
+            const auto value=[&](double coordinate){return reverse?120-coordinate:coordinate;};
+            send(QEvent::MouseButtonPress,value(30));send(QEvent::MouseMove,value(60));send(QEvent::MouseMove,value(90));
+            send(QEvent::MouseMove,value(70));send(QEvent::MouseMove,value(65));send(QEvent::MouseButtonRelease,value(65));
+            QCOMPARE(controller.page()->strokes.size(),std::size_t(1));
+            for(const auto& sample:controller.page()->strokes.front().samples){
+                const auto p=canvas.screenPoint({sample.position.x,sample.position.y})-origin;
+                const double coordinate=arc?std::atan2(-p.y(),p.x())*180/std::numbers::pi:p.x()/scale;
+                const double progress=reverse?120-coordinate:coordinate;
+                QVERIFY(progress>=30-1e-6);QVERIFY(progress<=(enabled?65.:90.)+1e-6);
+            }
+            controller.undo();QVERIFY(controller.page()->strokes.empty());controller.redo();QCOMPARE(controller.page()->strokes.size(),std::size_t(1));controller.undo();
+        }
+        canvas.setShortenGuidedStroke(previous);
+    }
     void protractorGuideSnapsAndKeepsInkOnArc(){
         QTemporaryDir directory;AppController controller(nullptr,directory.path());controller.newDefault();
         QQmlApplicationEngine engine;QSignalSpy warnings(&engine,&QQmlEngine::warnings);engine.rootContext()->setContextProperty("App",&controller);engine.load(QUrl("qrc:/qml/Main.qml"));QVERIFY(!engine.rootObjects().isEmpty());

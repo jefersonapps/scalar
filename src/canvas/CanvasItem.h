@@ -21,6 +21,7 @@ class CanvasItem : public QQuickItem {
     Q_PROPERTY(QColor penColor READ penColor WRITE setPenColor NOTIFY penChanged)
     Q_PROPERTY(QColor markerColor READ markerColor WRITE setMarkerColor NOTIFY penChanged)
     Q_PROPERTY(double penWidth READ penWidth WRITE setPenWidth NOTIFY penChanged)
+    Q_PROPERTY(bool shortenGuidedStroke READ shortenGuidedStroke WRITE setShortenGuidedStroke NOTIFY penChanged)
     Q_PROPERTY(double markerWidth READ markerWidth WRITE setMarkerWidth NOTIFY penChanged)
     Q_PROPERTY(double markerOpacity READ markerOpacity WRITE setMarkerOpacity NOTIFY penChanged)
     Q_PROPERTY(double pressureGamma READ pressureGamma WRITE setPressureGamma NOTIFY penChanged)
@@ -95,6 +96,8 @@ public:
     void setMarkerColor(const QColor& color){if(!color.isValid()||color==markerColor_)return;markerColor_=color;emit penChanged();}
     double penWidth() const {return style_.maxWidthMm;}
     void setPenWidth(double width);
+    bool shortenGuidedStroke() const {return controller_&&controller_->shortenGuidedStroke();}
+    void setShortenGuidedStroke(bool value);
     double pressureGamma() const {return style_.gamma;}
     void setPressureGamma(double gamma);
     QString penLineStyle() const;
@@ -358,6 +361,8 @@ private:
     std::optional<RulerGeometry> rulerBefore_;
     std::optional<CompassGeometry> compassBefore_;
     std::optional<int> guidedEdge_;
+    std::size_t guidedStart_=0;
+    void trimGuidedStroke(Point position);
     QString selectedGuide_;
     bool rulerFlipped_=false;
     bool rulerVisible_=false,compassVisible_=false,rulerSnap_=true,compassComplete_=false;

@@ -38,9 +38,11 @@ Rectangle {
         }
         Item { Layout.preferredHeight: Theme.md }
         Repeater {
-            model: [{label:"Início",icon:"home",mode:"folder"},{label:"Recentes",icon:"page",mode:"recent"},{label:"Todos os quadros",icon:"background",mode:"all"}]
+            model: [{label:"Início",icon:"home",mode:"folder"},{label:"Recentes",icon:"page",mode:"recent"},{label:"Todos os quadros",icon:"background",mode:"all"},{label:"Configurações",icon:"settings",mode:"settings"}]
             AbstractButton {
                 required property var modelData
+                objectName: "sidebarSection_"+modelData.mode
+                Accessible.name: modelData.label
                 Layout.fillWidth: true; Layout.preferredHeight: Theme.touch; hoverEnabled: true
                 readonly property bool selected: root.activeFolder===""&&root.viewMode===modelData.mode
                 background: Rectangle { radius: Theme.radiusSmall; color: parent.selected ? Theme.accentSoft : parent.hovered ? Theme.hover : "transparent" }

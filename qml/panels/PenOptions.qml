@@ -73,6 +73,21 @@ C.GlassPopover {
                 }
             }
         }
+        C.ModernCheckBox {
+            objectName: "penShortenGuidedStrokeToggle"
+            visible: !root.marker
+            Layout.fillWidth: true
+            text: "Encurtar traço ao voltar"
+            checked: App.shortenGuidedStroke
+            onToggled: App.shortenGuidedStroke=checked
+        }
+        Text {
+            visible: !root.marker
+            Layout.fillWidth: true; wrapMode: Text.WordWrap
+            text: "Na régua ou no transferidor, volte sem levantar a ponta para apagar o trecho excedente."
+            color: Theme.secondary; font.pixelSize: Theme.caption
+        }
+        Rectangle { visible: !root.marker; Layout.fillWidth: true; Layout.topMargin: Theme.sm; Layout.bottomMargin: Theme.sm; implicitHeight: Theme.hairline; color: Theme.border }
         Text { visible: !root.marker; text: "Curva de pressão"; color: Theme.secondary; font.pixelSize: Theme.caption }
         C.ModernSlider { implicitHeight: Theme.xxl; visible: !root.marker; Layout.fillWidth: true; from: 0.3; to: 3; value: root.canvas ? root.canvas.pressureGamma : 1.2; onMoved: { if(root.canvas) root.canvas.pressureGamma = value } }
         Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; text: root.marker ? "Ctrl + clique para preencher entre traços. Pequenas aberturas de até 2 mm são toleradas." : "Pressão da stylus · mouse com largura constante"; color: Theme.secondary; font.pixelSize: Theme.caption }

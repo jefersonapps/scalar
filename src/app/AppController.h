@@ -64,6 +64,7 @@ class AppController : public QObject {
     Q_PROPERTY(bool defaultLandscape READ defaultLandscape WRITE setDefaultLandscape NOTIFY preferencesChanged)
     Q_PROPERTY(QString defaultBackground READ defaultBackground WRITE setDefaultBackground NOTIFY preferencesChanged)
     Q_PROPERTY(bool recognitionEnabled READ recognitionEnabled WRITE setRecognitionEnabled NOTIFY preferencesChanged)
+    Q_PROPERTY(bool shortenGuidedStroke READ shortenGuidedStroke WRITE setShortenGuidedStroke NOTIFY preferencesChanged)
     Q_PROPERTY(int holdDelay READ holdDelay WRITE setHoldDelay NOTIFY preferencesChanged)
     Q_PROPERTY(bool recoveryAvailable READ recoveryAvailable NOTIFY changed)
     Q_PROPERTY(int currentPage READ currentPage NOTIFY pageChanged)
@@ -205,6 +206,8 @@ public:
     void eraseObjects(std::vector<ObjectChange> changes,std::vector<StrokeObject> recoverable);
     void fillRegion(Point seed,QColor color,double opacity=.10);
     bool recognitionEnabled() const;
+    bool shortenGuidedStroke() const {return shortenGuidedStroke_;}
+    void setShortenGuidedStroke(bool value);
     void setRecognitionEnabled(bool value);
     int holdDelay() const;
     void setHoldDelay(int value);
@@ -336,6 +339,7 @@ private:
     quint64 revision_=0;
     bool inkActive_=false;
     bool recognitionEnabled_=true;
+    bool shortenGuidedStroke_=false;
     bool sessionLatexEnabled_=false;
     bool sessionCompassMarkCenter_=true;
     int holdDelay_=1000;
