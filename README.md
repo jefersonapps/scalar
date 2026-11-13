@@ -7,14 +7,14 @@
 <p align="center">Um quadro branco para pensar, escrever e explorar ideias.</p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.1.0-087caa" alt="Versão 1.1.0">
+  <img src="https://img.shields.io/badge/version-1.2.0-087caa" alt="Versão 1.2.0">
   <img src="https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&amp;logoColor=white" alt="C++20">
   <img src="https://img.shields.io/badge/Qt-6-41CD52?logo=qt&amp;logoColor=white" alt="Qt 6">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-64748b" alt="Windows e Linux">
 </p>
 
 <p align="center">
-  <a href="https://github.com/jefersonapps/scalar/releases/latest"><img src="https://img.shields.io/badge/BAIXAR%20SCALAR-1.1.0-087caa?style=for-the-badge&amp;logo=github&amp;logoColor=white" alt="Baixar Scalar na página de releases"></a>
+  <a href="https://github.com/jefersonapps/scalar/releases/latest"><img src="https://img.shields.io/badge/BAIXAR%20SCALAR-1.2.0-087caa?style=for-the-badge&amp;logo=github&amp;logoColor=white" alt="Baixar Scalar na página de releases"></a>
 </p>
 
 <p align="center"><a href="https://github.com/jefersonapps/scalar/releases">Ver todas as versões e downloads</a></p>
@@ -34,9 +34,9 @@ O Scalar reúne escrita à mão, geometria, texto e documentos em um espaço de 
 
 ![Ferramentas e recursos do Scalar](assets/branding/features.png)
 
-## Novidades da versão 1.1.0
+## Novidades da versão 1.2.0
 
-Transferidor com desenho guiado, magnetismo para instrumentos, gravação de construções, barra contextual compacta e formatação de texto mais acessível. A versão também melhora o desempenho, a navegação e a estabilidade do desenho. Confira todas as novidades e correções nas [notas da versão 1.1.0](docs/RELEASE_NOTES_1.1.0.md).
+Encurte traços ao voltar pela régua ou pelo transferidor, sem levantar a ponta. As configurações agora têm uma página própria na sidebar, com preferências organizadas por seção e válidas para todos os quadros. A versão também aprimora os controles visuais e o empacotamento AppImage para Linux. Confira os detalhes nas [notas da versão 1.2.0](docs/RELEASE_NOTES_1.2.0.md).
 
 ## Comece a usar
 
