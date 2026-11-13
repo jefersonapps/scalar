@@ -53,7 +53,11 @@ SystemBrowser::SystemBrowser(QQuickItem* parent):QQuickItem(parent),native_(std:
             // becomes active again. Their keyboard input never enters Qt shortcuts.
             connect(next,&QQuickWindow::activeFocusItemChanged,this,[this]{
 #ifdef Q_OS_WIN
-                if(focused_&&native_->window){SetFocus(reinterpret_cast<HWND>(native_->window->winId()));focused_=false;emit changed();}
+                // Losing Qt window focus to the native child can clear the
+                // active item. Only an explicit focus change to another Qt item
+                // should take keyboard focus back from WebView2.
+                auto* item=native_->window?native_->window->activeFocusItem():nullptr;
+                if(focused_&&item&&item!=this){SetFocus(reinterpret_cast<HWND>(native_->window->winId()));focused_=false;emit changed();}
 #endif
             });
         }
@@ -149,7 +153,15 @@ void SystemBrowser::initialize(){
                             args->put_Handled(TRUE);QTimer::singleShot(0,guard.data(),[guard]{if(guard)emit guard->focusAddressRequested();});
                         }return S_OK;
                     }).Get(),&token);
-                    controller->add_GotFocus(Callback<ICoreWebView2FocusChangedEventHandler>([guard](ICoreWebView2Controller*,IUnknown*)->HRESULT{if(guard){guard->focused_=true;emit guard->changed();}return S_OK;}).Get(),&token);
+                    controller->add_GotFocus(Callback<ICoreWebView2FocusChangedEventHandler>([guard](ICoreWebView2Controller*,IUnknown*)->HRESULT{
+                        if(guard){
+                            // Keep the QML focus scope in sync with the native
+                            // child, so the address field and board relinquish
+                            // focus without immediately stealing it back.
+                            guard->forceActiveFocus(Qt::MouseFocusReason);
+                            guard->focused_=true;emit guard->changed();
+                        }return S_OK;
+                    }).Get(),&token);
                     controller->add_LostFocus(Callback<ICoreWebView2FocusChangedEventHandler>([guard](ICoreWebView2Controller*,IUnknown*)->HRESULT{if(guard){guard->focused_=false;emit guard->changed();}return S_OK;}).Get(),&token);
                     browser.ready_=true;browser.syncGeometry();browser.navigate(browser.url_.toString());return S_OK;
                 }).Get());

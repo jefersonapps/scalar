@@ -18,7 +18,7 @@ O ícone nativo `packaging/scalar.ico` é atualizado automaticamente a partir de
 
 Ao instalar e criar o atalho, o instalador notifica o Shell do Windows para invalidar o cache de ícones e atualizar o executável e o atalho. Essa notificação evita que instalações atualizadas continuem exibindo o desenho anterior armazenado no cache.
 
-**Instalador para distribuir:** `build-package\packages\Scalar-1.2.0-win64.exe` (o nome acompanha a versão do projeto). O executável `build-package\scalar.exe` é uma saída de compilação; distribua o instalador em `packages/`, que inclui as dependências.
+**Instalador para distribuir:** `build-package\packages\Scalar-1.2.1-win64.exe` (o nome acompanha a versão do projeto). O executável `build-package\scalar.exe` é uma saída de compilação; distribua o instalador em `packages/`, que inclui as dependências.
 
 ### Ferramentas necessárias
 
@@ -88,14 +88,14 @@ O script compila em `python:3.12-bookworm` (Debian 12), sem instalar as dependê
 
 Saídas em `build-package/packages/`:
 
-- `Scalar-1.2.0-x86_64.AppImage` (a versão acompanha o CMake).
-- `Scalar-1.2.0-x86_64.AppImage.sha256`.
+- `Scalar-1.2.1-x86_64.AppImage` (a versão acompanha o CMake).
+- `Scalar-1.2.1-x86_64.AppImage.sha256`.
 
 ```sh
-chmod +x build-package/packages/Scalar-1.2.0-x86_64.AppImage
-./build-package/packages/Scalar-1.2.0-x86_64.AppImage
+chmod +x build-package/packages/Scalar-1.2.1-x86_64.AppImage
+./build-package/packages/Scalar-1.2.1-x86_64.AppImage
 # Alternativa sem FUSE:
-./build-package/packages/Scalar-1.2.0-x86_64.AppImage --appimage-extract-and-run
+./build-package/packages/Scalar-1.2.1-x86_64.AppImage --appimage-extract-and-run
 ```
 
 A base visa sistemas x86_64 com **glibc >= 2.36**, como Debian 12+, Ubuntu 24.04+ e Mint 22+. Ubuntu 22.04/Mint 21 e sistemas musl (Alpine) não são alvos desse pacote. A glibc, o servidor X11/XWayland e os drivers gráficos continuam sendo fornecidos pelo sistema. Isso amplia a compatibilidade, mas não substitui testes nas distribuições e GPUs de destino. O navegador conserva o sandbox do WebKit e exige que o sistema permita namespaces de usuário; o script não desativa essa proteção. O contêiner de compilação também precisa permitir esses namespaces para o teste do navegador.

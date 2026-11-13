@@ -194,6 +194,73 @@ private slots:
         QTRY_VERIFY(!browser->loading());QVERIFY(browser->error().isEmpty());
         delete browser;
     }
+    void systemBrowserAcceptsNativeKeyboardInput(){
+#ifndef Q_OS_WIN
+        QSKIP("Windows native WebView2 focus regression.");
+#else
+        if(QGuiApplication::platformName()!="windows")QSKIP("Requires the Windows platform.");
+        QTcpServer server;QVERIFY(server.listen(QHostAddress::LocalHost));
+        connect(&server,&QTcpServer::newConnection,&server,[&]{while(server.hasPendingConnections()){
+            auto* socket=server.nextPendingConnection();connect(socket,&QTcpSocket::disconnected,socket,&QObject::deleteLater);
+            connect(socket,&QTcpSocket::readyRead,socket,[socket]{
+                if(socket->readAll().isEmpty()||socket->property("sent").toBool())return;
+                socket->setProperty("sent",true);
+                const QByteArray html=R"(<html><head><title>Loading</title></head><body style="margin:0">
+<input id="input" style="display:block;width:300px;height:60px">
+<textarea id="textarea" style="display:block;width:300px;height:60px"></textarea>
+<div id="editor" contenteditable="true" style="width:300px;height:60px"></div>
+<script>document.addEventListener('input',e=>document.title=e.target.id+':'+(e.target.value??e.target.textContent));</script>
+<script>requestAnimationFrame(()=>requestAnimationFrame(()=>document.title='Ready'));</script>
+</body></html>)";
+                socket->write("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: "+QByteArray::number(html.size())+"\r\nConnection: close\r\n\r\n"+html);socket->disconnectFromHost();
+            });
+        }});
+        QQuickWindow window;window.resize(900,600);
+        QQuickItem address(window.contentItem());address.setWidth(300);address.setHeight(50);
+        auto* browser=new SystemBrowser(window.contentItem());browser->setX(400);browser->setY(80);browser->setWidth(480);browser->setHeight(500);
+        browser->navigate(QString("http://127.0.0.1:%1/").arg(server.serverPort()));
+        window.show();QVERIFY(QTest::qWaitForWindowExposed(&window));window.requestActivate();
+        QTRY_VERIFY(window.isActive());
+        QTRY_VERIFY_WITH_TIMEOUT(browser->ready()||!browser->error().isEmpty(),15000);QVERIFY2(browser->ready(),qPrintable(browser->error()));
+        QTRY_COMPARE_WITH_TIMEOUT(browser->title(),QString("Ready"),10000);
+        const auto host=reinterpret_cast<HWND>(window.winId());
+        SetForegroundWindow(host);
+        QTRY_COMPARE(GetForegroundWindow(),host);
+        struct RestoreCursor {
+            POINT position{};
+            RestoreCursor(){GetCursorPos(&position);}
+            ~RestoreCursor(){SetCursorPos(position.x,position.y);}
+        } restoreCursor;
+        const auto click=[&](int y){
+            const auto dpr=window.devicePixelRatio();
+            POINT point{LONG(std::lround(430*dpr)),LONG(std::lround((80+y)*dpr))};
+            if(!ClientToScreen(reinterpret_cast<HWND>(window.winId()),&point)||!SetCursorPos(point.x,point.y))return false;
+            // Let Windows deliver the native mouse move before injecting the
+            // button events into the out-of-process renderer.
+            QTest::qWait(50);
+            if(!IsChild(host,WindowFromPoint(point)))return false;
+            INPUT events[2]{};events[0].type=events[1].type=INPUT_MOUSE;
+            events[0].mi.dwFlags=MOUSEEVENTF_LEFTDOWN;events[1].mi.dwFlags=MOUSEEVENTF_LEFTUP;
+            return SendInput(2,events,sizeof(INPUT))==2;
+        };
+        const auto type=[](const QString& text){
+            for(const auto character:text){
+                INPUT events[2]{};events[0].type=events[1].type=INPUT_KEYBOARD;
+                events[0].ki.wScan=events[1].ki.wScan=character.unicode();
+                events[0].ki.dwFlags=KEYEVENTF_UNICODE;events[1].ki.dwFlags=KEYEVENTF_UNICODE|KEYEVENTF_KEYUP;
+                if(SendInput(2,events,sizeof(INPUT))!=2)return false;
+            }return true;
+        };
+        for(const auto& field:std::array<std::pair<QString,int>,3>{{{"input",30},{"textarea",95},{"editor",155}}}){
+            address.forceActiveFocus();QTest::qWait(50);
+            QVERIFY(click(field.second));QTest::qWait(500);QTRY_VERIFY2(browser->browserFocused(),qPrintable(field.first));
+            QVERIFY(type("scalar"));QTRY_COMPARE(browser->title(),field.first+":scalar");
+            address.forceActiveFocus();QTRY_VERIFY(!browser->browserFocused());
+        }
+        QVERIFY(click(155));QTRY_VERIFY(browser->browserFocused());
+        browser->setSuspended(true);QTRY_VERIFY(!browser->browserFocused());
+#endif
+    }
     void browserAddressesAndImageDragSources(){
         QCOMPARE(SystemBrowser::addressUrl("example.com/path"),QUrl("http://example.com/path"));
         QCOMPARE(SystemBrowser::addressUrl("https://example.com/a?q=1"),QUrl("https://example.com/a?q=1"));
